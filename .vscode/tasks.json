@@ -1,0 +1,45 @@
+// "command": "rsync -r --update chess/assets target/debug/assets",
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "copy assets",
+            "type": "shell",
+            
+            "command": "robocopy chess/assets target/debug/assets /E /XO /NFL; exit 0",
+            "group": {
+                "kind": "build",
+                "isDefault": true 
+            }
+        },
+        {
+            "label": "copy assets (release)",
+            "type": "shell",
+            "command": "robocopy chess/assets target/release/assets /E /XO; exit 0",
+            "group": {
+                "kind": "build",
+                "isDefault": true 
+            }
+        },                
+        {
+            "label": "cargo build",
+            "dependsOn": ["copy assets"],
+            "type": "shell",
+            "command": "cargo build",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build"
+        },        
+        {
+            "label": "cargo build (release)",
+            "dependsOn": ["copy assets (release)"],
+            "type": "shell",
+            "command": "cargo build --release",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build"
+        }
+    ]
+}
