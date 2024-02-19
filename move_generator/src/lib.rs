@@ -1,14 +1,6 @@
-// pub fn add(left: usize, right: usize) -> usize {
-//     left + right
-// }
+pub mod bitboard; // Declare the bitboard module
+pub mod move_patterns;
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-
-//     #[test]
-//     fn it_works() {
-//         let result = add(2, 2);
-//         assert_eq!(result, 4);
-//     }
-// }
+pub use move_patterns::get_rook_move_patterns;
+pub use move_patterns::get_bishop_move_patterns;
+pub use bitboard::Bitboard; // Make Bitboard available for public use

@@ -1,11 +1,8 @@
 use bevy::{prelude::*, window::WindowResolution};
 use bevy_wasm_window_resize::WindowResizePlugin;
-
 mod board;
 mod pieces;
 mod piece_picker;
-
-
 
 #[derive(Resource)]
 struct ChessBoardRes {
@@ -14,6 +11,7 @@ struct ChessBoardRes {
 
 fn main() {
     print!("Starting chess game");
+
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -23,7 +21,7 @@ fn main() {
             }),
             ..default()
         }))
-        //.add_plugins(WindowResizePlugin)
+        .add_plugins(WindowResizePlugin)
         .add_systems(
             Startup,
             (

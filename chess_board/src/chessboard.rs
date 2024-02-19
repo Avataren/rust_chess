@@ -1,4 +1,4 @@
-use chess_foundation::bitboard::Bitboard;
+use move_generator::bitboard::Bitboard;
 
 pub struct ChessBoard {
     white: Bitboard,
@@ -10,21 +10,21 @@ pub struct ChessBoard {
     queens: Bitboard,
     kings: Bitboard,
 
-    castling_rights: u8
+    castling_rights: u8,
 }
 
 impl ChessBoard {
     pub fn new() -> Self {
         ChessBoard {
-            white: Bitboard(0xFFFF), // First two ranks
-            black: Bitboard(0xFFFF_0000_0000_0000), // Last two ranks
-            pawns: Bitboard(0x00FF_0000_0000_FF00), // Second and seventh ranks
+            white: Bitboard(0xFFFF),                  // First two ranks
+            black: Bitboard(0xFFFF_0000_0000_0000),   // Last two ranks
+            pawns: Bitboard(0x00FF_0000_0000_FF00),   // Second and seventh ranks
             knights: Bitboard(0x4200_0000_0000_0042), // b1, g1, b8, g8
             bishops: Bitboard(0x2400_0000_0000_0024), // c1, f1, c8, f8
-            rooks: Bitboard(0x8100_0000_0000_0081), // a1, h1, a8, h8
-            queens: Bitboard(0x0800_0000_0000_0008), // d1, d8
-            kings: Bitboard(0x1000_0000_0000_0010), // e1, e8
-            castling_rights: 0b00001111
+            rooks: Bitboard(0x8100_0000_0000_0081),   // a1, h1, a8, h8
+            queens: Bitboard(0x0800_0000_0000_0008),  // d1, d8
+            kings: Bitboard(0x1000_0000_0000_0010),   // e1, e8
+            castling_rights: 0b00001111,
         }
     }
 
@@ -123,7 +123,7 @@ impl ChessBoard {
         println!("     a   b   c   d   e   f   g   h");
         // Print top border
         println!("   +---+---+---+---+---+---+---+---+");
-        
+
         for (i, row) in board_repr.iter().enumerate() {
             // Start the row with a border
             print!("{}  |", 8 - i);
@@ -158,7 +158,4 @@ impl ChessBoard {
             println!(); // Move to the next line after printing a row
         }
     }
-
-    
 }
-

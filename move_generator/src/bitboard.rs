@@ -20,7 +20,7 @@ impl Bitboard {
 
     /// Checks if a bit at the given index (0-63) is set.
     pub fn is_set(&self, index: usize) -> bool {
-        (self.0 & (1 << index)) != 0 
+        (self.0 & (1 << index)) != 0
     }
 
     pub fn and(&self, other: Bitboard) -> Bitboard {
@@ -39,20 +39,40 @@ impl Bitboard {
         Bitboard(!self.0)
     }
 
-    pub fn print_bitboard(&self) {
-        println! ("hex value: {:x}", self.0);
-        println! ("binary value: ");
+    pub fn set_from_board_array(&mut self, board: &Vec<u8>) {
+        let mut bitboard = Bitboard::new();
         for i in 0..64 {
-            if i % 8 == 0 && i != 0 {
-                println!();
+            if board[i] != 0 {
+                bitboard.set_bit(i);
             }
-            print!("{}", if self.is_set(i) { "1" } else { "0" });
+        }
+        *self = bitboard;
+    }
+
+    pub fn from_board_array(board: &Vec<u8>) -> Self {
+        let mut bitboard = Bitboard::new();
+        for (i, &piece) in board.iter().enumerate() {
+            if piece != 0 {
+                bitboard.set_bit(i);
+            }
+        }
+        bitboard
+    }
+
+    pub fn print_bitboard(&self) {
+        println!("dec value: {:}", self.0);
+        println!("hex value: {:x}", self.0);
+        println!("binary value: ");
+        for rank in (0..8).rev() {
+            for file in 0..8 {
+                let i = rank * 8 + file; // Calculate index from top to bottom, left to right
+                print!("{}", if self.is_set(i) { "1" } else { "0" });
+            }
+            println!(); // New line at the end of each rank
         }
         println!(); // Ensure a newline at the end of the output
     }
-
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -67,9 +87,9 @@ mod tests {
         assert_eq!(bitboard1.is_set(0), true);
         assert_eq!(bitboard1, Bitboard(0b1));
         bitboard2.set_bit(1);
-        println!("{:?}", bitboard1.or(bitboard2));   
+        println!("{:?}", bitboard1.or(bitboard2));
 
-        assert_eq!(bitboard1.and(bitboard2), Bitboard(0b00));   
+        assert_eq!(bitboard1.and(bitboard2), Bitboard(0b00));
         assert_eq!(bitboard1.or(bitboard2), Bitboard(0b11));
     }
 
@@ -81,5 +101,4 @@ mod tests {
         assert_eq!(white, Bitboard(0b0000_0000_1111_1111));
         assert_eq!(black, Bitboard(0b1111_1111_0000_0000));
     }
-    
 }
