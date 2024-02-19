@@ -4,6 +4,9 @@ use bevy::{
 };
 
 #[derive(Component)]
+pub struct ResolutionText;
+
+#[derive(Component)]
 pub struct BoardTag;
 
 #[derive(Resource)]
@@ -11,6 +14,12 @@ pub struct BoardDimensions {
     pub board_size: Vec2,
     pub square_size: f32,
     pub scale_factor: f32,
+}
+
+#[derive(Resource)]
+pub struct ResolutionInfo {
+    pub width: f32,
+    pub height: f32,
 }
 
 #[derive(Resource, Deref, DerefMut)]
@@ -49,20 +58,16 @@ pub fn spawn_board(commands: &mut Commands, asset_server: Res<AssetServer>) {
 }
 
 pub fn set_initial_board_size(
-    q_windows: Query<&Window, With<PrimaryWindow>>,
+    mut windows: Query<&mut Window>,
     mut board_dimensions: ResMut<BoardDimensions>,
     mut board_query: Query<(&mut Transform, &Handle<Image>), With<BoardTag>>,
     images: Res<Assets<Image>>,
     mut board_transform: ResMut<ChessBoardTransform>,
 ) {
-    let mut window_width = 512.0;
-    let mut window_height = 512.0;
-    let mut window_aspect_ratio = window_width / window_height;
-    if let Some(window) = q_windows.iter().next() {
-        window_width = window.width() as f32;
-        window_height = window.height() as f32;
-        window_aspect_ratio = window_width / window_height;
-    }
+    let window = windows.single_mut();
+    let window_width = window.width() as f32;
+    let window_height = window.height() as f32;
+    let window_aspect_ratio = window_width / window_height;
     for (mut transform, texture_handle) in board_query.iter_mut() {
         if let Some(texture) = images.get(texture_handle) {
             let texture_aspect_ratio = texture.size().x as f32 / texture.size().y as f32;
@@ -83,36 +88,44 @@ pub fn set_initial_board_size(
     }
 }
 
-pub fn resize_board(
-    mut board_dimensions: ResMut<BoardDimensions>,
-    mut board_query: Query<(&mut Transform, &Handle<Image>), With<BoardTag>>,
+pub fn handle_resize_event(
+    mut resolution: ResMut<ResolutionInfo>,
     mut events_reader: EventReader<WindowResized>,
-    images: Res<Assets<Image>>,
-    mut board_transform: ResMut<ChessBoardTransform>,
 ) {
     for event in events_reader.read() {
-        println!("resize_board reading event");
-        let window_width = event.width;
-        let window_height = event.height - 100.0;
+        resolution.width = event.width as f32;
+        resolution.height = (event.height - 100.0) as f32;
+    }
+}
 
-        for (mut transform, texture_handle) in board_query.iter_mut() {
-            if let Some(texture) = images.get(texture_handle) {
-                let texture_aspect_ratio = texture.size().x as f32 / texture.size().y as f32;
-                let window_aspect_ratio = window_width / window_height;
+pub fn resize_board(
+    mut resolution: ResMut<ResolutionInfo>,
+    mut board_dimensions: ResMut<BoardDimensions>,
+    mut board_query: Query<(&mut Transform, &Handle<Image>), With<BoardTag>>,
+    images: Res<Assets<Image>>,
+    mut board_transform: ResMut<ChessBoardTransform>,
+    mut q: Query<&mut Text, With<ResolutionText>>,
+) {
+    for (mut transform, texture_handle) in board_query.iter_mut() {
+        if let Some(texture) = images.get(texture_handle) {
+            let texture_aspect_ratio = texture.size().x as f32 / texture.size().y as f32;
+            let window_aspect_ratio = resolution.width / resolution.height;
 
-                let scale = if window_aspect_ratio > texture_aspect_ratio {
-                    window_height as f32 / texture.size().y as f32
-                } else {
-                    window_width as f32 / texture.size().x as f32
-                };
+            let scale = if window_aspect_ratio > texture_aspect_ratio {
+                resolution.height / texture.size().y as f32
+            } else {
+                resolution.width / texture.size().x as f32
+            };
 
-                board_dimensions.scale_factor = scale;
-                transform.scale = Vec3::new(scale, scale, 1.0);
-                board_transform.transform = transform.compute_matrix();
-                board_dimensions.board_size =
-                    Vec2::new(texture.size().x as f32, texture.size().y as f32);
-                board_dimensions.square_size = board_dimensions.board_size.x / 8.0;
-            }
+            board_dimensions.scale_factor = scale;
+            transform.scale = Vec3::new(scale, scale, 1.0);
+            board_transform.transform = transform.compute_matrix();
+            board_dimensions.board_size =
+                Vec2::new(texture.size().x as f32, texture.size().y as f32);
+            board_dimensions.square_size = board_dimensions.board_size.x / 8.0;
+
+            let mut text = q.single_mut();
+            text.sections[0].value = format!("{:.1} x {:.1}", resolution.width, resolution.height);
         }
     }
 }

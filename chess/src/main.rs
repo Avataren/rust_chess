@@ -1,8 +1,9 @@
 use bevy::{prelude::*, window::WindowResolution};
 use bevy_wasm_window_resize::WindowResizePlugin;
 mod board;
-mod pieces;
 mod piece_picker;
+mod pieces;
+use board::ResolutionInfo;
 
 #[derive(Resource)]
 struct ChessBoardRes {
@@ -10,13 +11,14 @@ struct ChessBoardRes {
 }
 
 fn main() {
-    print!("Starting chess game");
-
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                canvas: Some("#game-canvas".to_string()),
+                // canvas: Some("#game-canvas".to_string()),
+                title: "XavChess".to_string(),
+                resizable: true,
                 resolution: WindowResolution::new(1280., 1024.),
+                prevent_default_event_handling: false,
                 ..default()
             }),
             ..default()
@@ -25,31 +27,63 @@ fn main() {
         .add_systems(
             Startup,
             (
-                setup, pieces::preload_piece_sprites, 
-                pieces::spawn_chess_pieces, 
+                setup,
+                pieces::preload_piece_sprites,
+                pieces::spawn_chess_pieces,
                 pieces::spawn_board_accessories,
-                // board::set_initial_board_size
-            ).chain(),
+                // board::set_initial_board_size,
+            )
+                .chain(),
         )
-        .add_systems(Update, 
+        .add_systems(
+            Update,
             (
+                board::handle_resize_event,
                 board::resize_board,
                 piece_picker::handle_pick_and_drag_piece,
-                pieces::update_marker_square
-            ).chain())
+                pieces::update_marker_square,
+            )
+                .chain(),
+        )
         .run();
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut windows: Query<&mut Window>) {
-    let mut window = windows.single_mut();
-    window.set_maximized(true);    
-    commands.spawn(Camera2dBundle::default());
+    // let mut window = windows.single_mut();
     board::spawn_board(&mut commands, asset_server);
     // Resources
     commands.insert_resource(piece_picker::PieceIsPickedUp::default());
-    commands.insert_resource(board::BoardDimensions::default()); 
+    commands.insert_resource(board::BoardDimensions::default());
     commands.insert_resource(pieces::PieceTextures::default());
+    commands.insert_resource(ResolutionInfo{ width: 1280.0, height: 1080.0 });
+
     commands.insert_resource(ChessBoardRes {
         chess_board: chess_board::ChessBoard::new(),
+    });
+    commands.spawn(Camera2dBundle::default());
+    setup_ui(commands);
+}
+
+fn setup_ui(mut cmd: Commands) {
+    // Node that fills entire background
+    cmd.spawn(NodeBundle {
+        style: Style {
+            width: Val::Percent(100.),
+            ..default()
+        },
+        ..default()
+    })
+    .with_children(|root| {
+        // Text where we display current resolution
+        root.spawn((
+            TextBundle::from_section(
+                "Resolution",
+                TextStyle {
+                    font_size: 20.0,
+                    ..default()
+                },
+            ),
+            board::ResolutionText,
+        ));
     });
 }

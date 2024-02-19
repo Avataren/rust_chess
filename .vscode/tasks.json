@@ -40,6 +40,28 @@
                 "$rustc"
             ],
             "group": "build"
-        }
+        },
+        {
+            "label": "Build wasm",
+            "type": "shell",
+            "command": "cargo build --target wasm32-unknown-unknown --release",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build"
+        },
+        {
+            "label": "wasm-bindgen",
+            "type": "shell",
+            "command": "wasm-bindgen",
+            "args": [
+                "--out-name", "chess",
+                "--out-dir", "web/wasm/target",
+                "--target", "web",
+                "target/wasm32-unknown-unknown/release/chess.wasm"
+            ],
+            "dependsOn": "Build wasm",
+            "problemMatcher": []
+        }        
     ]
 }

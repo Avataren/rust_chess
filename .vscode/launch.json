@@ -19,6 +19,15 @@
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "cargo build (release)",
             "noDebug": true
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Web Assembly Release",
+            "program": "basic-http-server",
+            "args": ["web/wasm"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build wasm"
         }
     ]
 }
