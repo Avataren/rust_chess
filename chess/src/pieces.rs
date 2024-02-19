@@ -1,9 +1,15 @@
-
 use bevy::{
-    math::vec3, prelude::*, sprite::{MaterialMesh2dBundle, Mesh2dHandle}, utils::HashMap, window::{PrimaryWindow}
+    math::vec3,
+    prelude::*,
+    sprite::{MaterialMesh2dBundle, Mesh2dHandle},
+    utils::HashMap,
+    window::PrimaryWindow,
 };
 
-use crate::{board::{BoardDimensions, BoardTag, ChessBoardTransform}, ChessBoardRes};
+use crate::{
+    board::{BoardDimensions, BoardTag, ChessBoardTransform},
+    ChessBoardRes,
+};
 
 const CHESSPIECE_SCALE: f32 = 0.8;
 
@@ -19,7 +25,7 @@ pub struct MarkerSquare;
 pub struct ChessPiece {
     pub piece_type: char,
     pub row: usize,
-    pub col: usize
+    pub col: usize,
 }
 
 impl Default for PieceTextures {
@@ -33,12 +39,15 @@ impl Default for PieceTextures {
 pub fn preload_piece_sprites(
     asset_server: Res<AssetServer>,
     mut piece_textures: ResMut<PieceTextures>,
-
 ) {
-    let pieces = ["bb", "bk", "bn", "bp", "bq", "br", "wb", "wk", "wn", "wp", "wq", "wr"];
+    let pieces = [
+        "bb", "bk", "bn", "bp", "bq", "br", "wb", "wk", "wn", "wp", "wq", "wr",
+    ];
     for &piece in pieces.iter() {
         let texture_handle = asset_server.load(format!("{}.png", piece));
-        piece_textures.textures.insert(piece.to_string(), texture_handle);
+        piece_textures
+            .textures
+            .insert(piece.to_string(), texture_handle);
     }
 }
 
@@ -47,25 +56,31 @@ pub fn spawn_board_accessories(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     board_dimensions: Res<BoardDimensions>,
-    query: Query<Entity, With<BoardTag>>
-){
+    query: Query<Entity, With<BoardTag>>,
+) {
     let parent = query.iter().next().unwrap();
-    let board_offset = Vec3::new(-board_dimensions.board_size.x / 2.0, board_dimensions.board_size.y / 2.0, 0.0);    
+    let board_offset = Vec3::new(
+        -board_dimensions.board_size.x / 2.0,
+        board_dimensions.board_size.y / 2.0,
+        0.0,
+    );
     let mut world_position = chess_coord_to_board(1, 1, board_dimensions.square_size, board_offset);
     world_position.z = 0.1;
     let square_size = board_dimensions.square_size;
     let rect = meshes.add(Rectangle::new(square_size, square_size));
 
-    let child_mesh = commands.spawn(MaterialMesh2dBundle {
-        mesh: Mesh2dHandle(rect),
-        material: materials.add(Color::rgba(0.0, 1.0, 0.0, 0.15)),
-        transform:
-         Transform{
-            translation: world_position,
+    let child_mesh = commands
+        .spawn(MaterialMesh2dBundle {
+            mesh: Mesh2dHandle(rect),
+            material: materials.add(Color::rgba(0.0, 1.0, 0.0, 0.15)),
+            transform: Transform {
+                translation: world_position,
+                ..Default::default()
+            },
             ..Default::default()
-        },
-        ..Default::default()
-    }).insert(MarkerSquare).id();
+        })
+        .insert(MarkerSquare)
+        .id();
     commands.entity(parent).push_children(&[child_mesh]);
 }
 
@@ -77,11 +92,14 @@ pub fn get_board_coords_from_cursor(
     board_transform: &ChessBoardTransform,
     board_dimensions: &BoardDimensions,
 ) -> Option<Vec2> {
-    camera.viewport_to_world(camera_transform, cursor_position)
+    camera
+        .viewport_to_world(camera_transform, cursor_position)
         .map(|ray| ray.origin.truncate())
         .map(|world_position| {
             let matrix = board_transform.transform.inverse();
-            let world_coords = matrix.transform_point3(world_position.extend(0.0)).truncate();
+            let world_coords = matrix
+                .transform_point3(world_position.extend(0.0))
+                .truncate();
             let board_offset = Vec3::new(
                 -board_dimensions.board_size.x / 2.0,
                 board_dimensions.board_size.y / 2.0,
@@ -158,10 +176,14 @@ pub fn spawn_chess_pieces(
     chess_board_res: Res<ChessBoardRes>,
     piece_textures: Res<PieceTextures>,
     board_dimensions: Res<BoardDimensions>,
-    query: Query<Entity, With<BoardTag>>
+    query: Query<Entity, With<BoardTag>>,
 ) {
     let square_size = board_dimensions.square_size;
-    let board_offset = Vec3::new(-board_dimensions.board_size.x / 2.0, board_dimensions.board_size.y / 2.0, 0.0);
+    let board_offset = Vec3::new(
+        -board_dimensions.board_size.x / 2.0,
+        board_dimensions.board_size.y / 2.0,
+        0.0,
+    );
 
     let parent = query.iter().next().unwrap();
 
@@ -188,21 +210,22 @@ pub fn spawn_chess_pieces(
                 _ => continue,
             };
             if let Some(texture_handle) = piece_textures.textures.get(piece_texture_key) {
-
-
-                let child_sprite = commands.spawn(SpriteBundle {
-                    texture: texture_handle.clone(),
-                    transform: Transform{
-                        translation: world_position,
-                        scale: vec3(CHESSPIECE_SCALE, CHESSPIECE_SCALE, 1.0),
+                let child_sprite = commands
+                    .spawn(SpriteBundle {
+                        texture: texture_handle.clone(),
+                        transform: Transform {
+                            translation: world_position,
+                            scale: vec3(CHESSPIECE_SCALE, CHESSPIECE_SCALE, 1.0),
+                            ..Default::default()
+                        },
                         ..Default::default()
-                    },
-                    ..Default::default()
-                }).insert(ChessPiece {
-                    piece_type: piece_char,
-                    row: row,
-                    col: col
-                }).id();
+                    })
+                    .insert(ChessPiece {
+                        piece_type: piece_char,
+                        row: row,
+                        col: col,
+                    })
+                    .id();
 
                 commands.entity(parent).push_children(&[child_sprite]);
             }
@@ -213,7 +236,7 @@ pub fn spawn_chess_pieces(
 pub fn chess_coord_to_board(row: usize, col: usize, square_size: f32, board_offset: Vec3) -> Vec3 {
     Vec3::new(
         col as f32 * square_size + board_offset.x + square_size / 2.0, // Center in square horizontally
-        -(row as f32) * square_size + board_offset.y  - square_size / 2.0, // Center in square vertically
+        -(row as f32) * square_size + board_offset.y - square_size / 2.0, // Center in square vertically
         0.5,
     )
 }

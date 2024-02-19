@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>WASM Chess</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #333;
+        }
+        #game-canvas {
+          width:100%;
+          height:100%;
+          background-color: #359;
+        }
+        #app {
+          display:flex;
+          justify-content: center;
+        }
+    </style>
+</head>
+<body>
+  <div id="app">
+    <canvas  id="game-canvas" tabindex="0" style="width: 1280px; height: 1024px; min-width: 1280px; min-height: 720px; cursor: auto;" data-raw-handle="1" alt="App" width="1280" height="1024"></canvas>    
+  </div>
+    <script type="module">
+        import init from './target/chess.js';
+        init();
+    </script>
+</body>
+</html>
+
+<!-- <html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body {
+        background: #333
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        background-color: white;
+      }
+    </style>
+    <title>WASM Chess</title>
+  </head>
+  <body>
+    <script type="module">
+      import init from './target/chess.js'
+      init().then(module => {
+        console.log ("wasm initialized");
+      })
+    </script>    
+  </body>
+
+</html> -->

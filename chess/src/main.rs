@@ -1,8 +1,11 @@
-use bevy::{prelude::*};
+use bevy::{prelude::*, window::WindowResolution};
+use bevy_wasm_window_resize::WindowResizePlugin;
 
 mod board;
 mod pieces;
 mod piece_picker;
+
+
 
 #[derive(Resource)]
 struct ChessBoardRes {
@@ -10,14 +13,24 @@ struct ChessBoardRes {
 }
 
 fn main() {
+    print!("Starting chess game");
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                canvas: Some("#game-canvas".to_string()),
+                resolution: WindowResolution::new(1280., 1024.),
+                ..default()
+            }),
+            ..default()
+        }))
+        //.add_plugins(WindowResizePlugin)
         .add_systems(
             Startup,
             (
                 setup, pieces::preload_piece_sprites, 
                 pieces::spawn_chess_pieces, 
-                pieces::spawn_board_accessories
+                pieces::spawn_board_accessories,
+                // board::set_initial_board_size
             ).chain(),
         )
         .add_systems(Update, 
@@ -29,7 +42,9 @@ fn main() {
         .run();
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut windows: Query<&mut Window>) {
+    let mut window = windows.single_mut();
+    window.set_maximized(true);    
     commands.spawn(Camera2dBundle::default());
     board::spawn_board(&mut commands, asset_server);
     // Resources

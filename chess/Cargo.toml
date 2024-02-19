@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 chess_board = { path = "../chess_board" }
 bevy = "0.13.0"
+bevy_wasm_window_resize = "0.3.0"

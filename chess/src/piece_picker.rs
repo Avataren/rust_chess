@@ -1,6 +1,4 @@
-use bevy::{
-    input::mouse::MouseButton, prelude::*, window::PrimaryWindow
-};
+use bevy::{input::mouse::MouseButton, prelude::*, window::PrimaryWindow};
 
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
@@ -8,12 +6,12 @@ use crate::{
 };
 
 #[derive(Resource)]
-pub struct PieceIsPickedUp{
+pub struct PieceIsPickedUp {
     pub piece_type: Option<char>,
     pub piece_entity: Option<Entity>,
     pub original_row_col: (usize, usize),
     pub target_row_col: (usize, usize),
-    pub current_position:  Vec3,
+    pub current_position: Vec3,
     pub is_dragging: bool,
 }
 
@@ -25,7 +23,7 @@ impl Default for PieceIsPickedUp {
             original_row_col: (0, 0),
             target_row_col: (0, 0),
             current_position: Vec3::new(0.0, 0.0, 0.0),
-            is_dragging: false
+            is_dragging: false,
         }
     }
 }
@@ -37,7 +35,7 @@ pub fn handle_pick_and_drag_piece(
     board_transform: Res<ChessBoardTransform>,
     board_dimensions: Res<BoardDimensions>,
     mut piece_is_picked_up: ResMut<PieceIsPickedUp>,
-    mouse_button_input: ResMut<'_, ButtonInput<MouseButton>>    
+    mouse_button_input: ResMut<'_, ButtonInput<MouseButton>>,
 ) {
     if let Some(window) = q_windows.iter().next() {
         if let Some(cursor_position) = window.cursor_position() {
@@ -117,13 +115,15 @@ fn pick_up_piece(
         camera_transform,
         board_transform,
         board_dimensions,
-    ).expect("Failed to get board coordinates"); // Consider handling this more gracefully
+    )
+    .expect("Failed to get board coordinates"); // Consider handling this more gracefully
 
     let (col, row) = board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
 
-    if let Some((entity, transform, chess_piece)) = piece_query.iter_mut().find(|(_, _, chess_piece)| {
-        chess_piece.row == row && chess_piece.col == col
-    }) {
+    if let Some((entity, transform, chess_piece)) = piece_query
+        .iter_mut()
+        .find(|(_, _, chess_piece)| chess_piece.row == row && chess_piece.col == col)
+    {
         piece_is_picked_up.piece_type = Some(chess_piece.piece_type);
         piece_is_picked_up.original_row_col = (row, col);
         piece_is_picked_up.current_position = transform.translation;
@@ -150,7 +150,8 @@ fn drag_piece(
                 camera_transform,
                 board_transform,
                 board_dimensions,
-            ).expect("Failed to get board coordinates"); // Consider handling this more gracefully
+            )
+            .expect("Failed to get board coordinates"); // Consider handling this more gracefully
 
             transform.translation = Vec3::new(
                 board_coords.x - board_dimensions.board_size.x / 2.0,
@@ -177,9 +178,11 @@ fn release_piece(
                 camera_transform,
                 board_transform,
                 board_dimensions,
-            ).expect("Failed to get board coordinates"); // Consider handling this more gracefully
+            )
+            .expect("Failed to get board coordinates"); // Consider handling this more gracefully
 
-            let (col, row) = board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
+            let (col, row) =
+                board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
 
             transform.translation = chess_coord_to_board(
                 row,
