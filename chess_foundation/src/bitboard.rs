@@ -8,6 +8,19 @@ impl Bitboard {
         Bitboard(0)
     }
 
+    pub fn default() -> Self {
+        Bitboard(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn pop_lsb(&mut self) -> usize {
+        let lsb = self.0.trailing_zeros() as usize;
+        self.clear_bit(lsb);
+        lsb
+    }
     /// Sets a bit at the given index (0-63), where 0 is the least significant bit.
     pub fn set_bit(&mut self, index: usize) {
         self.0 |= 1 << index;
@@ -100,5 +113,27 @@ mod tests {
         let black = bitboard.and(Bitboard(0b1111_1111_0000_0000));
         assert_eq!(white, Bitboard(0b0000_0000_1111_1111));
         assert_eq!(black, Bitboard(0b1111_1111_0000_0000));
+    }
+
+    #[test]
+    fn test_pop_lsb(){
+        let mut bitboard = Bitboard(0b1000_0000_0000_0000);
+        assert_eq!(bitboard.pop_lsb(), 15);
+        assert_eq!(bitboard.0, 0);
+
+        bitboard = Bitboard(0b0000_0000_0000_0001);
+        assert_eq!(bitboard.pop_lsb(), 0);
+        assert_eq!(bitboard.0, 0);
+
+        bitboard = Bitboard(0b0000_0000_0000_1111);
+        assert_eq!(bitboard.pop_lsb(), 0);
+        assert_eq!(bitboard.0, 0b0000_0000_0000_1110);
+        assert_eq!(bitboard.pop_lsb(), 1);
+        assert_eq!(bitboard.0, 0b0000_0000_0000_1100);
+        assert_eq!(bitboard.pop_lsb(), 2);
+        assert_eq!(bitboard.0, 0b0000_0000_0000_1000);
+        assert_eq!(bitboard.pop_lsb(), 3);
+        assert_eq!(bitboard.0, 0);
+
     }
 }

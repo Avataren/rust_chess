@@ -3,6 +3,7 @@ use bevy::{input::mouse::MouseButton, prelude::*, window::PrimaryWindow};
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
     pieces::{chess_coord_to_board, get_board_coords_from_cursor, ChessPiece},
+    sound::{spawn_sound, SoundEffects},
 };
 
 #[derive(Resource)]
@@ -36,6 +37,8 @@ pub fn handle_pick_and_drag_piece(
     board_dimensions: Res<BoardDimensions>,
     mut piece_is_picked_up: ResMut<PieceIsPickedUp>,
     mouse_button_input: ResMut<'_, ButtonInput<MouseButton>>,
+    sound_effects: Res<SoundEffects>,
+    mut commands: Commands,
 ) {
     if let Some(window) = q_windows.iter().next() {
         if let Some(cursor_position) = window.cursor_position() {
@@ -48,6 +51,8 @@ pub fn handle_pick_and_drag_piece(
                     &board_transform,
                     &board_dimensions,
                     &mut piece_query,
+                    &sound_effects,
+                    &mut commands,
                 );
             }
         }
@@ -62,6 +67,8 @@ fn handle_mouse_input(
     board_transform: &ChessBoardTransform,
     board_dimensions: &BoardDimensions,
     piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
+    sound_effects: &SoundEffects,
+    commands: &mut Commands,
 ) {
     if mouse_button_input.pressed(MouseButton::Left) {
         if piece_is_picked_up.is_dragging {
@@ -84,6 +91,7 @@ fn handle_mouse_input(
             );
         }
     } else if mouse_button_input.just_released(MouseButton::Left) {
+        spawn_sound(commands, &sound_effects, "move-self.ogg");
         release_piece(
             cursor_position,
             camera_bundle,

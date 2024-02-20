@@ -1,4 +1,4 @@
-use move_generator::bitboard::Bitboard;
+use chess_foundation::bitboard::Bitboard;
 
 pub struct ChessBoard {
     white: Bitboard,

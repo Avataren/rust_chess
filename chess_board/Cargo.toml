@@ -7,4 +7,3 @@ edition = "2021"
 
 [dependencies]
 chess_foundation = { path = "../chess_foundation" }
-move_generator = { path = "../move_generator" }

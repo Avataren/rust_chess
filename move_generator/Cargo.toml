@@ -7,3 +7,6 @@ edition = "2021"
 
 [dependencies]
 chess_foundation = { path = "../chess_foundation" }
+chess_board = { path = "../chess_board" }
+rand = "0.8.4"
+
