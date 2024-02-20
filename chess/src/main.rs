@@ -4,8 +4,11 @@ mod piece_picker;
 mod pieces;
 use board::ResolutionInfo;
 
+
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
@@ -69,6 +72,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(ChessBoardRes {
         chess_board: chess_board::ChessBoard::new(),
     });
+    #[cfg(target_arch = "wasm32")]
     resize_canvas_and_apply_styles();
 }
 

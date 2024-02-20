@@ -85,10 +85,10 @@ pub fn resize_board(
             board_dimensions.scale_factor = scale;
             transform.scale = Vec3::new(scale, scale, 1.0);
 
-            let seconds = time.elapsed_seconds() as f32;
-            let angle_radians = (seconds * 6.0).to_radians();
+            // let seconds = time.elapsed_seconds() as f32;
+            // let angle_radians = (seconds * 6.0).to_radians();
 
-            transform.rotation = Quat::from_rotation_z(angle_radians);
+            // transform.rotation = Quat::from_rotation_z(angle_radians);
             board_transform.transform = transform.compute_matrix();
             board_dimensions.board_size =
                 Vec2::new(texture.size().x as f32, texture.size().y as f32);
