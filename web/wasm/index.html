@@ -1,38 +1,47 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>WASM Chess</title>
-    <style>
-      body {
-        margin: 0;
-        width: 100%;
-        height: 100%;        
-        overflow: hidden;
-        background: #333;
-      }
-      canvas {
-        margin: 0;
-        width: 100%;
-        height: 100%;
-        background-color: #359;
-      }
-      #app {
-        display: flex;
-        justify-content: center;
-      }
-    </style>
-  </head>
-  <body>
-    <!-- <div id="app">
-      <canvas
-        id="game-canvas"
-        tabindex="0"
-      ></canvas>
-    </div> -->
-    <script type="module">
-      import init from './target/chess.js';
-      init();
-    </script>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <title>WASM Chess</title>
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #333;
+      display: flex; 
+      justify-content: center;
+      align-items: center;
+    }
+    #app {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    #game-canvas {
+      display: block; 
+      background-color: #359;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="game-canvas" tabindex="0"></canvas>
+  </div>
+  <script>
+      function resizeCanvasAndApplyStyles() {
+      //const canvas = document.getElementById('game-canvas');
+      //canvas.width = window.innerWidth;
+      //canvas.height = window.innerHeight;
+      //canvas.style.setProperty('width', `${window.innerWidth}px`, 'important');
+      //canvas.style.setProperty('height', `${window.innerHeight}px`, 'important');
+      //canvas.style.setProperty('display', 'block', 'important'); // Ensuring the canvas is block level with no extra margins
+     }
+    window.addEventListener('resize', resizeCanvasAndApplyStyles);
+  </script>  
+  <script type="module">
+    import init from './target/chess.js';
+    init();
+  </script>
+</body>
 </html>

@@ -1,9 +1,19 @@
 use bevy::{prelude::*, window::WindowResolution};
-use bevy_wasm_window_resize::WindowResizePlugin;
 mod board;
 mod piece_picker;
 mod pieces;
 use board::ResolutionInfo;
+
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+
+    #[wasm_bindgen(js_name = resizeCanvasAndApplyStyles)]
+    fn resize_canvas_and_apply_styles();
+}
 
 #[derive(Resource)]
 struct ChessBoardRes {
@@ -14,7 +24,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                // canvas: Some("#game-canvas".to_string()),
+                canvas: Some("#game-canvas".to_string()),
                 title: "XavChess".to_string(),
                 resizable: true,
                 resolution: WindowResolution::new(1280., 1024.),
@@ -23,7 +33,7 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins(WindowResizePlugin)
+        // .add_plugins(WindowResizePlugin)
         .add_systems(
             Startup,
             (
@@ -31,7 +41,6 @@ fn main() {
                 pieces::preload_piece_sprites,
                 pieces::spawn_chess_pieces,
                 pieces::spawn_board_accessories,
-                // board::set_initial_board_size,
             )
                 .chain(),
         )
@@ -48,25 +57,24 @@ fn main() {
         .run();
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>, mut windows: Query<&mut Window>) {
-    // let mut window = windows.single_mut();
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.spawn(Camera2dBundle::default());
+    setup_ui(&mut commands);
     board::spawn_board(&mut commands, asset_server);
     // Resources
     commands.insert_resource(piece_picker::PieceIsPickedUp::default());
     commands.insert_resource(board::BoardDimensions::default());
     commands.insert_resource(pieces::PieceTextures::default());
     commands.insert_resource(ResolutionInfo{ width: 1280.0, height: 1080.0 });
-
     commands.insert_resource(ChessBoardRes {
         chess_board: chess_board::ChessBoard::new(),
     });
-    commands.spawn(Camera2dBundle::default());
-    setup_ui(commands);
+    resize_canvas_and_apply_styles();
 }
 
-fn setup_ui(mut cmd: Commands) {
+fn setup_ui(commands: &mut Commands) {
     // Node that fills entire background
-    cmd.spawn(NodeBundle {
+    commands.spawn(NodeBundle {
         style: Style {
             width: Val::Percent(100.),
             ..default()

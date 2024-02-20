@@ -9,4 +9,4 @@ edition = "2021"
 chess_board = { path = "../chess_board" }
 move_generator = { path = "../move_generator" }
 bevy = "0.13.0"
-bevy_wasm_window_resize = "0.3.0"
+wasm-bindgen = "0.2.91"
