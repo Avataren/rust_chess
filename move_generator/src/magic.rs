@@ -52,7 +52,7 @@ impl OccupyVariation {
         rook_moves_lut
     }
 
-    fn generate_legal_moves_from_blockers(square: i32, blockerBitboard: Bitboard, ortho:bool) -> Bitboard {
+    fn generate_legal_moves_from_blockers(square: i32, blocker_bitboard: Bitboard, ortho:bool) -> Bitboard {
         let directions = if ortho {chess_foundation::piece_directions::ROOK_DIRECTIONS} else {chess_foundation::piece_directions::BISHOP_DIRECTIONS};
         let start_coord = Coord::from_square_index(square);
         let mut bitboard = Bitboard::default();
@@ -61,7 +61,7 @@ impl OccupyVariation {
                 let coord = start_coord + dir * i;
                 if coord.is_valid_square(){
                     bitboard.set_bit(coord.square_index() as usize);
-                    if blockerBitboard.contains_square(coord.square_index()){
+                    if blocker_bitboard.contains_square(coord.square_index()){
                         break;
                     }
                 } else {
