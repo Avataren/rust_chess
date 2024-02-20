@@ -16,6 +16,10 @@ impl Bitboard {
         self.0 == 0
     }
 
+    pub fn contains_square(&self, index: i32) -> bool {
+        self.is_set(index as usize)
+    }
+
     pub fn pop_lsb(&mut self) -> usize {
         let lsb = self.0.trailing_zeros() as usize;
         self.clear_bit(lsb);
@@ -116,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pop_lsb(){
+    fn test_pop_lsb() {
         let mut bitboard = Bitboard(0b1000_0000_0000_0000);
         assert_eq!(bitboard.pop_lsb(), 15);
         assert_eq!(bitboard.0, 0);
@@ -134,6 +138,5 @@ mod tests {
         assert_eq!(bitboard.0, 0b0000_0000_0000_1000);
         assert_eq!(bitboard.pop_lsb(), 3);
         assert_eq!(bitboard.0, 0);
-
     }
 }

@@ -8,6 +8,7 @@ use crate::move_patterns;
 use crate::{move_patterns::MovePatterns};
 use chess_board::ChessBoard;
 use chess_foundation::bitboard::Bitboard;
+use chess_foundation::{coord, Coord};
 use rand::Rng;
 
 use crate::piece_patterns::get_bishop_move_patterns;
@@ -16,6 +17,9 @@ use crate::piece_patterns::get_knight_move_patterns;
 use crate::piece_patterns::get_pawn_move_patterns;
 use crate::piece_patterns::get_rook_move_patterns;
 
+
+extern crate nalgebra as na;
+use na::Vector2;
 
 const MAX_MAGIC_NUMBER_ATTEMPTS: u64 = 1000000;
 
@@ -40,13 +44,61 @@ impl OccupyVariation {
             let blocker_bitboards = Self::generate_blocker_bitboards(movement_mask[square]);
             for blocker_bitboard in blocker_bitboards {
                 //let legal_move_bitboard = self.generate_rook_moves(square, blocker_bitboard);
-                let legal_move_bitboard = movement_mask[square]; // this is just a test!!! replace with legal moves
+                let legal_move_bitboard = Self::generate_legal_moves_from_blockers(square as i32, blocker_bitboard, true);
                  //self.generate_rook_legal_move_bitboard(square, blocker_bitboard);
                 rook_moves_lut.insert((square as i32, blocker_bitboard), legal_move_bitboard);
             }
         }
         rook_moves_lut
     }
+
+    fn generate_legal_moves_from_blockers(square: i32, blockerBitboard: Bitboard, ortho:bool) -> Bitboard {
+        let directions = if ortho {chess_foundation::piece_directions::ROOK_DIRECTIONS} else {chess_foundation::piece_directions::BISHOP_DIRECTIONS};
+        let start_coord = Coord::from_square_index(square);
+        let mut bitboard = Bitboard::default();
+        for dir in directions {
+            for i in 1..8{
+                let coord = start_coord + dir * i;
+                if coord.is_valid_square(){
+                    bitboard.set_bit(coord.square_index() as usize);
+                    if blockerBitboard.contains_square(coord.square_index()){
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        bitboard
+    }
+    // public static ulong LegalMoveBitboardFromBlockers(int startSquare, ulong blockerBitboard, bool ortho)
+    // {
+    //     ulong bitboard = 0;
+
+    //     Coord[] directions = ortho ? BoardHelper.RookDirections : BoardHelper.BishopDirections;
+    //     Coord startCoord = new Coord(startSquare);
+
+    //     foreach (Coord dir in directions)
+    //     {
+    //         for (int dst = 1; dst < 8; dst++)
+    //         {
+    //             Coord coord = startCoord + dir * dst;
+
+    //             if (coord.IsValidSquare())
+    //             {
+    //                 BitBoardUtility.SetSquare(ref bitboard, coord.SquareIndex);
+    //                 if (BitBoardUtility.ContainsSquare(blockerBitboard, coord.SquareIndex))
+    //                 {
+    //                     break;
+    //                 }
+    //             }
+    //             else { break; }
+    //         }
+    //     }
+
+    //     return bitboard;
+    // }
+
 
     // fn generate_rook_legal_move_bitboard(&self, square: u32, blocker_bitboard: Bitboard) -> Bitboard {
     //     // let mut all_pieces_bitboard = self.chess_board.get_white().or(self.chess_board.get_black());
