@@ -14,7 +14,7 @@ pub struct PieceIsPickedUp {
     pub piece_type: Option<char>,
     pub piece_entity: Option<Entity>,
     pub original_row_col: (usize, usize),
-    pub target_row_col: (usize, usize),
+    // pub target_row_col: (usize, usize),
     pub current_position: Vec3,
     pub is_dragging: bool,
 }
@@ -25,7 +25,7 @@ impl Default for PieceIsPickedUp {
             piece_type: None,
             piece_entity: None,
             original_row_col: (0, 0),
-            target_row_col: (0, 0),
+            // target_row_col: (0, 0),
             current_position: Vec3::new(0.0, 0.0, 0.0),
             is_dragging: false,
         }
@@ -61,7 +61,7 @@ pub fn handle_pick_and_drag_piece(
                     &sound_effects,
                     &magic,
                     &mut commands,
-                    chess_board
+                    chess_board,
                 );
             }
         }
@@ -223,6 +223,8 @@ fn release_piece(
 
     if let Some(piece_entity) = piece_is_picked_up.piece_entity {
         if let Ok((_, mut transform, mut chess_piece)) = piece_query.get_mut(piece_entity) {
+
+
             let board_coords = get_board_coords_from_cursor(
                 cursor_position,
                 camera,
@@ -231,13 +233,19 @@ fn release_piece(
                 board_dimensions,
             )
             .expect("Failed to get board coordinates"); // Consider handling this more gracefully
+
+            let (col, row) =
+                board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
+
             print!("board_coords: {:?}", board_coords);
             if (board_coords.x < 0.0)
                 || (board_coords.x > board_dimensions.board_size.x)
                 || (board_coords.y < 0.0)
                 || (board_coords.y > board_dimensions.board_size.y)
+                || (piece_is_picked_up.original_row_col.0 == row
+                    && piece_is_picked_up.original_row_col.1 == col)
             {
-                //trying to drop piece outside board
+                //trying to drop piece outside board, or same position as picked up
                 piece_is_picked_up.is_dragging = false;
                 let (original_row, original_col) = piece_is_picked_up.original_row_col;
                 transform.translation = chess_coord_to_board(
@@ -253,9 +261,9 @@ fn release_piece(
                 return;
             }
 
-            let (col, row) =
-                board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
 
+
+            //todo:: remove this when we sync with board state after move
             transform.translation = chess_coord_to_board(
                 row,
                 col,
@@ -278,6 +286,7 @@ fn release_piece(
                 ),
                 board_row_col_to_square_index(row, col),
             ));
+            //todo:: reposition all pieces based on chess_board state
 
             spawn_sound(commands, &sound_effects, "move-self.ogg");
             println!("Released piece at row: {}, col: {}", row, col);
