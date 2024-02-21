@@ -1,5 +1,4 @@
 use bevy::{input::mouse::MouseButton, prelude::*, window::PrimaryWindow};
-use move_generator::magic;
 
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
@@ -8,7 +7,7 @@ use crate::{
     sound::{spawn_sound, SoundEffects},
     MagicRes,
 };
-use chess_foundation::{ChessMove, board_helper::{board_row_col_to_square_index}};
+use chess_foundation::board_helper::board_row_col_to_square_index;
 
 #[derive(Resource)]
 pub struct PieceIsPickedUp {
