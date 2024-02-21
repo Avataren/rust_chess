@@ -14,7 +14,7 @@ use crate::{
     ChessBoardRes,
 };
 
-use chess_foundation::{coord::Coord, ChessMove};
+use chess_foundation::{ChessMove, board_helper::{square_index_to_board_row_col}};
 
 /// Updates the position of the marker square based on the current cursor position.
 
@@ -41,13 +41,6 @@ impl EnableDebugMarkers {
         EnableDebugMarkers { moves: Vec::new() }
     }
 }
-
-fn square_index_to_board_row_col(index: i32) -> (usize, usize) {
-    let col = index % 8;
-    let row = 7 -index / 8;
-    (row as usize, col as usize)
-}
-
 
 pub fn spawn_board_accessories(
     mut commands: Commands,
@@ -127,8 +120,6 @@ pub fn update_debug_squares(
     mut squares_query: Query<(Entity, &DebugSquare)>,
     mut commands: Commands,
 ) {
-
-
     // Iterate over all entities that have EnableDebugMarkers component
     for (debug_markers, _) in edm_query.iter_mut() {
         for chess_move in debug_markers.moves.iter() {
@@ -137,11 +128,8 @@ pub fn update_debug_squares(
                 // Check if the current DebugSquare matches any of the coordinates to be marked
                 //let row: i32 = 7-(chess_move.to_square/8);
                 //let col = chess_move.to_square%8;
-                let (row, col)  = square_index_to_board_row_col(chess_move.target_square() as i32);
-                if (col as usize == debug_square.col)
-                    && (row as usize == debug_square.row)
-                {
-                    
+                let (row, col) = square_index_to_board_row_col(chess_move.target_square() as i32);
+                if (col as usize == debug_square.col) && (row as usize == debug_square.row) {
                     println!("setting visibility to visible");
                     commands.entity(entity).insert(Visibility::Visible);
                 }
@@ -151,7 +139,7 @@ pub fn update_debug_squares(
 
     // If you need to despawn entities with EnableDebugMarkers, iterate through their entities
     for (_, entity) in edm_query.iter_mut() {
-        println! ("despawning edm entity");
+        println!("despawning edm entity");
         commands.entity(entity).despawn_recursive();
     }
 }

@@ -78,6 +78,4 @@ impl ChessMove {
             _ => None,
         }
     }
-
 }
-

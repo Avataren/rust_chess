@@ -8,6 +8,7 @@ use crate::{
     sound::{spawn_sound, SoundEffects},
     MagicRes,
 };
+use chess_foundation::{ChessMove, board_helper::{board_row_col_to_square_index}};
 
 #[derive(Resource)]
 pub struct PieceIsPickedUp {
@@ -111,7 +112,7 @@ fn handle_mouse_input(
             piece_is_picked_up,
             piece_query,
             debug_squares_query,
-            commands
+            commands,
         );
     }
 }
@@ -145,13 +146,15 @@ fn pick_up_piece(
 
     let valid_moves = magic_res
         .magic
-        .get_move_list_from_square(((7 - row) * 8 + col) as i32);
+        .get_move_list_from_square(board_row_col_to_square_index(row, col));
+
     commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
 
     for entry in valid_moves {
         println!(
             "Move from square {} to {}",
-            entry.start_square(), entry.target_square()
+            entry.start_square(),
+            entry.target_square()
         );
     }
 
@@ -209,12 +212,10 @@ fn release_piece(
     mut debug_squares_query: Query<(Entity, &DebugSquare)>,
     commands: &mut Commands,
 ) {
-
     //hide debug squares
     for (entity, _) in debug_squares_query.iter_mut() {
         commands.entity(entity).insert(Visibility::Hidden);
-    }    
-
+    }
 
     if let Some(piece_entity) = piece_is_picked_up.piece_entity {
         if let Ok((_, mut transform, mut chess_piece)) = piece_query.get_mut(piece_entity) {

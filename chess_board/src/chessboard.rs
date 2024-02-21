@@ -28,14 +28,12 @@ impl ChessBoard {
         }
     }
 
-    pub fn make_move(chess_move:ChessMove)
-    {
+    pub fn make_move(chess_move: ChessMove) {
         let start_square = chess_move.start_square();
         let target_square = chess_move.target_square();
 
         //do I need to look up pieces here, or when generating move?
         // when generating move!
-
     }
 
     // pub fn  MovePiece(int piece, int startSquare, int targetSquare)
