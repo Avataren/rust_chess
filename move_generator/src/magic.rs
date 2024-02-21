@@ -36,7 +36,7 @@ impl Magic {
         }
     }
 
-    pub fn get_move_list_from_square(&self, square: i32) -> Vec<ChessMove> {
+    pub fn get_move_list_from_square(&self, square: u16) -> Vec<ChessMove> {
         if !Coord::from_square_index(square).is_valid_square() {
             println!("Invalid square index{}", square);
             return Vec::new();
@@ -52,7 +52,7 @@ impl Magic {
             //let mut blocker_bitboard = all_pieces_bitboard.and(movement_mask);
 
             let legal_move_bitboard =
-                Self::generate_legal_moves_from_blockers(square as i32, all_pieces_bitboard, true);
+                Self::generate_legal_moves_from_blockers(square as u16, all_pieces_bitboard, true);
 
             // let key = (square as i32, legal_move_bitboard);
             // // Attempt to retrieve the value associated with the key from the lookup table
@@ -97,7 +97,7 @@ impl Magic {
             for blocker_bitboard in blocker_bitboards {
                 //let legal_move_bitboard = self.generate_rook_moves(square, blocker_bitboard);
                 let legal_move_bitboard =
-                    Self::generate_legal_moves_from_blockers(square as i32, blocker_bitboard, true);
+                    Self::generate_legal_moves_from_blockers(square as u16, blocker_bitboard, true);
                 //self.generate_rook_legal_move_bitboard(square, blocker_bitboard);
                 rook_moves_lut.insert((square as i32, blocker_bitboard), legal_move_bitboard);
             }
@@ -106,7 +106,7 @@ impl Magic {
     }
 
     fn generate_legal_moves_from_blockers(
-        square: i32,
+        square: u16,
         blocker_bitboard: Bitboard,
         ortho: bool,
     ) -> Bitboard {

@@ -5,9 +5,9 @@ use crate::{
     board_accessories::{DebugSquare, EnableDebugMarkers},
     pieces::{chess_coord_to_board, get_board_coords_from_cursor, ChessPiece},
     sound::{spawn_sound, SoundEffects},
-    MagicRes,
+    ChessBoardRes, MagicRes,
 };
-use chess_foundation::board_helper::board_row_col_to_square_index;
+use chess_foundation::{board_helper::board_row_col_to_square_index, ChessMove};
 
 #[derive(Resource)]
 pub struct PieceIsPickedUp {
@@ -44,6 +44,7 @@ pub fn handle_pick_and_drag_piece(
     sound_effects: Res<SoundEffects>,
     magic: Res<MagicRes>,
     mut commands: Commands,
+    chess_board: ResMut<ChessBoardRes>,
 ) {
     if let Some(window) = q_windows.iter().next() {
         if let Some(cursor_position) = window.cursor_position() {
@@ -60,6 +61,7 @@ pub fn handle_pick_and_drag_piece(
                     &sound_effects,
                     &magic,
                     &mut commands,
+                    chess_board
                 );
             }
         }
@@ -78,6 +80,7 @@ fn handle_mouse_input(
     sound_effects: &SoundEffects,
     magic_res: &MagicRes,
     commands: &mut Commands,
+    chess_board: ResMut<ChessBoardRes>,
 ) {
     if mouse_button_input.pressed(MouseButton::Left) {
         if piece_is_picked_up.is_dragging {
@@ -112,6 +115,7 @@ fn handle_mouse_input(
             debug_squares_query,
             commands,
             sound_effects,
+            chess_board,
         );
     }
 }
@@ -158,7 +162,6 @@ fn pick_up_piece(
     }
 
     // spawn debug pieces
-
     if let Some((entity, transform, chess_piece)) = piece_query
         .iter_mut()
         .find(|(_, _, chess_piece)| chess_piece.row == row && chess_piece.col == col)
@@ -211,6 +214,7 @@ fn release_piece(
     mut debug_squares_query: Query<(Entity, &DebugSquare)>,
     commands: &mut Commands,
     sound_effects: &SoundEffects,
+    chess_board: ResMut<ChessBoardRes>,
 ) {
     //hide debug squares
     for (entity, _) in debug_squares_query.iter_mut() {
@@ -266,6 +270,15 @@ fn release_piece(
             chess_piece.row = row;
             chess_piece.col = col;
             piece_is_picked_up.is_dragging = false;
+
+            chess_board.chess_board.make_move(ChessMove::new(
+                board_row_col_to_square_index(
+                    piece_is_picked_up.original_row_col.0,
+                    piece_is_picked_up.original_row_col.1,
+                ),
+                board_row_col_to_square_index(row, col),
+            ));
+
             spawn_sound(commands, &sound_effects, "move-self.ogg");
             println!("Released piece at row: {}, col: {}", row, col);
         }

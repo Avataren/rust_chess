@@ -14,10 +14,10 @@ impl Coord {
     }
 
     // Constructor from square_index, assuming BoardHelper functions are implemented
-    pub fn from_square_index(square_index: i32) -> Self {
+    pub fn from_square_index(square_index: u16) -> Self {
         Self {
-            file_index: board_helper::file_index(square_index),
-            rank_index: board_helper::rank_index(square_index),
+            file_index: board_helper::file_index(square_index) as i32,
+            rank_index: board_helper::rank_index(square_index) as i32,
         }
     }
 

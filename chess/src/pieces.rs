@@ -1,10 +1,4 @@
-use bevy::{
-    math::vec3,
-    prelude::*,
-    sprite::{MaterialMesh2dBundle, Mesh2dHandle},
-    utils::HashMap,
-    window::PrimaryWindow,
-};
+use bevy::{math::vec3, prelude::*, utils::HashMap};
 
 use crate::{
     board::{BoardDimensions, BoardTag, ChessBoardTransform},

@@ -9,7 +9,7 @@ use crate::{
     pieces::{chess_coord_to_board, get_board_coords_from_cursor},
 };
 
-use chess_foundation::{ChessMove, board_helper::square_index_to_board_row_col};
+use chess_foundation::{board_helper::square_index_to_board_row_col, ChessMove};
 
 /// Updates the position of the marker square based on the current cursor position.
 #[derive(Component)]
@@ -128,7 +128,7 @@ pub fn update_debug_squares(
             }
         }
     }
-    
+
     //despawn entities used to find which squares to mark
     for (_, entity) in edm_query.iter_mut() {
         commands.entity(entity).despawn_recursive();

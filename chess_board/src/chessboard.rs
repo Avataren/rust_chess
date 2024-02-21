@@ -28,7 +28,7 @@ impl ChessBoard {
         }
     }
 
-    pub fn make_move(chess_move: ChessMove) {
+    pub fn make_move(&self, chess_move: ChessMove) {
         let start_square = chess_move.start_square();
         let target_square = chess_move.target_square();
 
