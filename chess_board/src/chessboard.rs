@@ -1,4 +1,4 @@
-use chess_foundation::bitboard::Bitboard;
+use chess_foundation::{bitboard::Bitboard, ChessMove};
 
 pub struct ChessBoard {
     white: Bitboard,
@@ -27,6 +27,26 @@ impl ChessBoard {
             castling_rights: 0b00001111,
         }
     }
+
+    pub fn make_move(chess_move:ChessMove)
+    {
+        let start_square = chess_move.start_square();
+        let target_square = chess_move.target_square();
+
+        //do I need to look up pieces here, or when generating move?
+        // when generating move!
+
+    }
+
+    // pub fn  MovePiece(int piece, int startSquare, int targetSquare)
+    // {
+    //     BitBoardUtility.ToggleSquares(ref PieceBitboards[piece], startSquare, targetSquare);
+    //     BitBoardUtility.ToggleSquares(ref ColourBitboards[MoveColourIndex], startSquare, targetSquare);
+
+    //     allPieceLists[piece].MovePiece(startSquare, targetSquare);
+    //     Square[startSquare] = Piece.None;
+    //     Square[targetSquare] = piece;
+    // }
 
     pub fn get_pawns(&self) -> Bitboard {
         self.pawns

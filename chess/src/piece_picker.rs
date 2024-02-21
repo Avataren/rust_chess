@@ -151,7 +151,7 @@ fn pick_up_piece(
     for entry in valid_moves {
         println!(
             "Move from square {} to {}",
-            entry.from_square, entry.to_square
+            entry.start_square(), entry.target_square()
         );
     }
 

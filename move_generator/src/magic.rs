@@ -70,7 +70,7 @@ impl Magic {
             let mut moves_bitboard = legal_move_bitboard.clone();
             while !moves_bitboard.is_empty() {
                 let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
-                move_list.push(ChessMove::new(square as i32, target_square as i32));
+                move_list.push(ChessMove::new(square as u16, target_square as u16));
             }
         }
         move_list

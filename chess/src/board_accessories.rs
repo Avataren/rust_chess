@@ -42,6 +42,13 @@ impl EnableDebugMarkers {
     }
 }
 
+fn square_index_to_board_row_col(index: i32) -> (usize, usize) {
+    let col = index % 8;
+    let row = 7 -index / 8;
+    (row as usize, col as usize)
+}
+
+
 pub fn spawn_board_accessories(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -128,11 +135,13 @@ pub fn update_debug_squares(
             println!("setting visibility for coord: {:?}", chess_move);
             for (entity, debug_square) in squares_query.iter_mut() {
                 // Check if the current DebugSquare matches any of the coordinates to be marked
-                let row: i32 = 7-(chess_move.to_square/8);
-                let col = chess_move.to_square%8;
+                //let row: i32 = 7-(chess_move.to_square/8);
+                //let col = chess_move.to_square%8;
+                let (row, col)  = square_index_to_board_row_col(chess_move.target_square() as i32);
                 if (col as usize == debug_square.col)
                     && (row as usize == debug_square.row)
                 {
+                    
                     println!("setting visibility to visible");
                     commands.entity(entity).insert(Visibility::Visible);
                 }
