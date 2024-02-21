@@ -120,7 +120,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 
     let chessboard = chess_board::ChessBoard::new();
-    let magic = Magic::new(chessboard);
+    let magic = Magic::new();
     commands.insert_resource(MagicRes { magic });
     commands.insert_resource(Events::<RefreshPiecesFromBoardEvent>::default());
     board::spawn_board(&mut commands, asset_server);

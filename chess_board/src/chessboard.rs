@@ -29,38 +29,42 @@ impl ChessBoard {
         }
     }
 
-    pub fn make_move(&mut self, chess_move: ChessMove) {
+    pub fn make_move(&mut self, chess_move: ChessMove) -> bool {
         let start_square_bb = Bitboard::from_square_index(chess_move.start_square());
         let target_square_bb = Bitboard::from_square_index(chess_move.target_square());
 
         let is_white = self.white.is_set(chess_move.start_square() as usize);
-        let piece_type = self.get_piece_type(chess_move.start_square());
-        //let piece = ChessPiece::new(piece_type, is_white);
-        
-        // Update the piece's bitboard
-        self.update_piece_bitboard(piece_type, start_square_bb, target_square_bb);
 
-        // If there's a capture, clear the target square bit in the captured piece's bitboard
-        if let Some(captured_piece_type) = self.get_captured_piece_type(chess_move.target_square(), is_white) {
-            self.clear_piece_bitboard(captured_piece_type, target_square_bb, !is_white);
-        }
-
-        // Update the color bitboards
-        self.update_color_bitboard(is_white, start_square_bb, target_square_bb);        
-
-    }
-
-    fn get_captured_piece_type(&self, target_square: u16, is_white: bool) -> Option<PieceType> {
-        let piece_type = self.get_piece_type(target_square);
-        if piece_type != PieceType::None {
-            if (is_white && self.white.is_set(target_square as usize)) || (!is_white && self.black.is_set(target_square as usize)) {
-                return Some(piece_type);
+        println!("Is white: {}", is_white);
+        if let Some(piece_type) = self.get_piece_type(chess_move.start_square()) {
+            //let piece = ChessPiece::new(piece_type, is_white);
+            if let Some(captured_piece_type) = self.get_piece_type(chess_move.target_square()) {
+                if self.white.is_set(chess_move.target_square() as usize) == is_white {
+                    println!(
+                        "Invalid move: target square is occupied by a piece of the same color"
+                    );
+                    return false;
+                }
+                println!("Captured a piece! {}", captured_piece_type as u8);
+                self.clear_piece_bitboard(captured_piece_type, target_square_bb, !is_white);
+            } else {
+                println!("No piece captured")
             }
+            // Update the piece's bitboard
+            self.update_piece_bitboard(piece_type, start_square_bb, target_square_bb);
+
+            // Update the color bitboards
+            self.update_color_bitboard(is_white, start_square_bb, target_square_bb);
         }
-        None
+        true
     }
 
-    fn update_piece_bitboard(&mut self, piece_type: PieceType, start_square_bb: Bitboard, target_square_bb: Bitboard) {
+    fn update_piece_bitboard(
+        &mut self,
+        piece_type: PieceType,
+        start_square_bb: Bitboard,
+        target_square_bb: Bitboard,
+    ) {
         match piece_type {
             PieceType::Pawn => self.pawns = self.pawns ^ (start_square_bb | target_square_bb),
             PieceType::Knight => self.knights = self.knights ^ (start_square_bb | target_square_bb),
@@ -70,7 +74,7 @@ impl ChessBoard {
             PieceType::King => self.kings = self.kings ^ (start_square_bb | target_square_bb),
             _ => {}
         }
-    }    
+    }
 
     fn clear_piece_bitboard(&mut self, piece_type: PieceType, square_bb: Bitboard, is_white: bool) {
         match piece_type {
@@ -80,7 +84,9 @@ impl ChessBoard {
             PieceType::Rook => self.rooks &= !square_bb,
             PieceType::Queen => self.queens &= !square_bb,
             PieceType::King => self.kings &= !square_bb,
-            _ => {}
+            _ => {
+                println!("No piece to clear {}", piece_type as u8);
+            }
         }
 
         if is_white {
@@ -90,38 +96,43 @@ impl ChessBoard {
         }
     }
 
-    fn update_color_bitboard(&mut self, is_white: bool, start_square_bb: Bitboard, target_square_bb: Bitboard) {
+    fn update_color_bitboard(
+        &mut self,
+        is_white: bool,
+        start_square_bb: Bitboard,
+        target_square_bb: Bitboard,
+    ) {
         if is_white {
             self.white = self.white ^ (start_square_bb | target_square_bb);
         } else {
             self.black = self.black ^ (start_square_bb | target_square_bb);
         }
-    }        
+    }
 
     pub fn is_square_white(&self, index: u16) -> bool {
         if self.white.is_set(index as usize) {
-            true 
+            true
         } else {
-            false 
+            false
         }
     }
 
-    pub fn get_piece_type(&self, index: u16) -> PieceType {
-        let mut piece_type = PieceType::None;
+    pub fn get_piece_type(&self, index: u16) -> Option<PieceType> {
         if self.pawns.is_set(index as usize) {
-            piece_type = PieceType::Pawn;
+            Some(PieceType::Pawn)
         } else if self.knights.is_set(index as usize) {
-            piece_type = PieceType::Knight;
+            Some(PieceType::Knight)
         } else if self.bishops.is_set(index as usize) {
-            piece_type = PieceType::Bishop;
+            Some(PieceType::Bishop)
         } else if self.rooks.is_set(index as usize) {
-            piece_type = PieceType::Rook;
+            Some(PieceType::Rook)
         } else if self.queens.is_set(index as usize) {
-            piece_type = PieceType::Queen;
+            Some(PieceType::Queen)
         } else if self.kings.is_set(index as usize) {
-            piece_type = PieceType::King;
+            Some(PieceType::King)
+        } else {
+            None
         }
-        piece_type
     }
 
     // pub fn  MovePiece(int piece, int startSquare, int targetSquare)

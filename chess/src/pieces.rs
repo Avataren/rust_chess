@@ -106,7 +106,7 @@ pub fn spawn_chess_pieces(
                 let row = 7 - i / 8;
                 let col = i % 8;
                 let mut world_position = chess_coord_to_board(row, col, square_size, board_offset);
-                world_position.z = 100.0;
+                world_position.z = 0.5;
                 let piece_texture_key = match piece_char {
                     'P' => "wp",
                     'R' => "wr",

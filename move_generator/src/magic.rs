@@ -24,19 +24,17 @@ const MAX_MAGIC_NUMBER_ATTEMPTS: u64 = 1000000;
 
 pub struct Magic {
     pub rook_lut: HashMap<(i32, Bitboard), Bitboard>,
-    pub chess_board: ChessBoard,
 }
 
 impl Magic {
-    pub fn new(chess_board: ChessBoard) -> Magic {
+    pub fn new() -> Magic {
         let rook_lut = Self::generate_rook_lut();
         Magic {
             rook_lut: rook_lut,
-            chess_board: chess_board,
         }
     }
 
-    pub fn get_move_list_from_square(&self, square: u16) -> Vec<ChessMove> {
+    pub fn get_move_list_from_square(&self, square: u16, chess_board: &ChessBoard) -> Vec<ChessMove> {
         if !Coord::from_square_index(square).is_valid_square() {
             println!("Invalid square index{}", square);
             return Vec::new();
@@ -44,11 +42,11 @@ impl Magic {
         println!("Getting moves from square index{}", square);
         let mut move_list = Vec::new();
         //if !(self.chess_board.get_rooks().and(Bitboard::contains_square(square as usize))).is_empty()
-        if self.chess_board.get_rooks().contains_square(square as i32) {
-            let all_pieces_bitboard = self
-                .chess_board
+        if chess_board.get_rooks().contains_square(square as i32) {
+            let all_pieces_bitboard = 
+                chess_board
                 .get_white()
-                .or(self.chess_board.get_black());
+                .or(chess_board.get_black());
             //let mut blocker_bitboard = all_pieces_bitboard.and(movement_mask);
 
             let legal_move_bitboard =

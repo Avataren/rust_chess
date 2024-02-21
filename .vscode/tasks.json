@@ -22,6 +22,15 @@
             }
         },                
         {
+            "label": "copy assets (wasm)",
+            "type": "shell",
+            "command": "robocopy chess/assets web/wasm/assets /E /XO; exit 0",
+            "group": {
+                "kind": "build",
+                "isDefault": true 
+            }
+        },            
+        {
             "label": "cargo build",
             "dependsOn": ["copy assets"],
             "type": "shell",
@@ -40,10 +49,11 @@
                 "$rustc"
             ],
             "group": "build"
-        },
+        },        
         {
             "label": "Build wasm",
             "type": "shell",
+            "dependsOn": ["copy assets (wasm)"],
             "command": "cargo build --target wasm32-unknown-unknown --release",
             "problemMatcher": [
                 "$rustc"

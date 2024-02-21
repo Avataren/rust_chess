@@ -27,7 +27,7 @@
             "program": "basic-http-server",
             "args": ["web/wasm"],
             "cwd": "${workspaceFolder}",
-            "preLaunchTask": "Build wasm"
+            "preLaunchTask": "wasm-bindgen"
         }
     ]
 }

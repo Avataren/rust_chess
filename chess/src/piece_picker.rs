@@ -3,7 +3,9 @@ use bevy::{input::mouse::MouseButton, prelude::*, window::PrimaryWindow};
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
     board_accessories::{DebugSquare, EnableDebugMarkers},
-    pieces::{chess_coord_to_board, get_board_coords_from_cursor, ChessPiece, RefreshPiecesFromBoardEvent},
+    pieces::{
+        chess_coord_to_board, get_board_coords_from_cursor, ChessPiece, RefreshPiecesFromBoardEvent,
+    },
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, MagicRes,
 };
@@ -45,7 +47,7 @@ pub fn handle_pick_and_drag_piece(
     magic: Res<MagicRes>,
     mut commands: Commands,
     chess_board: ResMut<ChessBoardRes>,
-    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>
+    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
 ) {
     if let Some(window) = q_windows.iter().next() {
         if let Some(cursor_position) = window.cursor_position() {
@@ -83,9 +85,21 @@ fn handle_mouse_input(
     magic_res: &MagicRes,
     commands: &mut Commands,
     mut chess_board: ResMut<ChessBoardRes>,
-    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>
+    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
 ) {
-    if mouse_button_input.pressed(MouseButton::Left) {
+    if mouse_button_input.just_pressed(MouseButton::Left) {
+        pick_up_piece(
+            cursor_position,
+            camera_bundle,
+            board_transform,
+            board_dimensions,
+            chess_board,
+            piece_is_picked_up,
+            piece_query,
+            magic_res,
+            commands,
+        );
+    } else if mouse_button_input.pressed(MouseButton::Left) {
         if piece_is_picked_up.is_dragging {
             drag_piece(
                 cursor_position,
@@ -94,17 +108,6 @@ fn handle_mouse_input(
                 board_dimensions,
                 piece_is_picked_up,
                 piece_query,
-            );
-        } else {
-            pick_up_piece(
-                cursor_position,
-                camera_bundle,
-                board_transform,
-                board_dimensions,
-                piece_is_picked_up,
-                piece_query,
-                magic_res,
-                commands,
             );
         }
     } else if mouse_button_input.just_released(MouseButton::Left) {
@@ -119,7 +122,7 @@ fn handle_mouse_input(
             commands,
             sound_effects,
             chess_board,
-            refresh_pieces_events
+            refresh_pieces_events,
         );
     }
 }
@@ -135,6 +138,7 @@ fn pick_up_piece(
     (camera, camera_transform): (&Camera, &GlobalTransform),
     board_transform: &ChessBoardTransform,
     board_dimensions: &BoardDimensions,
+    chess_board: ResMut<ChessBoardRes>,
     piece_is_picked_up: &mut PieceIsPickedUp,
     piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
     magic_res: &MagicRes,
@@ -151,20 +155,6 @@ fn pick_up_piece(
 
     let (col, row) = board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
 
-    let valid_moves = magic_res
-        .magic
-        .get_move_list_from_square(board_row_col_to_square_index(row, col));
-
-    commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
-
-    for entry in valid_moves {
-        println!(
-            "Move from square {} to {}",
-            entry.start_square(),
-            entry.target_square()
-        );
-    }
-
     // spawn debug pieces
     if let Some((entity, transform, chess_piece)) = piece_query
         .iter_mut()
@@ -175,6 +165,22 @@ fn pick_up_piece(
         piece_is_picked_up.current_position = transform.translation;
         piece_is_picked_up.piece_entity = Some(entity);
         piece_is_picked_up.is_dragging = true;
+
+        //problem is, magic has a different board than the resource one!
+        //put magic in board, or make board argument to magic
+        let valid_moves = magic_res
+            .magic
+            .get_move_list_from_square(board_row_col_to_square_index(row, col), &chess_board.chess_board);
+
+        commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
+
+        for entry in valid_moves {
+            println!(
+                "Move from square {} to {}",
+                entry.start_square(),
+                entry.target_square()
+            );
+        }
 
         println!("Picked up piece: {:?}", chess_piece.piece_type);
     }
@@ -202,7 +208,7 @@ fn drag_piece(
             transform.translation = Vec3::new(
                 board_coords.x - board_dimensions.board_size.x / 2.0,
                 board_coords.y - board_dimensions.board_size.y / 2.0,
-                transform.translation.z,
+                1.0,
             );
         }
     }
@@ -219,7 +225,7 @@ fn release_piece(
     commands: &mut Commands,
     sound_effects: &SoundEffects,
     mut chess_board: ResMut<ChessBoardRes>,
-    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>
+    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
 ) {
     //hide debug squares
     for (entity, _) in debug_squares_query.iter_mut() {
@@ -258,41 +264,27 @@ fn release_piece(
                     Vec3::new(
                         -board_dimensions.board_size.x / 2.0,
                         board_dimensions.board_size.y / 2.0,
-                        transform.translation.z,
+                        0.5,
                     ),
                 );
                 return;
             }
 
-            //todo:: remove this when we sync with board state after move
-            // transform.translation = chess_coord_to_board(
-            //     row,
-            //     col,
-            //     board_dimensions.square_size,
-            //     Vec3::new(
-            //         -board_dimensions.board_size.x / 2.0,
-            //         board_dimensions.board_size.y / 2.0,
-            //         transform.translation.z,
-            //     ),
-            // );
-
             chess_piece.row = row;
             chess_piece.col = col;
             piece_is_picked_up.is_dragging = false;
 
-            chess_board.chess_board.make_move(ChessMove::new(
+            if (chess_board.chess_board.make_move(ChessMove::new(
                 board_row_col_to_square_index(
                     piece_is_picked_up.original_row_col.0,
                     piece_is_picked_up.original_row_col.1,
                 ),
                 board_row_col_to_square_index(row, col),
-            ));
-            chess_board.chess_board.print_board();
-
-            spawn_sound(commands, &sound_effects, "move-self.ogg");
+            ))) {
+                spawn_sound(commands, &sound_effects, "move-self.ogg");
+                println!("Released piece at row: {}, col: {}", row, col);
+            }
             refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
-            println!("Released piece at row: {}, col: {}", row, col);
-            // despawn_chess_pieces(commands, piece_query);
         }
     }
 }
