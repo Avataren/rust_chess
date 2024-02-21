@@ -9,7 +9,7 @@ use crate::{
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, MagicRes,
 };
-use chess_foundation::{board_helper::board_row_col_to_square_index, ChessMove};
+use chess_foundation::{board_helper::board_row_col_to_square_index, Bitboard, ChessMove};
 
 #[derive(Resource)]
 pub struct PieceIsPickedUp {
@@ -111,7 +111,7 @@ fn handle_mouse_input(
             );
         }
     } else if mouse_button_input.just_released(MouseButton::Left) {
-        release_piece(
+        drop_piece(
             cursor_position,
             camera_bundle,
             board_transform,
@@ -215,7 +215,7 @@ fn drag_piece(
     }
 }
 
-fn release_piece(
+fn drop_piece(
     cursor_position: Vec2,
     (camera, camera_transform): (&Camera, &GlobalTransform),
     board_transform: &ChessBoardTransform,
@@ -275,14 +275,23 @@ fn release_piece(
             chess_piece.col = col;
             piece_is_picked_up.is_dragging = false;
 
-            if (chess_board.chess_board.make_move(ChessMove::new(
+            let the_move = ChessMove::new(
                 board_row_col_to_square_index(
                     piece_is_picked_up.original_row_col.0,
                     piece_is_picked_up.original_row_col.1,
                 ),
                 board_row_col_to_square_index(row, col),
-            ))) {
-                spawn_sound(commands, &sound_effects, "move-self.ogg");
+            );
+
+            let is_capture = !(chess_board.chess_board.get_all_pieces() & Bitboard::from_square_index(the_move.target_square())).is_empty();
+
+            if (chess_board.chess_board.make_move(the_move)) {
+                //if chess_board.chess_board.get_piece_at(col)
+                if (is_capture){
+                    spawn_sound(commands, &sound_effects, "capture.ogg");
+                } else {
+                    spawn_sound(commands, &sound_effects, "move-self.ogg");
+                }
                 println!("Released piece at row: {}, col: {}", row, col);
             }
             refresh_pieces_events.send(RefreshPiecesFromBoardEvent);

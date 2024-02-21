@@ -9,7 +9,6 @@ pub struct ChessBoard {
     rooks: Bitboard,
     queens: Bitboard,
     kings: Bitboard,
-    all_pieces: Bitboard,
     castling_rights: u8,
 }
 
@@ -24,9 +23,13 @@ impl ChessBoard {
             rooks: Bitboard(0x8100_0000_0000_0081),   // a1, h1, a8, h8
             queens: Bitboard(0x0800_0000_0000_0008),  // d1, d8
             kings: Bitboard(0x1000_0000_0000_0010),   // e1, e8
-            all_pieces: Bitboard(0xFFFF_0000_0000_FFFF),
+
             castling_rights: 0b00001111,
         }
+    }
+
+    pub fn get_all_pieces(&self) -> Bitboard {
+        self.get_white() | (self.get_black())  
     }
 
     pub fn make_move(&mut self, chess_move: ChessMove) -> bool {
