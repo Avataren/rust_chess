@@ -24,78 +24,116 @@ const MAX_MAGIC_NUMBER_ATTEMPTS: u64 = 1000000;
 
 pub struct Magic {
     pub rook_lut: HashMap<(i32, Bitboard), Bitboard>,
+    pub bishop_lut: HashMap<(i32, Bitboard), Bitboard>,
+    pub all_rook_move_patterns: Vec<Vec<Bitboard>>
 }
 
 impl Magic {
-    pub fn new() -> Magic {
-        let rook_lut = Self::generate_rook_lut();
+    pub fn new() -> Self {
+
+        // Generate all rook move patterns
+        let mut all_rook_move_patterns = Vec::new();
+        let movement_mask = get_rook_move_patterns();
+        for square in 0..64 {
+            all_rook_move_patterns.push(Self::generate_blocker_bitboards(movement_mask[square]));
+        }
+        let rook_lut = Self::generate_rook_lut(&all_rook_move_patterns);
+
+
+        // Generate all bishop move patterns
+        let mut all_bishop_move_patterns = Vec::new();
+        let movement_mask = get_bishop_move_patterns();
+        for square in 0..64 {
+            all_bishop_move_patterns.push(Self::generate_blocker_bitboards(movement_mask[square]));
+        }
+        let bishop_lut = Self::generate_bishop_lut(&all_bishop_move_patterns);
+
         Magic {
-            rook_lut: rook_lut,
+            rook_lut,
+            bishop_lut,
+            all_rook_move_patterns
         }
     }
 
+
+
     pub fn get_move_list_from_square(&self, square: u16, chess_board: &ChessBoard) -> Vec<ChessMove> {
-        if !Coord::from_square_index(square).is_valid_square() {
-            println!("Invalid square index{}", square);
-            return Vec::new();
-        }
-        println!("Getting moves from square index{}", square);
+        // if !Coord::from_square_index(square).is_valid_square() {
+        //     println!("Invalid square index{}", square);
+        //     return Vec::new();
+        // }
+        // println!("Getting moves from square index{}", square);
         let mut move_list = Vec::new();
-        //if !(self.chess_board.get_rooks().and(Bitboard::contains_square(square as usize))).is_empty()
+
+        let all_pieces_bitboard = 
+        chess_board
+        .get_white()
+        .or(chess_board.get_black());
+
         if chess_board.get_rooks().contains_square(square as i32) {
-            let all_pieces_bitboard = 
-                chess_board
-                .get_white()
-                .or(chess_board.get_black());
-            //let mut blocker_bitboard = all_pieces_bitboard.and(movement_mask);
-
-            let legal_move_bitboard =
-                Self::generate_legal_moves_from_blockers(square as u16, all_pieces_bitboard, true);
-
-            // let key = (square as i32, legal_move_bitboard);
-            // // Attempt to retrieve the value associated with the key from the lookup table
-            // if let Some(moves_bitboard_from_lut) = self.rook_lut.get(&key) {
-            //     // If the key is found and the bitboard is not empty, iterate over its bits
-            //     let mut moves_bitboard = moves_bitboard_from_lut.clone();
-            //     while !moves_bitboard.is_empty() {
-            //         let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
-            //         move_list.push(Coord::new(square as i32, target_square as i32));
-            //     }
-            // } else {
-            //     // If the key is not found, print a message
-            //     println!("No keys found at square {}", square);
-            // }
-            let mut moves_bitboard = legal_move_bitboard.clone();
-            while !moves_bitboard.is_empty() {
-                let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
-                move_list.push(ChessMove::new(square as u16, target_square as u16));
+            let blocker_bb = all_pieces_bitboard & get_rook_move_patterns()[square as usize];
+            let key = (square as i32, blocker_bb);
+            // Attempt to retrieve the value associated with the key from the lookup table
+            if let Some(moves_bitboard_from_lut) = self.rook_lut.get(&key) {
+                // If the key is found and the bitboard is not empty, iterate over its bits
+                let mut moves_bitboard = moves_bitboard_from_lut.clone();
+                while !moves_bitboard.is_empty() {
+                    let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
+                    move_list.push(ChessMove::new(square as u16, target_square as u16));
+                }
+            } 
+            else {
+                // If the key is not found, print a message
+                println!("No keys found for rook at square {}", square);
             }
+        } else if chess_board.get_bishops().contains_square(square as i32) {
+            let blocker_bb = all_pieces_bitboard & get_bishop_move_patterns()[square as usize];
+            let key = (square as i32, blocker_bb);
+            // Attempt to retrieve the value associated with the key from the lookup table
+            if let Some(moves_bitboard_from_lut) = self.bishop_lut.get(&key) {
+                // If the key is found and the bitboard is not empty, iterate over its bits
+                let mut moves_bitboard = moves_bitboard_from_lut.clone();
+                while !moves_bitboard.is_empty() {
+                    let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
+                    move_list.push(ChessMove::new(square as u16, target_square as u16));
+                }
+            } 
+            else {
+                // If the key is not found, print a message
+                println!("No keys found for bishop at square {}", square);
+            }
+        }{
+            
         }
         move_list
     }
-    // {
-    //     let mut move_list = Vec::new();
-    //     let all_pieces_bitboard = self.chess_board.get_white().or(self.chess_board.get_black());
-    //     let mut blocker_bitboard = all_pieces_bitboard.and(movement_mask);
-    //     let key = (square as i32, blocker_bitboard);
-    //     let moves_bitboard = self.rook_lut.get(&key);
 
-    //     while !blocker_bitboard.is_empty(){
-    //         let target_square = blocker_bitboard.pop_lsb();
-    //         move_list.push(Coord::new(square as i32, target_square as i32));
-    //     }
-    //     move_list
-    // }
 
-    fn generate_rook_lut() -> HashMap<(i32, Bitboard), Bitboard> {
-        let movement_mask = get_rook_move_patterns();
+    fn generate_rook_lut(all_rook_move_patterns: &Vec<Vec<Bitboard>>) -> HashMap<(i32, Bitboard), Bitboard> {
+        
         let mut rook_moves_lut = HashMap::new();
         for square in 0..64 {
-            let blocker_bitboards = Self::generate_blocker_bitboards(movement_mask[square]);
+            let blocker_bitboards = all_rook_move_patterns[square].clone();
             for blocker_bitboard in blocker_bitboards {
                 //let legal_move_bitboard = self.generate_rook_moves(square, blocker_bitboard);
                 let legal_move_bitboard =
-                    Self::generate_legal_moves_from_blockers(square as u16, blocker_bitboard, true);
+                    Self::generate_legal_moves_from_blockers(square as u16, &blocker_bitboard, true);
+                //self.generate_rook_legal_move_bitboard(square, blocker_bitboard);
+                rook_moves_lut.insert((square as i32, blocker_bitboard), legal_move_bitboard);
+            }
+        }
+        rook_moves_lut
+    }
+
+    fn generate_bishop_lut(all_rook_move_patterns: &Vec<Vec<Bitboard>>) -> HashMap<(i32, Bitboard), Bitboard> {
+        
+        let mut rook_moves_lut = HashMap::new();
+        for square in 0..64 {
+            let blocker_bitboards = all_rook_move_patterns[square].clone();
+            for blocker_bitboard in blocker_bitboards {
+                //let legal_move_bitboard = self.generate_rook_moves(square, blocker_bitboard);
+                let legal_move_bitboard =
+                    Self::generate_legal_moves_from_blockers(square as u16, &blocker_bitboard, false);
                 //self.generate_rook_legal_move_bitboard(square, blocker_bitboard);
                 rook_moves_lut.insert((square as i32, blocker_bitboard), legal_move_bitboard);
             }
@@ -105,7 +143,7 @@ impl Magic {
 
     fn generate_legal_moves_from_blockers(
         square: u16,
-        blocker_bitboard: Bitboard,
+        blocker_bitboard: &Bitboard,
         ortho: bool,
     ) -> Bitboard {
         let directions = if ortho {

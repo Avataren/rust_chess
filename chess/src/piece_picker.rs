@@ -168,9 +168,10 @@ fn pick_up_piece(
 
         //problem is, magic has a different board than the resource one!
         //put magic in board, or make board argument to magic
-        let valid_moves = magic_res
-            .magic
-            .get_move_list_from_square(board_row_col_to_square_index(row, col), &chess_board.chess_board);
+        let valid_moves = magic_res.magic.get_move_list_from_square(
+            board_row_col_to_square_index(row, col),
+            &chess_board.chess_board,
+        );
 
         commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
 

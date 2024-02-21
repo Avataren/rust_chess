@@ -117,12 +117,10 @@ pub fn update_debug_squares(
     // Iterate over all entities that have EnableDebugMarkers component
     for (debug_markers, _) in edm_query.iter_mut() {
         for chess_move in debug_markers.moves.iter() {
-            println!("setting visibility for coord: {:?}", chess_move);
             for (entity, debug_square) in squares_query.iter_mut() {
                 // Check if the current DebugSquare matches any of the coordinates to be marked
                 let (row, col) = square_index_to_board_row_col(chess_move.target_square() as i32);
                 if (col as usize == debug_square.col) && (row as usize == debug_square.row) {
-                    println!("setting visibility to visible");
                     commands.entity(entity).insert(Visibility::Visible);
                 }
             }
