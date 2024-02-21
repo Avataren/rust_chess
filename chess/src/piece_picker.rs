@@ -1,9 +1,12 @@
 use bevy::{input::mouse::MouseButton, prelude::*, window::PrimaryWindow};
+use move_generator::magic;
 
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
+    board_accessories::{DebugSquare, EnableDebugMarkers},
     pieces::{chess_coord_to_board, get_board_coords_from_cursor, ChessPiece},
     sound::{spawn_sound, SoundEffects},
+    MagicRes,
 };
 
 #[derive(Resource)]
@@ -32,12 +35,14 @@ impl Default for PieceIsPickedUp {
 pub fn handle_pick_and_drag_piece(
     q_windows: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    mut debug_squares_query: Query<(Entity, &DebugSquare)>,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPiece)>,
     board_transform: Res<ChessBoardTransform>,
     board_dimensions: Res<BoardDimensions>,
     mut piece_is_picked_up: ResMut<PieceIsPickedUp>,
     mouse_button_input: ResMut<'_, ButtonInput<MouseButton>>,
     sound_effects: Res<SoundEffects>,
+    magic: Res<MagicRes>,
     mut commands: Commands,
 ) {
     if let Some(window) = q_windows.iter().next() {
@@ -51,7 +56,9 @@ pub fn handle_pick_and_drag_piece(
                     &board_transform,
                     &board_dimensions,
                     &mut piece_query,
+                    debug_squares_query,
                     &sound_effects,
+                    &magic,
                     &mut commands,
                 );
             }
@@ -67,7 +74,9 @@ fn handle_mouse_input(
     board_transform: &ChessBoardTransform,
     board_dimensions: &BoardDimensions,
     piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
+    mut debug_squares_query: Query<(Entity, &DebugSquare)>,
     sound_effects: &SoundEffects,
+    magic_res: &MagicRes,
     commands: &mut Commands,
 ) {
     if mouse_button_input.pressed(MouseButton::Left) {
@@ -88,6 +97,8 @@ fn handle_mouse_input(
                 board_dimensions,
                 piece_is_picked_up,
                 piece_query,
+                magic_res,
+                commands,
             );
         }
     } else if mouse_button_input.just_released(MouseButton::Left) {
@@ -99,6 +110,8 @@ fn handle_mouse_input(
             board_dimensions,
             piece_is_picked_up,
             piece_query,
+            debug_squares_query,
+            commands
         );
     }
 }
@@ -116,6 +129,8 @@ fn pick_up_piece(
     board_dimensions: &BoardDimensions,
     piece_is_picked_up: &mut PieceIsPickedUp,
     piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
+    magic_res: &MagicRes,
+    commands: &mut Commands,
 ) {
     let board_coords = get_board_coords_from_cursor(
         cursor_position,
@@ -127,6 +142,20 @@ fn pick_up_piece(
     .expect("Failed to get board coordinates"); // Consider handling this more gracefully
 
     let (col, row) = board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
+
+    let valid_moves = magic_res
+        .magic
+        .get_move_list_from_square(((7 - row) * 8 + col) as i32);
+    commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
+
+    for entry in valid_moves {
+        println!(
+            "Move from square {} to {}",
+            entry.from_square, entry.to_square
+        );
+    }
+
+    // spawn debug pieces
 
     if let Some((entity, transform, chess_piece)) = piece_query
         .iter_mut()
@@ -177,7 +206,16 @@ fn release_piece(
     board_dimensions: &BoardDimensions,
     piece_is_picked_up: &mut PieceIsPickedUp,
     piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
+    mut debug_squares_query: Query<(Entity, &DebugSquare)>,
+    commands: &mut Commands,
 ) {
+
+    //hide debug squares
+    for (entity, _) in debug_squares_query.iter_mut() {
+        commands.entity(entity).insert(Visibility::Hidden);
+    }    
+
+
     if let Some(piece_entity) = piece_is_picked_up.piece_entity {
         if let Ok((_, mut transform, mut chess_piece)) = piece_query.get_mut(piece_entity) {
             let board_coords = get_board_coords_from_cursor(

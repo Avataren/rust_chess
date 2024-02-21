@@ -10,7 +10,7 @@ mod pieces;
 mod sound;
 use board::ResolutionInfo;
 
-use move_generator::{magic::OccupyVariation, move_patterns::MovePatterns};
+use move_generator::{magic::Magic, move_patterns::MovePatterns};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
@@ -29,6 +29,11 @@ struct ChessBoardRes {
     chess_board: chess_board::ChessBoard,
 }
 
+#[derive(Resource)]
+struct MagicRes {
+    magic: move_generator::magic::Magic,
+}
+
 const AUDIO_SCALE: f32 = 1. / 100.0;
 
 fn main() {
@@ -36,8 +41,7 @@ fn main() {
     // let move_patterns = MovePatterns::new();
 // println!("done generating move patterns");
     // println! ("generating occupancy variations");
-    let chessboard = chess_board::ChessBoard::new();
-    let occ_variations = OccupyVariation::new(chessboard);
+
     // println! ("done generating occupancy variations");
     // occ_variations.find_and_write_magic_numbers().unwrap();
 
@@ -80,7 +84,9 @@ fn main() {
                 board::resize_board,
                 piece_picker::handle_pick_and_drag_piece,
                 board_accessories::update_marker_square,
+                board_accessories::update_debug_squares,
                 sound::manage_sounds,
+
             )
                 .chain(),
         )
@@ -103,6 +109,9 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         chess_board: chess_board::ChessBoard::new(),
     });
 
+    let chessboard = chess_board::ChessBoard::new();
+    let magic = Magic::new(chessboard);
+    commands.insert_resource(MagicRes { magic });
     board::spawn_board(&mut commands, asset_server);
 
     // sound emitter

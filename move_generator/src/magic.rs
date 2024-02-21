@@ -5,10 +5,10 @@ use std::process::exit;
 use std::{collections::HashSet, fs::File}; // Ensure the Write trait is in scope
 
 use crate::move_patterns;
-use crate::{move_patterns::MovePatterns};
+use crate::move_patterns::MovePatterns;
 use chess_board::ChessBoard;
 use chess_foundation::bitboard::Bitboard;
-use chess_foundation::{coord, Coord};
+use chess_foundation::{coord, ChessMove, Coord};
 use rand::Rng;
 
 use crate::piece_patterns::get_bishop_move_patterns;
@@ -17,25 +17,77 @@ use crate::piece_patterns::get_knight_move_patterns;
 use crate::piece_patterns::get_pawn_move_patterns;
 use crate::piece_patterns::get_rook_move_patterns;
 
-
 extern crate nalgebra as na;
 use na::Vector2;
 
 const MAX_MAGIC_NUMBER_ATTEMPTS: u64 = 1000000;
 
-pub struct OccupyVariation {
+pub struct Magic {
     pub rook_lut: HashMap<(i32, Bitboard), Bitboard>,
     pub chess_board: ChessBoard,
 }
 
-impl OccupyVariation {
-    pub fn new(chess_board: ChessBoard) -> OccupyVariation {
+impl Magic {
+    pub fn new(chess_board: ChessBoard) -> Magic {
         let rook_lut = Self::generate_rook_lut();
-        OccupyVariation {
-            rook_lut: rook_lut, 
+        Magic {
+            rook_lut: rook_lut,
             chess_board: chess_board,
         }
     }
+
+    pub fn get_move_list_from_square(&self, square: i32) -> Vec<ChessMove> {
+        if !Coord::from_square_index(square).is_valid_square() {
+            println!("Invalid square index{}", square);
+            return Vec::new();
+        }
+        println!("Getting moves from square index{}", square);
+        let mut move_list = Vec::new();
+        //if !(self.chess_board.get_rooks().and(Bitboard::contains_square(square as usize))).is_empty()
+        if self.chess_board.get_rooks().contains_square(square as i32) {
+            let all_pieces_bitboard = self
+                .chess_board
+                .get_white()
+                .or(self.chess_board.get_black());
+            //let mut blocker_bitboard = all_pieces_bitboard.and(movement_mask);
+
+            let legal_move_bitboard =
+                Self::generate_legal_moves_from_blockers(square as i32, all_pieces_bitboard, true);
+
+            // let key = (square as i32, legal_move_bitboard);
+            // // Attempt to retrieve the value associated with the key from the lookup table
+            // if let Some(moves_bitboard_from_lut) = self.rook_lut.get(&key) {
+            //     // If the key is found and the bitboard is not empty, iterate over its bits
+            //     let mut moves_bitboard = moves_bitboard_from_lut.clone();
+            //     while !moves_bitboard.is_empty() {
+            //         let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
+            //         move_list.push(Coord::new(square as i32, target_square as i32));
+            //     }
+            // } else {
+            //     // If the key is not found, print a message
+            //     println!("No keys found at square {}", square);
+            // }
+            let mut moves_bitboard = legal_move_bitboard.clone();
+            while !moves_bitboard.is_empty() {
+                let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
+                move_list.push(ChessMove::new(square as i32, target_square as i32));
+            }
+        }
+        move_list
+    }
+    // {
+    //     let mut move_list = Vec::new();
+    //     let all_pieces_bitboard = self.chess_board.get_white().or(self.chess_board.get_black());
+    //     let mut blocker_bitboard = all_pieces_bitboard.and(movement_mask);
+    //     let key = (square as i32, blocker_bitboard);
+    //     let moves_bitboard = self.rook_lut.get(&key);
+
+    //     while !blocker_bitboard.is_empty(){
+    //         let target_square = blocker_bitboard.pop_lsb();
+    //         move_list.push(Coord::new(square as i32, target_square as i32));
+    //     }
+    //     move_list
+    // }
 
     fn generate_rook_lut() -> HashMap<(i32, Bitboard), Bitboard> {
         let movement_mask = get_rook_move_patterns();
@@ -44,24 +96,33 @@ impl OccupyVariation {
             let blocker_bitboards = Self::generate_blocker_bitboards(movement_mask[square]);
             for blocker_bitboard in blocker_bitboards {
                 //let legal_move_bitboard = self.generate_rook_moves(square, blocker_bitboard);
-                let legal_move_bitboard = Self::generate_legal_moves_from_blockers(square as i32, blocker_bitboard, true);
-                 //self.generate_rook_legal_move_bitboard(square, blocker_bitboard);
+                let legal_move_bitboard =
+                    Self::generate_legal_moves_from_blockers(square as i32, blocker_bitboard, true);
+                //self.generate_rook_legal_move_bitboard(square, blocker_bitboard);
                 rook_moves_lut.insert((square as i32, blocker_bitboard), legal_move_bitboard);
             }
         }
         rook_moves_lut
     }
 
-    fn generate_legal_moves_from_blockers(square: i32, blocker_bitboard: Bitboard, ortho:bool) -> Bitboard {
-        let directions = if ortho {chess_foundation::piece_directions::ROOK_DIRECTIONS} else {chess_foundation::piece_directions::BISHOP_DIRECTIONS};
+    fn generate_legal_moves_from_blockers(
+        square: i32,
+        blocker_bitboard: Bitboard,
+        ortho: bool,
+    ) -> Bitboard {
+        let directions = if ortho {
+            chess_foundation::piece_directions::ROOK_DIRECTIONS
+        } else {
+            chess_foundation::piece_directions::BISHOP_DIRECTIONS
+        };
         let start_coord = Coord::from_square_index(square);
         let mut bitboard = Bitboard::default();
         for dir in directions {
-            for i in 1..8{
+            for i in 1..8 {
                 let coord = start_coord + dir * i;
-                if coord.is_valid_square(){
+                if coord.is_valid_square() {
                     bitboard.set_bit(coord.square_index() as usize);
-                    if blocker_bitboard.contains_square(coord.square_index()){
+                    if blocker_bitboard.contains_square(coord.square_index()) {
                         break;
                     }
                 } else {
@@ -98,7 +159,6 @@ impl OccupyVariation {
 
     //     return bitboard;
     // }
-
 
     // fn generate_rook_legal_move_bitboard(&self, square: u32, blocker_bitboard: Bitboard) -> Bitboard {
     //     // let mut all_pieces_bitboard = self.chess_board.get_white().or(self.chess_board.get_black());

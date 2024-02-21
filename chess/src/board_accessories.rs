@@ -1,7 +1,9 @@
 use bevy::{
     math::vec3,
     prelude::*,
+    render::view::visibility,
     sprite::{MaterialMesh2dBundle, Mesh2dHandle},
+    transform::commands,
     utils::HashMap,
     window::PrimaryWindow,
 };
@@ -12,6 +14,8 @@ use crate::{
     ChessBoardRes,
 };
 
+use chess_foundation::{coord::Coord, ChessMove};
+
 /// Updates the position of the marker square based on the current cursor position.
 
 #[derive(Component)]
@@ -21,6 +25,21 @@ pub struct MarkerSquare;
 pub struct DebugSquare {
     pub row: usize,
     pub col: usize,
+}
+
+#[derive(Component)]
+pub struct EnableDebugMarkers {
+    moves: Vec<ChessMove>,
+}
+
+impl EnableDebugMarkers {
+    pub fn new(new_coords: Vec<ChessMove>) -> Self {
+        EnableDebugMarkers { moves: new_coords }
+    }
+
+    fn default() -> Self {
+        EnableDebugMarkers { moves: Vec::new() }
+    }
 }
 
 pub fn spawn_board_accessories(
@@ -95,6 +114,74 @@ pub fn spawn_debug_markers(
         }
     }
 }
+
+pub fn update_debug_squares(
+    mut edm_query: Query<(&EnableDebugMarkers, Entity)>, // Query both EnableDebugMarkers and Entity
+    mut squares_query: Query<(Entity, &DebugSquare)>,
+    mut commands: Commands,
+) {
+
+
+    // Iterate over all entities that have EnableDebugMarkers component
+    for (debug_markers, _) in edm_query.iter_mut() {
+        for chess_move in debug_markers.moves.iter() {
+            println!("setting visibility for coord: {:?}", chess_move);
+            for (entity, debug_square) in squares_query.iter_mut() {
+                // Check if the current DebugSquare matches any of the coordinates to be marked
+                let row: i32 = 7-(chess_move.to_square/8);
+                let col = chess_move.to_square%8;
+                if (col as usize == debug_square.col)
+                    && (row as usize == debug_square.row)
+                {
+                    println!("setting visibility to visible");
+                    commands.entity(entity).insert(Visibility::Visible);
+                }
+            }
+        }
+    }
+
+    // If you need to despawn entities with EnableDebugMarkers, iterate through their entities
+    for (_, entity) in edm_query.iter_mut() {
+        println! ("despawning edm entity");
+        commands.entity(entity).despawn_recursive();
+    }
+}
+
+// pub fn update_debug_squares(
+//     mut edm_query: Query<Entity, With<EnableDebugMarkers>>,
+//     mut squares_query: Query<(Entity, &DebugSquare)>,
+//     board_transform: Res<ChessBoardTransform>,
+//     board_dimensions: Res<BoardDimensions>,
+//     commands: &mut Commands,
+// ) {
+//     // First, set all DebugSquares to not visible
+//     for (entity, _) in squares_query.iter_mut() {
+//         commands.entity(entity).insert(Visibility::Hidden);
+//     }
+
+//     // Iterate over all entities that have EnableDebugMarkers component
+//     for debug_markers_entity in edm_query.iter_mut() {
+//         if let Ok(debug_markers) = commands
+//             .entity(debug_markers_entity)
+//             .get::<EnableDebugMarkers>()
+//         {
+//             for coord in debug_markers.coords.iter() {
+//                 for (entity, debug_square) in squares_query.iter_mut() {
+//                     // Check if the current DebugSquare matches any of the coordinates to be marked
+//                     if (coord.file_index as usize == debug_square.col)
+//                         && (coord.rank_index as usize == debug_square.row)
+//                     {
+//                         commands.entity(entity).insert(Visibility::Visible);
+//                     }
+//                 }
+//             }
+//         }
+//     }
+
+//     for entity in edm_query.iter_mut() {
+//         commands.entity(entity).despawn_recursive();
+//     }
+// }
 
 pub fn update_marker_square(
     q_windows: Query<&Window, With<PrimaryWindow>>,

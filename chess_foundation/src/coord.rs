@@ -5,14 +5,16 @@ pub struct Coord {
 }
 
 impl Coord {
-
     // Primary constructor that directly takes file_index and rank_index
     pub const fn new(file_index: i32, rank_index: i32) -> Self {
-        Self { file_index, rank_index }
+        Self {
+            file_index,
+            rank_index,
+        }
     }
 
     // Constructor from square_index, assuming BoardHelper functions are implemented
-    pub  fn from_square_index(square_index: i32) -> Self {
+    pub fn from_square_index(square_index: i32) -> Self {
         Self {
             file_index: board_helper::file_index(square_index),
             rank_index: board_helper::rank_index(square_index),
