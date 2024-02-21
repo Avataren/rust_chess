@@ -1,11 +1,4 @@
-#[derive(Debug, Clone, Copy)]
-pub enum Piece {
-    None,
-    Rook,
-    Knight,
-    Bishop,
-    Queen,
-}
+use crate::{piece::PieceType, ChessPiece};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ChessMove {
@@ -32,6 +25,7 @@ impl ChessMove {
     // Constructors
     pub fn new(start_square: u16, target_square: u16) -> Self {
         Self {
+            //use 6 bits pr square position
             move_value: start_square | (target_square << 6),
         }
     }
@@ -64,18 +58,18 @@ impl ChessMove {
         flag >= Self::PROMOTE_TO_QUEEN_FLAG && flag <= Self::PROMOTE_TO_BISHOP_FLAG
     }
 
-    // Example method to determine the promotion piece type
-    pub fn promotion_piece_type(&self) -> Option<Piece> {
+    pub fn promotion_piece_type(&self) -> Option<PieceType> {
         if !self.is_promotion() {
             return None;
         }
-
+    
         match self.flag() {
-            Self::PROMOTE_TO_ROOK_FLAG => Some(Piece::Rook),
-            Self::PROMOTE_TO_KNIGHT_FLAG => Some(Piece::Knight),
-            Self::PROMOTE_TO_BISHOP_FLAG => Some(Piece::Bishop),
-            Self::PROMOTE_TO_QUEEN_FLAG => Some(Piece::Queen),
-            _ => None,
+            Self::PROMOTE_TO_ROOK_FLAG => Some(PieceType::Rook), // Assuming `is_black()` method exists
+            Self::PROMOTE_TO_KNIGHT_FLAG => Some(PieceType::Knight),
+            Self::PROMOTE_TO_BISHOP_FLAG => Some(PieceType::Bishop),
+            Self::PROMOTE_TO_QUEEN_FLAG => Some(PieceType::Queen),
+            _ => None, // Return None instead of ChessPiece::NONE
         }
     }
+    
 }

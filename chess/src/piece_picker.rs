@@ -261,8 +261,6 @@ fn release_piece(
                 return;
             }
 
-
-
             //todo:: remove this when we sync with board state after move
             transform.translation = chess_coord_to_board(
                 row,

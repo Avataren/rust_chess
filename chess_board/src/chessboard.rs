@@ -33,7 +33,8 @@ impl ChessBoard {
         let target_square = chess_move.target_square();
 
         //do I need to look up pieces here, or when generating move?
-        // when generating move!
+        //when generating move!
+        //I can at least get it when making move on the board as player
     }
 
     // pub fn  MovePiece(int piece, int startSquare, int targetSquare)
