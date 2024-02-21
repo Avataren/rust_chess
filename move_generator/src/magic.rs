@@ -176,7 +176,14 @@ impl Magic {
         for pattern_index in 0..num_patterns {
             for bit_index in 0..move_square_indices.len() {
                 let bit = (pattern_index >> bit_index) & 1;
-                blocker_bitboards[pattern_index].set_bit(bit << move_square_indices[bit_index]);
+                let shift = move_square_indices[bit_index];
+                // println! ("setting bit {} at shift {}", bit, shift);
+                //blocker_bitboards[pattern_index].set_bit( shift);
+                if (bit == 1) {
+                    blocker_bitboards[pattern_index].set_bit(shift);
+                } else {
+                    blocker_bitboards[pattern_index].clear_bit(shift);
+                }
             }
         }
 

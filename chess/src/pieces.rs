@@ -7,6 +7,9 @@ use crate::{
 
 const CHESSPIECE_SCALE: f32 = 0.8;
 
+#[derive(Event)]
+pub struct RefreshPiecesFromBoardEvent;
+
 #[derive(Resource)]
 pub struct PieceTextures {
     pub textures: HashMap<String, Handle<Image>>,
@@ -66,63 +69,79 @@ pub fn get_board_coords_from_cursor(
         })
 }
 
+pub fn despawn_chess_pieces(mut commands: Commands, query: Query<Entity, With<ChessPiece>>) {
+    for entity in query.iter() {
+        commands.entity(entity).despawn_recursive();
+    }
+}
+
 pub fn spawn_chess_pieces(
     mut commands: Commands,
     chess_board_res: Res<ChessBoardRes>,
     piece_textures: Res<PieceTextures>,
     board_dimensions: Res<BoardDimensions>,
     query: Query<Entity, With<BoardTag>>,
+    query_existing: Query<Entity, With<ChessPiece>>,
+    mut refresh_pieces_events: EventReader<RefreshPiecesFromBoardEvent>,
 ) {
-    let square_size = board_dimensions.square_size;
-    let board_offset = Vec3::new(
-        -board_dimensions.board_size.x / 2.0,
-        board_dimensions.board_size.y / 2.0,
-        0.0,
-    );
+    for ev in refresh_pieces_events.read() {
+        // //first clear all existing pieces
+        let entities_to_despawn = query_existing.iter().collect::<Vec<Entity>>();
+        for entity in entities_to_despawn {
+            commands.entity(entity).despawn_recursive();
+        }
 
-    let parent = query.iter().next().unwrap();
+        let square_size = board_dimensions.square_size;
+        let board_offset = Vec3::new(
+            -board_dimensions.board_size.x / 2.0,
+            board_dimensions.board_size.y / 2.0,
+            0.0,
+        );
 
-    for i in 0..64 {
-        let piece_char = chess_board_res.chess_board.get_piece_character(i);
-        if piece_char != '.' {
-            let row = 7 - i / 8;
-            let col = i % 8;
-            let mut world_position = chess_coord_to_board(row, col, square_size, board_offset);
-            world_position.z = 100.0;
-            let piece_texture_key = match piece_char {
-                'P' => "wp",
-                'R' => "wr",
-                'N' => "wn",
-                'B' => "wb",
-                'Q' => "wq",
-                'K' => "wk",
-                'p' => "bp",
-                'r' => "br",
-                'n' => "bn",
-                'b' => "bb",
-                'q' => "bq",
-                'k' => "bk",
-                _ => continue,
-            };
-            if let Some(texture_handle) = piece_textures.textures.get(piece_texture_key) {
-                let child_sprite = commands
-                    .spawn(SpriteBundle {
-                        texture: texture_handle.clone(),
-                        transform: Transform {
-                            translation: world_position,
-                            scale: vec3(CHESSPIECE_SCALE, CHESSPIECE_SCALE, 1.0),
+        let parent = query.iter().next().unwrap();
+
+        for i in 0..64 {
+            let piece_char = chess_board_res.chess_board.get_piece_character(i);
+            if piece_char != '.' {
+                let row = 7 - i / 8;
+                let col = i % 8;
+                let mut world_position = chess_coord_to_board(row, col, square_size, board_offset);
+                world_position.z = 100.0;
+                let piece_texture_key = match piece_char {
+                    'P' => "wp",
+                    'R' => "wr",
+                    'N' => "wn",
+                    'B' => "wb",
+                    'Q' => "wq",
+                    'K' => "wk",
+                    'p' => "bp",
+                    'r' => "br",
+                    'n' => "bn",
+                    'b' => "bb",
+                    'q' => "bq",
+                    'k' => "bk",
+                    _ => continue,
+                };
+                if let Some(texture_handle) = piece_textures.textures.get(piece_texture_key) {
+                    let child_sprite = commands
+                        .spawn(SpriteBundle {
+                            texture: texture_handle.clone(),
+                            transform: Transform {
+                                translation: world_position,
+                                scale: vec3(CHESSPIECE_SCALE, CHESSPIECE_SCALE, 1.0),
+                                ..Default::default()
+                            },
                             ..Default::default()
-                        },
-                        ..Default::default()
-                    })
-                    .insert(ChessPiece {
-                        piece_type: piece_char,
-                        row: row,
-                        col: col,
-                    })
-                    .id();
+                        })
+                        .insert(ChessPiece {
+                            piece_type: piece_char,
+                            row: row,
+                            col: col,
+                        })
+                        .id();
 
-                commands.entity(parent).push_children(&[child_sprite]);
+                    commands.entity(parent).push_children(&[child_sprite]);
+                }
             }
         }
     }

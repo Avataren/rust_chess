@@ -3,7 +3,7 @@ use bevy::{input::mouse::MouseButton, prelude::*, window::PrimaryWindow};
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
     board_accessories::{DebugSquare, EnableDebugMarkers},
-    pieces::{chess_coord_to_board, get_board_coords_from_cursor, ChessPiece},
+    pieces::{chess_coord_to_board, get_board_coords_from_cursor, ChessPiece, RefreshPiecesFromBoardEvent},
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, MagicRes,
 };
@@ -45,6 +45,7 @@ pub fn handle_pick_and_drag_piece(
     magic: Res<MagicRes>,
     mut commands: Commands,
     chess_board: ResMut<ChessBoardRes>,
+    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>
 ) {
     if let Some(window) = q_windows.iter().next() {
         if let Some(cursor_position) = window.cursor_position() {
@@ -62,6 +63,7 @@ pub fn handle_pick_and_drag_piece(
                     &magic,
                     &mut commands,
                     chess_board,
+                    refresh_pieces_events,
                 );
             }
         }
@@ -80,7 +82,8 @@ fn handle_mouse_input(
     sound_effects: &SoundEffects,
     magic_res: &MagicRes,
     commands: &mut Commands,
-    chess_board: ResMut<ChessBoardRes>,
+    mut chess_board: ResMut<ChessBoardRes>,
+    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>
 ) {
     if mouse_button_input.pressed(MouseButton::Left) {
         if piece_is_picked_up.is_dragging {
@@ -116,6 +119,7 @@ fn handle_mouse_input(
             commands,
             sound_effects,
             chess_board,
+            refresh_pieces_events
         );
     }
 }
@@ -214,7 +218,8 @@ fn release_piece(
     mut debug_squares_query: Query<(Entity, &DebugSquare)>,
     commands: &mut Commands,
     sound_effects: &SoundEffects,
-    chess_board: ResMut<ChessBoardRes>,
+    mut chess_board: ResMut<ChessBoardRes>,
+    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>
 ) {
     //hide debug squares
     for (entity, _) in debug_squares_query.iter_mut() {
@@ -223,8 +228,6 @@ fn release_piece(
 
     if let Some(piece_entity) = piece_is_picked_up.piece_entity {
         if let Ok((_, mut transform, mut chess_piece)) = piece_query.get_mut(piece_entity) {
-
-
             let board_coords = get_board_coords_from_cursor(
                 cursor_position,
                 camera,
@@ -262,16 +265,16 @@ fn release_piece(
             }
 
             //todo:: remove this when we sync with board state after move
-            transform.translation = chess_coord_to_board(
-                row,
-                col,
-                board_dimensions.square_size,
-                Vec3::new(
-                    -board_dimensions.board_size.x / 2.0,
-                    board_dimensions.board_size.y / 2.0,
-                    transform.translation.z,
-                ),
-            );
+            // transform.translation = chess_coord_to_board(
+            //     row,
+            //     col,
+            //     board_dimensions.square_size,
+            //     Vec3::new(
+            //         -board_dimensions.board_size.x / 2.0,
+            //         board_dimensions.board_size.y / 2.0,
+            //         transform.translation.z,
+            //     ),
+            // );
 
             chess_piece.row = row;
             chess_piece.col = col;
@@ -284,10 +287,12 @@ fn release_piece(
                 ),
                 board_row_col_to_square_index(row, col),
             ));
-            //todo:: reposition all pieces based on chess_board state
+            chess_board.chess_board.print_board();
 
             spawn_sound(commands, &sound_effects, "move-self.ogg");
+            refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
             println!("Released piece at row: {}, col: {}", row, col);
+            // despawn_chess_pieces(commands, piece_query);
         }
     }
 }

@@ -1,3 +1,5 @@
+use std::ops::{BitAnd, BitAndAssign, BitOr, BitXor, Not};
+
 /// Represents a chessboard using a 64-bit integer, where each bit corresponds to a square.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Bitboard(pub u64);
@@ -6,6 +8,10 @@ impl Bitboard {
     /// Creates a new, empty bitboard.
     pub fn new() -> Self {
         Bitboard(0)
+    }
+
+    pub fn from_square_index(index: u16) -> Self {
+        Bitboard(1 << index)
     }
 
     pub fn default() -> Self {
@@ -27,6 +33,9 @@ impl Bitboard {
     }
     /// Sets a bit at the given index (0-63), where 0 is the least significant bit.
     pub fn set_bit(&mut self, index: usize) {
+        // if (index > 63) {
+        //     panic!("Index out of range");
+        // }
         self.0 |= 1 << index;
     }
 
@@ -75,7 +84,6 @@ impl Bitboard {
         }
         bitboard
     }
-
     pub fn print_bitboard(&self) {
         println!("dec value: {:}", self.0);
         println!("hex value: {:x}", self.0);
@@ -88,6 +96,44 @@ impl Bitboard {
             println!(); // New line at the end of each rank
         }
         println!(); // Ensure a newline at the end of the output
+    }
+}
+
+impl BitAnd for Bitboard {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Bitboard(self.0 & rhs.0)
+    }
+}
+
+impl BitAndAssign for Bitboard {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 &= rhs.0;
+    }
+}
+
+impl BitOr for Bitboard {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Bitboard(self.0 | rhs.0)
+    }
+}
+
+impl BitXor for Bitboard {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        Bitboard(self.0 ^ rhs.0)
+    }
+}
+
+impl Not for Bitboard {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        Bitboard(!self.0)
     }
 }
 

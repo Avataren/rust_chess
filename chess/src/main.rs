@@ -14,6 +14,7 @@ mod sound;
 use board::ResolutionInfo;
 
 use move_generator::{magic::Magic, move_patterns::MovePatterns};
+use pieces::RefreshPiecesFromBoardEvent;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
@@ -74,7 +75,8 @@ fn main() {
                 setup,
                 pieces::preload_piece_sprites,
                 sound::preload_sounds,
-                pieces::spawn_chess_pieces,
+                initialize_game,
+                // pieces::spawn_chess_pieces, //trigger this by event!
                 board_accessories::spawn_board_accessories,
                 board_accessories::spawn_debug_markers,
             )
@@ -89,11 +91,16 @@ fn main() {
                 board_accessories::update_marker_square,
                 board_accessories::update_debug_squares,
                 sound::manage_sounds,
+                pieces::spawn_chess_pieces,
 
             )
                 .chain(),
         )
         .run();
+}
+
+fn initialize_game(mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>) {
+    refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -115,7 +122,9 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     let chessboard = chess_board::ChessBoard::new();
     let magic = Magic::new(chessboard);
     commands.insert_resource(MagicRes { magic });
+    commands.insert_resource(Events::<RefreshPiecesFromBoardEvent>::default());
     board::spawn_board(&mut commands, asset_server);
+
 
     // sound emitter
     // commands.spawn((
