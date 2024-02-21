@@ -102,7 +102,6 @@ fn handle_mouse_input(
             );
         }
     } else if mouse_button_input.just_released(MouseButton::Left) {
-        spawn_sound(commands, &sound_effects, "move-self.ogg");
         release_piece(
             cursor_position,
             camera_bundle,
@@ -112,6 +111,7 @@ fn handle_mouse_input(
             piece_query,
             debug_squares_query,
             commands,
+            sound_effects,
         );
     }
 }
@@ -210,6 +210,7 @@ fn release_piece(
     piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
     mut debug_squares_query: Query<(Entity, &DebugSquare)>,
     commands: &mut Commands,
+    sound_effects: &SoundEffects,
 ) {
     //hide debug squares
     for (entity, _) in debug_squares_query.iter_mut() {
@@ -226,6 +227,27 @@ fn release_piece(
                 board_dimensions,
             )
             .expect("Failed to get board coordinates"); // Consider handling this more gracefully
+            print!("board_coords: {:?}", board_coords);
+            if (board_coords.x < 0.0)
+                || (board_coords.x > board_dimensions.board_size.x)
+                || (board_coords.y < 0.0)
+                || (board_coords.y > board_dimensions.board_size.y)
+            {
+                //trying to drop piece outside board
+                piece_is_picked_up.is_dragging = false;
+                let (original_row, original_col) = piece_is_picked_up.original_row_col;
+                transform.translation = chess_coord_to_board(
+                    original_row,
+                    original_col,
+                    board_dimensions.square_size,
+                    Vec3::new(
+                        -board_dimensions.board_size.x / 2.0,
+                        board_dimensions.board_size.y / 2.0,
+                        transform.translation.z,
+                    ),
+                );
+                return;
+            }
 
             let (col, row) =
                 board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
@@ -244,7 +266,7 @@ fn release_piece(
             chess_piece.row = row;
             chess_piece.col = col;
             piece_is_picked_up.is_dragging = false;
-
+            spawn_sound(commands, &sound_effects, "move-self.ogg");
             println!("Released piece at row: {}, col: {}", row, col);
         }
     }
