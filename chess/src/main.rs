@@ -4,7 +4,6 @@ use bevy::{
     window::WindowResolution,
 };
 
-
 mod board;
 mod board_accessories;
 
@@ -41,14 +40,6 @@ struct MagicRes {
 const AUDIO_SCALE: f32 = 1. / 100.0;
 
 fn main() {
-    // println!("generating move patterns");
-    // let move_patterns = MovePatterns::new();
-// println!("done generating move patterns");
-    // println! ("generating occupancy variations");
-
-    // println! ("done generating occupancy variations");
-    // occ_variations.find_and_write_magic_numbers().unwrap();
-
     App::new()
         .add_plugins(
             DefaultPlugins
@@ -76,7 +67,6 @@ fn main() {
                 pieces::preload_piece_sprites,
                 sound::preload_sounds,
                 initialize_game,
-                // pieces::spawn_chess_pieces, //trigger this by event!
                 board_accessories::spawn_board_accessories,
                 board_accessories::spawn_debug_markers,
             )
@@ -124,22 +114,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(MagicRes { magic });
     commands.insert_resource(Events::<RefreshPiecesFromBoardEvent>::default());
     board::spawn_board(&mut commands, asset_server);
-
-
-    // sound emitter
-    // commands.spawn((
-    //     MaterialMesh2dBundle {
-    //         mesh: meshes.add(Circle::new(15.0)).into(),
-    //         material: materials.add(Color::BLUE),
-    //         transform: Transform::from_translation(Vec3::new(0.0, 50.0, 0.0)),
-    //         ..default()
-    //     },
-    //     Emitter::default(),
-    //     AudioBundle {
-    //         source: asset_server.load("sounds/Windless Slopes.ogg"),
-    //         settings: PlaybackSettings::LOOP.with_spatial(true),
-    //     },
-    // ));
 
     #[cfg(target_arch = "wasm32")]
     resize_canvas_and_apply_styles();
