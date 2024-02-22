@@ -69,12 +69,6 @@ pub fn get_board_coords_from_cursor(
         })
 }
 
-pub fn despawn_chess_pieces(mut commands: Commands, query: Query<Entity, With<ChessPiece>>) {
-    for entity in query.iter() {
-        commands.entity(entity).despawn_recursive();
-    }
-}
-
 pub fn spawn_chess_pieces(
     mut commands: Commands,
     chess_board_res: Res<ChessBoardRes>,

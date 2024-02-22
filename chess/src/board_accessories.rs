@@ -30,10 +30,6 @@ impl EnableDebugMarkers {
     pub fn new(new_coords: Vec<ChessMove>) -> Self {
         EnableDebugMarkers { moves: new_coords }
     }
-
-    fn default() -> Self {
-        EnableDebugMarkers { moves: Vec::new() }
-    }
 }
 
 pub fn spawn_board_accessories(
