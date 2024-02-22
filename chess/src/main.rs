@@ -13,7 +13,7 @@ mod pieces;
 mod sound;
 use board::ResolutionInfo;
 
-use move_generator::{magic::Magic, move_patterns::MovePatterns};
+use move_generator::{magic::Magic};
 use pieces::RefreshPiecesFromBoardEvent;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -119,7 +119,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         chess_board: chess_board::ChessBoard::new(),
     });
 
-    let chessboard = chess_board::ChessBoard::new();
+    let _chessboard = chess_board::ChessBoard::new();
     let magic = Magic::new();
     commands.insert_resource(MagicRes { magic });
     commands.insert_resource(Events::<RefreshPiecesFromBoardEvent>::default());

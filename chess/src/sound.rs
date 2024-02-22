@@ -44,7 +44,7 @@ pub fn spawn_sound(commands: &mut Commands, sound_effects: &SoundEffects, sound_
 
 pub fn manage_sounds(
     mut commands: Commands,
-    mut q_audio: Query<(Entity, &AudioSink), With<SoundEffect>>,
+    q_audio: Query<(Entity, &AudioSink), With<SoundEffect>>,
 ) {
     for (entity, audiosink) in q_audio.iter() {
         if audiosink.empty() {

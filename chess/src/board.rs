@@ -69,7 +69,7 @@ pub fn resize_board(
     images: Res<Assets<Image>>,
     mut board_transform: ResMut<ChessBoardTransform>,
     mut q: Query<&mut Text, With<ResolutionText>>,
-    time: Res<Time>,
+    _time: Res<Time>,
 ) {
     for (mut transform, texture_handle) in board_query.iter_mut() {
         if let Some(texture) = images.get(texture_handle) {

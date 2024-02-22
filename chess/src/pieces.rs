@@ -84,7 +84,7 @@ pub fn spawn_chess_pieces(
     query_existing: Query<Entity, With<ChessPiece>>,
     mut refresh_pieces_events: EventReader<RefreshPiecesFromBoardEvent>,
 ) {
-    for ev in refresh_pieces_events.read() {
+    for _ev in refresh_pieces_events.read() {
         // //first clear all existing pieces
         let entities_to_despawn = query_existing.iter().collect::<Vec<Entity>>();
         for entity in entities_to_despawn {

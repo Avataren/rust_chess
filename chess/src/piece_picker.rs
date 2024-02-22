@@ -37,7 +37,7 @@ impl Default for PieceIsPickedUp {
 pub fn handle_pick_and_drag_piece(
     q_windows: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    mut debug_squares_query: Query<(Entity, &DebugSquare)>,
+    debug_squares_query: Query<(Entity, &DebugSquare)>,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPiece)>,
     board_transform: Res<ChessBoardTransform>,
     board_dimensions: Res<BoardDimensions>,
@@ -47,7 +47,7 @@ pub fn handle_pick_and_drag_piece(
     magic: Res<MagicRes>,
     mut commands: Commands,
     chess_board: ResMut<ChessBoardRes>,
-    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
+    refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
 ) {
     if let Some(window) = q_windows.iter().next() {
         if let Some(cursor_position) = window.cursor_position() {
@@ -80,12 +80,12 @@ fn handle_mouse_input(
     board_transform: &ChessBoardTransform,
     board_dimensions: &BoardDimensions,
     piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
-    mut debug_squares_query: Query<(Entity, &DebugSquare)>,
+    debug_squares_query: Query<(Entity, &DebugSquare)>,
     sound_effects: &SoundEffects,
     magic_res: &MagicRes,
     commands: &mut Commands,
-    mut chess_board: ResMut<ChessBoardRes>,
-    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
+    chess_board: ResMut<ChessBoardRes>,
+    refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
 ) {
     if mouse_button_input.just_pressed(MouseButton::Left) {
         pick_up_piece(
@@ -285,9 +285,9 @@ fn drop_piece(
 
             let is_capture = !(chess_board.chess_board.get_all_pieces() & Bitboard::from_square_index(the_move.target_square())).is_empty();
 
-            if (chess_board.chess_board.make_move(the_move)) {
+            if chess_board.chess_board.make_move(the_move) {
                 //if chess_board.chess_board.get_piece_at(col)
-                if (is_capture){
+                if is_capture {
                     spawn_sound(commands, &sound_effects, "capture.ogg");
                 } else {
                     spawn_sound(commands, &sound_effects, "move-self.ogg");
