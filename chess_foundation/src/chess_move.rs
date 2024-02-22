@@ -1,4 +1,4 @@
-use crate::{piece::PieceType, ChessPiece};
+use crate::{piece::PieceType};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ChessMove {
