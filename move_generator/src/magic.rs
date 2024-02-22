@@ -1,24 +1,24 @@
-use core::num;
-use std::collections::HashMap;
-use std::io::{self, Write};
-use std::process::exit;
-use std::{collections::HashSet, fs::File}; // Ensure the Write trait is in scope
 
-use crate::move_patterns;
-use crate::move_patterns::MovePatterns;
+use std::collections::HashMap;
+
+
+ // Ensure the Write trait is in scope
+
+
+
 use chess_board::ChessBoard;
 use chess_foundation::bitboard::Bitboard;
-use chess_foundation::{coord, ChessMove, Coord};
-use rand::Rng;
+use chess_foundation::{ChessMove, Coord};
+
 
 use crate::piece_patterns::get_bishop_move_patterns;
-use crate::piece_patterns::get_king_move_patterns;
-use crate::piece_patterns::get_knight_move_patterns;
-use crate::piece_patterns::get_pawn_move_patterns;
+
+
+
 use crate::piece_patterns::get_rook_move_patterns;
 
 extern crate nalgebra as na;
-use na::Vector2;
+
 
 const MAX_MAGIC_NUMBER_ATTEMPTS: u64 = 1000000;
 
@@ -215,7 +215,7 @@ impl Magic {
                 let shift = move_square_indices[bit_index];
                 // println! ("setting bit {} at shift {}", bit, shift);
                 //blocker_bitboards[pattern_index].set_bit( shift);
-                if (bit == 1) {
+                if bit == 1 {
                     blocker_bitboards[pattern_index].set_bit(shift);
                 } else {
                     blocker_bitboards[pattern_index].clear_bit(shift);
