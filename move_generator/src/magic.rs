@@ -11,6 +11,7 @@ use chess_foundation::bitboard::Bitboard;
 use chess_foundation::{ChessMove, Coord};
 
 
+use crate::get_king_move_patterns;
 use crate::piece_patterns::get_bishop_move_patterns;
 
 
@@ -25,33 +26,35 @@ const MAX_MAGIC_NUMBER_ATTEMPTS: u64 = 1000000;
 pub struct Magic {
     pub rook_lut: HashMap<(i32, Bitboard), Bitboard>,
     pub bishop_lut: HashMap<(i32, Bitboard), Bitboard>,
+    pub king_lut: Vec<Bitboard>,
     pub all_rook_move_patterns: Vec<Vec<Bitboard>>
 }
 
 impl Magic {
     pub fn new() -> Self {
 
-        // Generate all rook move patterns
+        //********** Generate all rook move patterns **********
         let mut all_rook_move_patterns = Vec::new();
         let movement_mask = get_rook_move_patterns();
         for square in 0..64 {
             all_rook_move_patterns.push(Self::generate_blocker_bitboards(movement_mask[square]));
         }
         let rook_lut = Self::generate_rook_lut(&all_rook_move_patterns);
-
-
-        // Generate all bishop move patterns
+        //********** Generate all bishop move patterns **********
         let mut all_bishop_move_patterns = Vec::new();
         let movement_mask = get_bishop_move_patterns();
         for square in 0..64 {
             all_bishop_move_patterns.push(Self::generate_blocker_bitboards(movement_mask[square]));
         }
         let bishop_lut = Self::generate_bishop_lut(&all_bishop_move_patterns);
+        //********** Generate all king move patterns **********
+        let king_lut = get_king_move_patterns();
 
         Magic {
             rook_lut,
             bishop_lut,
-            all_rook_move_patterns
+            all_rook_move_patterns,
+            king_lut
         }
     }
 
@@ -71,43 +74,83 @@ impl Magic {
         .or(chess_board.get_black());
 
         if chess_board.get_rooks().contains_square(square as i32) {
-            let blocker_bb = all_pieces_bitboard & get_rook_move_patterns()[square as usize];
-            let key = (square as i32, blocker_bb);
-            // Attempt to retrieve the value associated with the key from the lookup table
-            if let Some(moves_bitboard_from_lut) = self.rook_lut.get(&key) {
-                // If the key is found and the bitboard is not empty, iterate over its bits
-                let mut moves_bitboard = moves_bitboard_from_lut.clone();
-                while !moves_bitboard.is_empty() {
-                    let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
-                    move_list.push(ChessMove::new(square as u16, target_square as u16));
-                }
-            } 
-            else {
-                // If the key is not found, print a message
-                println!("No keys found for rook at square {}", square);
-            }
+            move_list = self.get_valid_rook_moves(square, all_pieces_bitboard);
         } else if chess_board.get_bishops().contains_square(square as i32) {
-            let blocker_bb = all_pieces_bitboard & get_bishop_move_patterns()[square as usize];
-            let key = (square as i32, blocker_bb);
-            // Attempt to retrieve the value associated with the key from the lookup table
-            if let Some(moves_bitboard_from_lut) = self.bishop_lut.get(&key) {
-                // If the key is found and the bitboard is not empty, iterate over its bits
-                let mut moves_bitboard = moves_bitboard_from_lut.clone();
-                while !moves_bitboard.is_empty() {
-                    let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
-                    move_list.push(ChessMove::new(square as u16, target_square as u16));
-                }
-            } 
-            else {
-                // If the key is not found, print a message
-                println!("No keys found for bishop at square {}", square);
+            move_list = self.get_valid_bishop_moves(square, all_pieces_bitboard);
+        } else if chess_board.get_queens().contains_square(square as i32) {
+            move_list = self.get_valid_rook_moves(square, all_pieces_bitboard);
+            move_list.extend(self.get_valid_bishop_moves(square, all_pieces_bitboard));
+        } else if chess_board.get_kings().contains_square(square as i32) {
+            move_list = self.get_valid_king_moves(square, all_pieces_bitboard);
+        }
+        
+        move_list
+    }
+
+    fn get_valid_king_moves(&self, square: u16, all_pieces_bitboard: Bitboard) -> Vec<ChessMove> {
+        // Retrieve the precomputed king move pattern for the given square
+        let king_move_pattern = self.king_lut[square as usize];
+
+        // Initialize a list to store valid moves
+        let mut valid_moves = Vec::new();
+
+        // Iterate over each bit in the king move pattern
+        let mut moves_bitboard = king_move_pattern;
+        while !moves_bitboard.is_empty() {
+            // Extract the next possible move (target square) from the bitboard
+            let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard` and returns the index of the bit that was set
+            // Ensure the target square is not occupied by a piece from the same side
+            // This assumes `all_pieces_bitboard` is a bitboard representing all pieces of the current player's side
+            if !all_pieces_bitboard.contains_square(target_square as i32) {
+                // Add the move from the current square to the target square if it's valid
+                valid_moves.push(ChessMove::new(square, target_square as u16));
             }
-        }{
-            
+        }
+        valid_moves
+    }
+
+
+    fn get_valid_rook_moves(&self, square:u16, all_pieces_bitboard: Bitboard) -> Vec<ChessMove>
+    {
+        let blocker_bb = all_pieces_bitboard & get_rook_move_patterns()[square as usize];
+        let key = (square as i32, blocker_bb);
+        let mut move_list = Vec::new();
+        // Attempt to retrieve the value associated with the key from the lookup table
+        if let Some(moves_bitboard_from_lut) = self.rook_lut.get(&key) {
+            // If the key is found and the bitboard is not empty, iterate over its bits
+            let mut moves_bitboard = moves_bitboard_from_lut.clone();
+            while !moves_bitboard.is_empty() {
+                let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
+                move_list.push(ChessMove::new(square as u16, target_square as u16));
+            }
+        } 
+        else {
+            // If the key is not found, print a message
+            println!("No keys found for bishop at square {}", square);
         }
         move_list
     }
 
+    fn get_valid_bishop_moves(&self, square:u16, all_pieces_bitboard: Bitboard) -> Vec<ChessMove>
+    {
+        let blocker_bb = all_pieces_bitboard & get_bishop_move_patterns()[square as usize];
+        let key = (square as i32, blocker_bb);
+        let mut move_list = Vec::new();
+        // Attempt to retrieve the value associated with the key from the lookup table
+        if let Some(moves_bitboard_from_lut) = self.bishop_lut.get(&key) {
+            // If the key is found and the bitboard is not empty, iterate over its bits
+            let mut moves_bitboard = moves_bitboard_from_lut.clone();
+            while !moves_bitboard.is_empty() {
+                let target_square = moves_bitboard.pop_lsb(); // Assuming `pop_lsb` is a method that modifies `moves_bitboard`
+                move_list.push(ChessMove::new(square as u16, target_square as u16));
+            }
+        } 
+        else {
+            // If the key is not found, print a message
+            println!("No keys found for bishop at square {}", square);
+        }
+        move_list
+    }    
 
     fn generate_rook_lut(all_rook_move_patterns: &Vec<Vec<Bitboard>>) -> HashMap<(i32, Bitboard), Bitboard> {
         

@@ -1,3 +1,5 @@
+use std::env;
+
 use bevy::{
     audio::{AudioPlugin, SpatialScale},
     prelude::*,
@@ -40,6 +42,7 @@ struct MagicRes {
 const AUDIO_SCALE: f32 = 1. / 100.0;
 
 fn main() {
+    env::set_var("WGPU_BACKEND", "dx12");
     App::new()
         .add_plugins(
             DefaultPlugins

@@ -283,7 +283,9 @@ fn drop_piece(
                 board_row_col_to_square_index(row, col),
             );
 
-            let is_capture = !(chess_board.chess_board.get_all_pieces() & Bitboard::from_square_index(the_move.target_square())).is_empty();
+            let is_capture = !(chess_board.chess_board.get_all_pieces()
+                & Bitboard::from_square_index(the_move.target_square()))
+            .is_empty();
 
             if chess_board.chess_board.make_move(the_move) {
                 //if chess_board.chess_board.get_piece_at(col)
