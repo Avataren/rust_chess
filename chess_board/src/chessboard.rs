@@ -180,6 +180,10 @@ impl ChessBoard {
         self.black
     }
 
+    // pub fn get_friendly_pieces(&self) -> Bitboard {
+    //     self.white
+    // }
+
     pub fn get_castling_rights(&self) -> String {
         let mut result = String::new();
         if self.castling_rights & 0b1000 != 0 {

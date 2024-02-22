@@ -24,16 +24,16 @@ impl ChessPiece {
     }
 
     // Check if the piece is black
-    pub fn is_black(self) -> bool {
+    pub fn is_black(&self) -> bool {
         (self.0 & Self::MASK_COLOR) != 0
     }
 
-    pub fn is_white(self) -> bool {
+    pub fn is_white(&self) -> bool {
         !self.is_black()
     }
 
     // Get the type of the piece
-    pub fn piece_type(self) -> PieceType {
+    pub fn piece_type(&self) -> PieceType {
         match self.0 & Self::MASK_TYPE {
             0 => PieceType::None,
             1 => PieceType::Pawn,

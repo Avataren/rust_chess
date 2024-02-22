@@ -4,7 +4,7 @@ use crate::{
     board::{BoardDimensions, ChessBoardTransform},
     board_accessories::{DebugSquare, EnableDebugMarkers},
     pieces::{
-        chess_coord_to_board, get_board_coords_from_cursor, ChessPiece, RefreshPiecesFromBoardEvent,
+        chess_coord_to_board, get_board_coords_from_cursor, ChessPieceComponent, RefreshPiecesFromBoardEvent,
     },
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, MagicRes,
@@ -38,7 +38,7 @@ pub fn handle_pick_and_drag_piece(
     q_windows: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     debug_squares_query: Query<(Entity, &DebugSquare)>,
-    mut piece_query: Query<(Entity, &mut Transform, &mut ChessPiece)>,
+    mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     board_transform: Res<ChessBoardTransform>,
     board_dimensions: Res<BoardDimensions>,
     mut piece_is_picked_up: ResMut<PieceIsPickedUp>,
@@ -79,7 +79,7 @@ fn handle_mouse_input(
     piece_is_picked_up: &mut PieceIsPickedUp,
     board_transform: &ChessBoardTransform,
     board_dimensions: &BoardDimensions,
-    piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
+    piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     debug_squares_query: Query<(Entity, &DebugSquare)>,
     sound_effects: &SoundEffects,
     magic_res: &MagicRes,
@@ -140,7 +140,7 @@ fn pick_up_piece(
     board_dimensions: &BoardDimensions,
     chess_board: ResMut<ChessBoardRes>,
     piece_is_picked_up: &mut PieceIsPickedUp,
-    piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
+    piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     magic_res: &MagicRes,
     commands: &mut Commands,
 ) {
@@ -166,11 +166,12 @@ fn pick_up_piece(
         piece_is_picked_up.piece_entity = Some(entity);
         piece_is_picked_up.is_dragging = true;
 
-        //problem is, magic has a different board than the resource one!
-        //put magic in board, or make board argument to magic
+        let is_white = true;
+        // Continue with your logic, using `is_white` as needed
         let valid_moves = magic_res.magic.get_move_list_from_square(
             board_row_col_to_square_index(row, col),
             &chess_board.chess_board,
+            is_white,
         );
 
         commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
@@ -193,7 +194,7 @@ fn drag_piece(
     board_transform: &ChessBoardTransform,
     board_dimensions: &BoardDimensions,
     piece_is_picked_up: &mut PieceIsPickedUp,
-    piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
+    piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
 ) {
     if let Some(piece_entity) = piece_is_picked_up.piece_entity {
         if let Ok((_, mut transform, _)) = piece_query.get_mut(piece_entity) {
@@ -221,7 +222,7 @@ fn drop_piece(
     board_transform: &ChessBoardTransform,
     board_dimensions: &BoardDimensions,
     piece_is_picked_up: &mut PieceIsPickedUp,
-    piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPiece)>,
+    piece_query: &mut Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     mut debug_squares_query: Query<(Entity, &DebugSquare)>,
     commands: &mut Commands,
     sound_effects: &SoundEffects,

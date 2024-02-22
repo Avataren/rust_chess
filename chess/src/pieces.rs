@@ -24,7 +24,7 @@ impl Default for PieceTextures {
 }
 
 #[derive(Component)]
-pub struct ChessPiece {
+pub struct ChessPieceComponent {
     pub piece_type: char,
     pub row: usize,
     pub col: usize,
@@ -75,7 +75,7 @@ pub fn spawn_chess_pieces(
     piece_textures: Res<PieceTextures>,
     board_dimensions: Res<BoardDimensions>,
     query: Query<Entity, With<BoardTag>>,
-    query_existing: Query<Entity, With<ChessPiece>>,
+    query_existing: Query<Entity, With<ChessPieceComponent>>,
     mut refresh_pieces_events: EventReader<RefreshPiecesFromBoardEvent>,
 ) {
     for _ev in refresh_pieces_events.read() {
@@ -127,7 +127,7 @@ pub fn spawn_chess_pieces(
                             },
                             ..Default::default()
                         })
-                        .insert(ChessPiece {
+                        .insert(ChessPieceComponent {
                             piece_type: piece_char,
                             row: row,
                             col: col,
