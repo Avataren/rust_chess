@@ -1,4 +1,4 @@
-use chess_foundation::{bitboard::Bitboard, piece::PieceType, ChessMove, ChessPiece};
+use chess_foundation::{bitboard::Bitboard, piece::PieceType, ChessMove};
 
 pub struct ChessBoard {
     white: Bitboard,
