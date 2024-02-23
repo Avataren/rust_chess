@@ -153,18 +153,18 @@ impl Magic {
             chess_board.get_black()
         };
 
-        let relevant_blockers = all_pieces_bitboard;
+        let relevant_blockers = friendly_pieces_bitboard;
 
         if chess_board.get_rooks().contains_square(square as i32) {
-            let magic_index = Self::rook_magic_index(square as usize, relevant_blockers);
-            let mut moves_bitboard = self.rook_table[square as usize][magic_index];
+            let magic_index = Self::rook_magic_index(square as usize, all_pieces_bitboard);
+            let mut moves_bitboard = self.rook_table[square as usize][magic_index] & !relevant_blockers;
             while !moves_bitboard.is_empty() {
                 let target_square = moves_bitboard.pop_lsb();
                 move_list.push(ChessMove::new(square, target_square as u16));
             }
         } else if chess_board.get_bishops().contains_square(square as i32) {
-            let magic_index = Self::bishop_magic_index(square as usize, relevant_blockers);
-            let mut moves_bitboard = self.bishop_table[square as usize][magic_index];
+            let magic_index = Self::bishop_magic_index(square as usize, all_pieces_bitboard);
+            let mut moves_bitboard = self.bishop_table[square as usize][magic_index] & !relevant_blockers;
             println!("Bishop moves bitboard: {}", moves_bitboard.0);
             while !moves_bitboard.is_empty() {
                 let target_square = moves_bitboard.pop_lsb();
@@ -177,7 +177,7 @@ impl Magic {
             let bishop_magic_index = Self::bishop_magic_index(square as usize, relevant_blockers);
             let bishop_moves_bitboard = self.bishop_table[square as usize][bishop_magic_index];
 
-            let mut moves_bitboard = rook_moves_bitboard.or(bishop_moves_bitboard);
+            let mut moves_bitboard = rook_moves_bitboard.or(bishop_moves_bitboard) & !relevant_blockers;
 
             println!("Bishop moves bitboard: {}", moves_bitboard.0);
             while !moves_bitboard.is_empty() {
@@ -186,9 +186,9 @@ impl Magic {
             }
         }        
          else if chess_board.get_kings().contains_square(square as i32) {
-            move_list = self.get_valid_king_moves(square, friendly_pieces_bitboard);
+            move_list = self.get_valid_king_moves(square, relevant_blockers);
         } else if chess_board.get_knights().contains_square(square as i32) {
-            move_list = self.get_valid_knight_moves(square, friendly_pieces_bitboard);
+            move_list = self.get_valid_knight_moves(square, relevant_blockers);
         }
 
         move_list
