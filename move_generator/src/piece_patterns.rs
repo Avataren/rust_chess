@@ -1,6 +1,5 @@
 use chess_foundation::Bitboard;
 
-
 pub fn get_rook_move_patterns() -> Vec<Bitboard> {
     let mut move_patterns = Vec::<Bitboard>::new();
 
@@ -20,8 +19,12 @@ pub fn get_rook_move_patterns() -> Vec<Bitboard> {
         // Start with the union of the row and column masks
         let mut move_pattern = row_masks[row].or(col_masks[col]);
         // Clear the bit for the square itself, as the rook can't move to its current position
-        move_pattern.clear_bit(square);
-        move_patterns.push(move_pattern);
+        move_pattern.clear_bit(square); // is this desired?
+
+        let special_case_mask = !Bitboard::edge_mask(Bitboard::from_square_index(square as u16));
+        let mask = !(Bitboard::from_edges() & special_case_mask);
+
+        move_patterns.push(move_pattern & mask);
     }
 
     move_patterns
@@ -51,8 +54,12 @@ pub fn get_bishop_move_patterns() -> Vec<Bitboard> {
         // Combine the masks for the main diagonal and anti-diagonal
         let mut move_pattern = diag_masks[diag].or(anti_diag_masks[anti_diag]);
         // Clear the bit for the square itself
-        move_pattern.clear_bit(square);
-        move_patterns.push(move_pattern);
+        move_pattern.clear_bit(square); // is this desired?
+
+        let special_case_mask = !Bitboard::edge_mask(Bitboard::from_square_index(square as u16));
+        let mask = !(Bitboard::from_edges() & special_case_mask);
+
+        move_patterns.push(move_pattern & mask);
     }
 
     move_patterns

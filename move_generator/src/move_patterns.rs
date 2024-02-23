@@ -4,7 +4,6 @@ use crate::{
 };
 use chess_foundation::Bitboard;
 
-
 pub struct PawnMovePatterns {
     pub moves: (Bitboard, Bitboard),    // (White moves, Black moves)
     pub captures: (Bitboard, Bitboard), // (White captures, Black captures)

@@ -4,7 +4,8 @@ use crate::{
     board::{BoardDimensions, ChessBoardTransform},
     board_accessories::{DebugSquare, EnableDebugMarkers},
     pieces::{
-        chess_coord_to_board, get_board_coords_from_cursor, ChessPieceComponent, RefreshPiecesFromBoardEvent,
+        chess_coord_to_board, get_board_coords_from_cursor, ChessPieceComponent,
+        RefreshPiecesFromBoardEvent,
     },
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, MagicRes,
@@ -176,13 +177,13 @@ fn pick_up_piece(
 
         commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
 
-        for entry in valid_moves {
-            println!(
-                "Move from square {} to {}",
-                entry.start_square(),
-                entry.target_square()
-            );
-        }
+        // for entry in valid_moves {
+        //     println!(
+        //         "Move from square {} to {}",
+        //         entry.start_square(),
+        //         entry.target_square()
+        //     );
+        // }
 
         println!("Picked up piece: {:?}", chess_piece.piece_type);
     }
