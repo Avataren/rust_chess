@@ -1,3 +1,4 @@
+pub mod move_generator;
 pub mod move_patterns;
 pub mod piece_patterns;
 pub mod magic;

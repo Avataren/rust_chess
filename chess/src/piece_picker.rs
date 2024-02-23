@@ -1,4 +1,5 @@
 use bevy::{input::mouse::MouseButton, prelude::*, window::PrimaryWindow};
+use move_generator::move_generator::get_move_list_from_square;
 
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
@@ -169,21 +170,14 @@ fn pick_up_piece(
 
         let is_white = true;
         // Continue with your logic, using `is_white` as needed
-        let valid_moves = magic_res.magic.get_move_list_from_square(
+        let valid_moves = get_move_list_from_square(
             board_row_col_to_square_index(row, col),
             &chess_board.chess_board,
             is_white,
+            &magic_res.magic
         );
 
         commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
-
-        // for entry in valid_moves {
-        //     println!(
-        //         "Move from square {} to {}",
-        //         entry.start_square(),
-        //         entry.target_square()
-        //     );
-        // }
 
         println!("Picked up piece: {:?}", chess_piece.piece_type);
     }
@@ -277,7 +271,7 @@ fn drop_piece(
             chess_piece.col = col;
             piece_is_picked_up.is_dragging = false;
 
-            let the_move = ChessMove::new(
+            let mut the_move = ChessMove::new(
                 board_row_col_to_square_index(
                     piece_is_picked_up.original_row_col.0,
                     piece_is_picked_up.original_row_col.1,
@@ -289,7 +283,7 @@ fn drop_piece(
                 & Bitboard::from_square_index(the_move.target_square()))
             .is_empty();
 
-            if chess_board.chess_board.make_move(the_move) {
+            if chess_board.chess_board.make_move(&mut the_move) {
                 //if chess_board.chess_board.get_piece_at(col)
                 if is_capture {
                     spawn_sound(commands, &sound_effects, "capture.ogg");

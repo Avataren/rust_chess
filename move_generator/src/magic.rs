@@ -7,9 +7,7 @@ use rand::Rng;
 
 use crate::magic_constants::{BISHOP_MAGICS, ROOK_MAGICS};
 use crate::masks::{BISHOP_MASKS, ROOK_MASKS};
-use crate::{
-    get_king_move_patterns, get_knight_move_patterns,
-};
+use crate::{get_king_move_patterns, get_knight_move_patterns};
 
 pub struct Magic {
     //pub pawn_lut: Vec<Bitboard>,
@@ -57,7 +55,7 @@ impl Magic {
 
         println!("pub const BISHOP_MASKS: [Bitboard; 64] = [");
         //for r in bishop_masks.iter() {
-        for square in 0..64 {            
+        for square in 0..64 {
             println!("Bitboard(0x{:X}), ", Self::bmask(square));
         }
         println!("\n];");
@@ -137,64 +135,30 @@ impl Magic {
         bishop_table
     }
 
-    pub fn get_move_list_from_square(
-        &self,
-        square: u16,
-        chess_board: &ChessBoard,
-        is_white: bool,
-    ) -> Vec<ChessMove> {
+    pub fn get_rook_moves(&self, square:u16, relevant_blockers: Bitboard, chess_board: &ChessBoard) -> Vec<ChessMove> {
+        let magic_index = Self::rook_magic_index(square as usize, chess_board.get_all_pieces());
+        let mut moves_bitboard = self.rook_table[square as usize][magic_index] & !relevant_blockers;
         let mut move_list = Vec::new();
-
-        let all_pieces_bitboard = chess_board.get_white().or(chess_board.get_black());
-
-        let friendly_pieces_bitboard = if is_white {
-            chess_board.get_white()
-        } else {
-            chess_board.get_black()
-        };
-
-        let relevant_blockers = friendly_pieces_bitboard;
-
-        if chess_board.get_rooks().contains_square(square as i32) {
-            let magic_index = Self::rook_magic_index(square as usize, all_pieces_bitboard);
-            let mut moves_bitboard = self.rook_table[square as usize][magic_index] & !relevant_blockers;
-            while !moves_bitboard.is_empty() {
-                let target_square = moves_bitboard.pop_lsb();
-                move_list.push(ChessMove::new(square, target_square as u16));
-            }
-        } else if chess_board.get_bishops().contains_square(square as i32) {
-            let magic_index = Self::bishop_magic_index(square as usize, all_pieces_bitboard);
-            let mut moves_bitboard = self.bishop_table[square as usize][magic_index] & !relevant_blockers;
-            println!("Bishop moves bitboard: {}", moves_bitboard.0);
-            while !moves_bitboard.is_empty() {
-                let target_square = moves_bitboard.pop_lsb();
-                move_list.push(ChessMove::new(square, target_square as u16));
-            }
+        while !moves_bitboard.is_empty() {
+            let target_square = moves_bitboard.pop_lsb();
+            move_list.push(ChessMove::new(square, target_square as u16));
         }
-        else if chess_board.get_queens().contains_square(square as i32) {
-            let rook_magic_index = Self::rook_magic_index(square as usize, all_pieces_bitboard);
-            let rook_moves_bitboard = self.rook_table[square as usize][rook_magic_index];
-            let bishop_magic_index = Self::bishop_magic_index(square as usize, all_pieces_bitboard);
-            let bishop_moves_bitboard = self.bishop_table[square as usize][bishop_magic_index];
-
-            let mut moves_bitboard = (rook_moves_bitboard | bishop_moves_bitboard) & !relevant_blockers;
-
-            println!("Bishop moves bitboard: {}", moves_bitboard.0);
-            while !moves_bitboard.is_empty() {
-                let target_square = moves_bitboard.pop_lsb();
-                move_list.push(ChessMove::new(square, target_square as u16));
-            }
-        }        
-         else if chess_board.get_kings().contains_square(square as i32) {
-            move_list = self.get_valid_king_moves(square, relevant_blockers);
-        } else if chess_board.get_knights().contains_square(square as i32) {
-            move_list = self.get_valid_knight_moves(square, relevant_blockers);
-        }
-
         move_list
     }
 
-    fn get_valid_knight_moves(
+
+    pub fn get_bishop_moves(&self, square:u16, relevant_blockers: Bitboard, chess_board: &ChessBoard) -> Vec<ChessMove> {
+        let magic_index = Self::bishop_magic_index(square as usize, chess_board.get_all_pieces());
+        let mut moves_bitboard = self.bishop_table[square as usize][magic_index] & !relevant_blockers;
+        let mut move_list = Vec::new();
+        while !moves_bitboard.is_empty() {
+            let target_square = moves_bitboard.pop_lsb();
+            move_list.push(ChessMove::new(square, target_square as u16));
+        }
+        move_list
+    }
+
+    pub fn get_knight_moves(
         &self,
         square: u16,
         friendly_pieces_bitboard: Bitboard,
@@ -212,7 +176,7 @@ impl Magic {
         move_list
     }
 
-    fn get_valid_king_moves(
+    pub fn get_king_moves(
         &self,
         square: u16,
         friendly_pieces_bitboard: Bitboard,

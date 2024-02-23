@@ -1,8 +1,22 @@
-use crate::{piece::PieceType};
+use std::default;
+
+use crate::{piece::PieceType, ChessPiece};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ChessMove {
     move_value: u16, // Compact representation of the move
+    chess_piece: Option<ChessPiece>,
+    capture: Option<ChessPiece>,
+}
+
+impl default::Default for ChessMove {
+    fn default() -> Self {
+        Self {
+            move_value: 0,
+            chess_piece: None,
+            capture: None,
+        }
+    }
 }
 
 impl ChessMove {
@@ -27,13 +41,23 @@ impl ChessMove {
         Self {
             //use 6 bits pr square position
             move_value: start_square | (target_square << 6),
+            ..Default::default()
         }
     }
 
     pub fn new_with_flag(start_square: u16, target_square: u16, flag: u16) -> Self {
         Self {
             move_value: start_square | (target_square << 6) | (flag << 12),
+            ..Default::default()
         }
+    }
+
+    pub fn set_piece(&mut self, piece: ChessPiece) {
+        self.chess_piece = Some(piece);
+    }
+
+    pub fn set_capture(&mut self, piece: ChessPiece) {
+        self.capture = Some(piece);
     }
 
     // Accessor methods
@@ -62,7 +86,7 @@ impl ChessMove {
         if !self.is_promotion() {
             return None;
         }
-    
+
         match self.flag() {
             Self::PROMOTE_TO_ROOK_FLAG => Some(PieceType::Rook), // Assuming `is_black()` method exists
             Self::PROMOTE_TO_KNIGHT_FLAG => Some(PieceType::Knight),
@@ -71,5 +95,4 @@ impl ChessMove {
             _ => None, // Return None instead of ChessPiece::NONE
         }
     }
-    
 }

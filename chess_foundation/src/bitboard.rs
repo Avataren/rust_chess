@@ -5,10 +5,14 @@ use std::ops::{BitAnd, BitAndAssign, BitOr, BitXor, Not};
 pub struct Bitboard(pub u64);
 
 impl Bitboard {
-    const TOP_EDGE:Bitboard =       Bitboard(0b01111110_00000000_00000000_00000000_00000000_00000000_00000000_00000000);
-    const BOTTOM_EDGE:Bitboard =    Bitboard(0b00000000_00000000_00000000_00000000_00000000_00000000_00000000_01111110);
-    const LEFT_EDGE:Bitboard =      Bitboard(0b00000000_10000000_10000000_10000000_10000000_10000000_10000000_00000000);
-    const RIGHT_EDGE:Bitboard =     Bitboard(0b00000000_00000001_00000001_00000001_00000001_00000001_00000001_00000000);  
+    const TOP_EDGE: Bitboard =
+        Bitboard(0b01111110_00000000_00000000_00000000_00000000_00000000_00000000_00000000);
+    const BOTTOM_EDGE: Bitboard =
+        Bitboard(0b00000000_00000000_00000000_00000000_00000000_00000000_00000000_01111110);
+    const LEFT_EDGE: Bitboard =
+        Bitboard(0b00000000_10000000_10000000_10000000_10000000_10000000_10000000_00000000);
+    const RIGHT_EDGE: Bitboard =
+        Bitboard(0b00000000_00000001_00000001_00000001_00000001_00000001_00000001_00000000);
 
     /// Creates a new, empty bitboard.
     pub fn new() -> Self {
@@ -25,7 +29,7 @@ impl Bitboard {
 
     pub fn from_edges() -> Self {
         Self::TOP_EDGE | Self::BOTTOM_EDGE | Self::LEFT_EDGE | Self::RIGHT_EDGE
-    }    
+    }
 
     pub fn edge_mask(piece_position: Bitboard) -> Bitboard {
         match piece_position {
@@ -35,7 +39,7 @@ impl Bitboard {
             p if (p & Self::RIGHT_EDGE).0 != 0 => Self::RIGHT_EDGE,
             _ => Bitboard::max(), // No edges excluded if the rook is not on an edge
         }
-    }    
+    }
 
     pub fn count_ones(&self) -> u32 {
         self.0.count_ones()
