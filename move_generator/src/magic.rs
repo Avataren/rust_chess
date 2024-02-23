@@ -172,12 +172,12 @@ impl Magic {
             }
         }
         else if chess_board.get_queens().contains_square(square as i32) {
-            let rook_magic_index = Self::rook_magic_index(square as usize, relevant_blockers);
+            let rook_magic_index = Self::rook_magic_index(square as usize, all_pieces_bitboard);
             let rook_moves_bitboard = self.rook_table[square as usize][rook_magic_index];
-            let bishop_magic_index = Self::bishop_magic_index(square as usize, relevant_blockers);
+            let bishop_magic_index = Self::bishop_magic_index(square as usize, all_pieces_bitboard);
             let bishop_moves_bitboard = self.bishop_table[square as usize][bishop_magic_index];
 
-            let mut moves_bitboard = rook_moves_bitboard.or(bishop_moves_bitboard) & !relevant_blockers;
+            let mut moves_bitboard = (rook_moves_bitboard | bishop_moves_bitboard) & !relevant_blockers;
 
             println!("Bishop moves bitboard: {}", moves_bitboard.0);
             while !moves_bitboard.is_empty() {
