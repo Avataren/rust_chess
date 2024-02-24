@@ -1,7 +1,9 @@
 use bevy::{math::vec3, prelude::*, utils::HashMap};
 
 use crate::{
-    board::{BoardDimensions, BoardTag, ChessBoardTransform}, game_events::RefreshPiecesFromBoardEvent, ChessBoardRes
+    board::{BoardDimensions, BoardTag, ChessBoardTransform},
+    game_events::RefreshPiecesFromBoardEvent,
+    ChessBoardRes,
 };
 
 const CHESSPIECE_SCALE: f32 = 0.8;

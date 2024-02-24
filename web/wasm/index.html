@@ -28,20 +28,10 @@
   <div id="app">
     <canvas id="game-canvas" tabindex="0"></canvas>
   </div>
-  <script>
-      function resizeCanvasAndApplyStyles() {
-      //const canvas = document.getElementById('game-canvas');
-      //canvas.width = window.innerWidth;
-      //canvas.height = window.innerHeight;
-      //canvas.style.setProperty('width', `${window.innerWidth}px`, 'important');
-      //canvas.style.setProperty('height', `${window.innerHeight}px`, 'important');
-      //canvas.style.setProperty('display', 'block', 'important'); // Ensuring the canvas is block level with no extra margins
-     }
-    window.addEventListener('resize', resizeCanvasAndApplyStyles);
-  </script>  
+
   <script type="module">
     import init from './target/chess.js';
-    init();
+    init().catch(console.error);
   </script>
 </body>
 </html>

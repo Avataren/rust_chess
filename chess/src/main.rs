@@ -8,16 +8,18 @@ use bevy::{
 
 mod board;
 mod board_accessories;
-mod keyboard_input;
 mod chess_event_handler;
 mod game_events;
+mod keyboard_input;
 mod piece_picker;
 mod pieces;
 mod sound;
 use board::ResolutionInfo;
 
-use game_events::{ChessEvent, RefreshPiecesFromBoardEvent};
-use move_generator::{magic::Magic};
+use game_events::{
+    ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent,
+};
+use move_generator::magic::Magic;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
@@ -26,9 +28,6 @@ use wasm_bindgen::prelude::*;
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
-
-    #[wasm_bindgen(js_name = resizeCanvasAndApplyStyles)]
-    fn resize_canvas_and_apply_styles();
 }
 
 #[derive(Resource)]
@@ -55,7 +54,7 @@ fn main() {
                         resizable: true,
                         resolution: WindowResolution::new(1280., 1024.),
                         prevent_default_event_handling: false,
-                        present_mode: bevy::window::PresentMode::Immediate,
+                        present_mode: bevy::window::PresentMode::AutoNoVsync,
                         ..default()
                     }),
                     ..default()
@@ -79,18 +78,26 @@ fn main() {
                 .chain(),
         )
         .add_systems(
+            PreUpdate,
+            (
+                piece_picker::handle_mouse_input,
+                piece_picker::handle_touch_input,
+            ),
+        )
+        .add_systems(
             Update,
             (
                 board::handle_resize_event,
                 board::resize_board,
                 keyboard_input::handle_keyboard_input,
                 chess_event_handler::handle_chess_events,
-                piece_picker::handle_pick_and_drag_piece,
+                piece_picker::pick_up_piece,
+                piece_picker::drag_piece,
+                piece_picker::drop_piece,
                 board_accessories::update_marker_square,
                 board_accessories::update_debug_squares,
                 sound::manage_sounds,
                 pieces::spawn_chess_pieces,
-
             )
                 .chain(),
         )
@@ -122,10 +129,10 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(MagicRes { magic });
     commands.insert_resource(Events::<RefreshPiecesFromBoardEvent>::default());
     commands.insert_resource(Events::<ChessEvent>::default());
+    commands.insert_resource(Events::<PickUpPieceEvent>::default());
+    commands.insert_resource(Events::<DragPieceEvent>::default());
+    commands.insert_resource(Events::<DropPieceEvent>::default());
     board::spawn_board(&mut commands, asset_server);
-
-    #[cfg(target_arch = "wasm32")]
-    resize_canvas_and_apply_styles();
 }
 
 fn setup_ui(commands: &mut Commands) {
