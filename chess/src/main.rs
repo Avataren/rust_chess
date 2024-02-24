@@ -55,6 +55,7 @@ fn main() {
                         resizable: true,
                         resolution: WindowResolution::new(1280., 1024.),
                         prevent_default_event_handling: false,
+                        present_mode: bevy::window::PresentMode::Immediate,
                         ..default()
                     }),
                     ..default()
