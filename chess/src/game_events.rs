@@ -14,3 +14,6 @@ impl ChessEvent {
         ChessEvent { action }
     }
 }
+
+#[derive(Event)]
+pub struct RefreshPiecesFromBoardEvent;

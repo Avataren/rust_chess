@@ -2,14 +2,9 @@ use bevy::{input::mouse::MouseButton, prelude::*, window::PrimaryWindow};
 use move_generator::move_generator::get_move_list_from_square;
 
 use crate::{
-    board::{BoardDimensions, ChessBoardTransform},
-    board_accessories::{DebugSquare, EnableDebugMarkers},
-    pieces::{
+    board::{BoardDimensions, ChessBoardTransform}, board_accessories::{DebugSquare, EnableDebugMarkers}, game_events::RefreshPiecesFromBoardEvent, pieces::{
         chess_coord_to_board, get_board_coords_from_cursor, ChessPieceComponent,
-        RefreshPiecesFromBoardEvent,
-    },
-    sound::{spawn_sound, SoundEffects},
-    ChessBoardRes, MagicRes,
+    }, sound::{spawn_sound, SoundEffects}, ChessBoardRes, MagicRes
 };
 use chess_foundation::{board_helper::board_row_col_to_square_index, Bitboard, ChessMove};
 

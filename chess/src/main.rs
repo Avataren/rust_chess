@@ -16,9 +16,8 @@ mod pieces;
 mod sound;
 use board::ResolutionInfo;
 
-use game_events::{ChessEvent};
+use game_events::{ChessEvent, RefreshPiecesFromBoardEvent};
 use move_generator::{magic::Magic};
-use pieces::RefreshPiecesFromBoardEvent;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 

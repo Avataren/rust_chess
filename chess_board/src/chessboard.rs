@@ -208,16 +208,6 @@ impl ChessBoard {
         }
     }
 
-    // pub fn  MovePiece(int piece, int startSquare, int targetSquare)
-    // {
-    //     BitBoardUtility.ToggleSquares(ref PieceBitboards[piece], startSquare, targetSquare);
-    //     BitBoardUtility.ToggleSquares(ref ColourBitboards[MoveColourIndex], startSquare, targetSquare);
-
-    //     allPieceLists[piece].MovePiece(startSquare, targetSquare);
-    //     Square[startSquare] = Piece.None;
-    //     Square[targetSquare] = piece;
-    // }
-
     pub fn get_pawns(&self) -> Bitboard {
         self.pawns
     }
@@ -249,10 +239,6 @@ impl ChessBoard {
     pub fn get_black(&self) -> Bitboard {
         self.black
     }
-
-    // pub fn get_friendly_pieces(&self) -> Bitboard {
-    //     self.white
-    // }
 
     pub fn get_castling_rights(&self) -> String {
         let mut result = String::new();

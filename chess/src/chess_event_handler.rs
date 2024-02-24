@@ -1,13 +1,17 @@
-use bevy::ecs::{event::{EventReader, EventWriter}, system::ResMut};
+use bevy::ecs::{
+    event::{EventReader, EventWriter},
+    system::ResMut,
+};
 
 use crate::{
-    game_events::{ChessAction, ChessEvent}, pieces::RefreshPiecesFromBoardEvent, ChessBoardRes
+    game_events::{ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
+    ChessBoardRes,
 };
 
 pub fn handle_chess_events(
     mut chess_ew: EventReader<ChessEvent>,
     mut chess_board: ResMut<ChessBoardRes>,
-    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>
+    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
 ) {
     for event in chess_ew.read() {
         match event.action {

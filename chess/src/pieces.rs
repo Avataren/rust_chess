@@ -1,14 +1,10 @@
 use bevy::{math::vec3, prelude::*, utils::HashMap};
 
 use crate::{
-    board::{BoardDimensions, BoardTag, ChessBoardTransform},
-    ChessBoardRes,
+    board::{BoardDimensions, BoardTag, ChessBoardTransform}, game_events::RefreshPiecesFromBoardEvent, ChessBoardRes
 };
 
 const CHESSPIECE_SCALE: f32 = 0.8;
-
-#[derive(Event)]
-pub struct RefreshPiecesFromBoardEvent;
 
 #[derive(Resource)]
 pub struct PieceTextures {
