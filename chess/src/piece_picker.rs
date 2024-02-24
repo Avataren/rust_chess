@@ -78,7 +78,7 @@ pub fn handle_touch_input(
 }
 
 pub fn handle_mouse_input(
-    q_windows: Query<&Window, With<PrimaryWindow>>,
+    q_windows: Query<&Window>,
     mouse_button_input: ResMut<'_, ButtonInput<MouseButton>>,
     mut chess_pickup_ew: EventWriter<PickUpPieceEvent>,
     mut chess_drag_ew: EventWriter<DragPieceEvent>,
@@ -120,47 +120,55 @@ pub fn pick_up_piece(
     mut commands: Commands,
     mut chess_input_er: EventReader<PickUpPieceEvent>,
 ) {
+    let mut position = Option::None;
+    for inp in chess_input_er.read() {
+        position = Some(inp.position);
+    }
+    if position.is_none() {
+        return;
+    }
+
     if let Ok((camera, camera_transform)) = q_camera.get_single() {
-        let mut position = Vec2::ZERO;
-        for inp in chess_input_er.read() {
-            position = inp.position;
+        let board_coords = get_board_coords_from_cursor(
+            position.unwrap(),
+            camera,
+            camera_transform,
+            &board_transform,
+            &board_dimensions,
+        )
+        .expect("Failed to get board coordinates"); // Consider handling this more gracefully
 
-            let board_coords = get_board_coords_from_cursor(
-                position,
-                camera,
-                camera_transform,
-                &board_transform,
-                &board_dimensions,
-            )
-            .expect("Failed to get board coordinates"); // Consider handling this more gracefully
+        let (col, row) = board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
 
-            let (col, row) =
-                board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
+        // spawn debug pieces
+        if let Some((entity, transform, chess_piece)) = piece_query
+            .iter_mut()
+            .find(|(_, _, chess_piece)| chess_piece.row == row && chess_piece.col == col)
+        {
+            piece_is_picked_up.piece_type = Some(chess_piece.piece_type);
+            piece_is_picked_up.original_row_col = (row, col);
+            piece_is_picked_up.current_position = transform.translation;
+            piece_is_picked_up.piece_entity = Some(entity);
+            piece_is_picked_up.is_dragging = true;
 
-            // spawn debug pieces
-            if let Some((entity, transform, chess_piece)) = piece_query
-                .iter_mut()
-                .find(|(_, _, chess_piece)| chess_piece.row == row && chess_piece.col == col)
-            {
-                piece_is_picked_up.piece_type = Some(chess_piece.piece_type);
-                piece_is_picked_up.original_row_col = (row, col);
-                piece_is_picked_up.current_position = transform.translation;
-                piece_is_picked_up.piece_entity = Some(entity);
-                piece_is_picked_up.is_dragging = true;
+            let is_white = true;
+            // Continue with your logic, using `is_white` as needed
+            let valid_moves = get_move_list_from_square(
+                board_row_col_to_square_index(row, col),
+                &chess_board.chess_board,
+                is_white,
+                &magic_res.magic,
+            );
 
-                let is_white = true;
-                // Continue with your logic, using `is_white` as needed
-                let valid_moves = get_move_list_from_square(
-                    board_row_col_to_square_index(row, col),
-                    &chess_board.chess_board,
-                    is_white,
-                    &magic_res.magic,
-                );
+            commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
 
-                commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
-
-                println!("Picked up piece: {:?}", chess_piece.piece_type);
-            }
+            println!("Picked up piece: {:?}", chess_piece.piece_type);
+        } else {
+            piece_is_picked_up.is_dragging = false;
+            piece_is_picked_up.piece_entity = None;
+            piece_is_picked_up.piece_type = None;
+            piece_is_picked_up.original_row_col = (0, 0);
+            piece_is_picked_up.current_position = Vec3::new(0.0, 0.0, 0.0);
         }
     }
 }
@@ -173,25 +181,35 @@ pub fn drag_piece(
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     mut chess_input_er: EventReader<DragPieceEvent>,
 ) {
+    let mut position = Option::None;
+    for inp in chess_input_er.read() {
+        position = Some(inp.position);
+    }
+    if position.is_none() {
+        return;
+    }
+
+    if (!piece_is_picked_up.is_dragging) || (piece_is_picked_up.piece_entity.is_none()) {
+        return;
+    }
+
     if let Ok((camera, camera_transform)) = q_camera.get_single() {
         if let Some(piece_entity) = piece_is_picked_up.piece_entity {
             if let Ok((_, mut transform, _)) = piece_query.get_mut(piece_entity) {
-                for inp in chess_input_er.read() {
-                    let board_coords = get_board_coords_from_cursor(
-                        inp.position,
-                        camera,
-                        camera_transform,
-                        &board_transform,
-                        &board_dimensions,
-                    )
-                    .expect("Failed to get board coordinates"); // Consider handling this more gracefully
+                let board_coords = get_board_coords_from_cursor(
+                    position.unwrap(),
+                    camera,
+                    camera_transform,
+                    &board_transform,
+                    &board_dimensions,
+                )
+                .expect("Failed to get board coordinates"); // Consider handling this more gracefully
 
-                    transform.translation = Vec3::new(
-                        board_coords.x - board_dimensions.board_size.x / 2.0,
-                        board_coords.y - board_dimensions.board_size.y / 2.0,
-                        1.0,
-                    );
-                }
+                transform.translation = Vec3::new(
+                    board_coords.x - board_dimensions.board_size.x / 2.0,
+                    board_coords.y - board_dimensions.board_size.y / 2.0,
+                    1.0,
+                );
             }
         }
     }
@@ -210,78 +228,80 @@ pub fn drop_piece(
     mut chess_board: ResMut<ChessBoardRes>,
     mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
 ) {
+    let mut position = Option::None;
+    for inp in chess_input_er.read() {
+        position = Some(inp.position);
+    }
+    if position.is_none() {
+        return;
+    }
+    if (!piece_is_picked_up.is_dragging) || (piece_is_picked_up.piece_entity.is_none()) {
+        return;
+    }
+
     if let Ok((camera, camera_transform)) = q_camera.get_single() {
-        for inp in chess_input_er.read() {
-            //hide debug squares
-            for (entity, _) in debug_squares_query.iter_mut() {
-                commands.entity(entity).insert(Visibility::Hidden);
-            }
+        //hide debug squares
+        for (entity, _) in debug_squares_query.iter_mut() {
+            commands.entity(entity).insert(Visibility::Hidden);
+        }
 
-            if let Some(piece_entity) = piece_is_picked_up.piece_entity {
-                if let Ok((_, mut transform, mut chess_piece)) = piece_query.get_mut(piece_entity) {
-                    let board_coords = get_board_coords_from_cursor(
-                        inp.position,
-                        camera,
-                        camera_transform,
-                        &board_transform,
-                        &board_dimensions,
-                    )
-                    .expect("Failed to get board coordinates"); // Consider handling this more gracefully
+        if let Some(piece_entity) = piece_is_picked_up.piece_entity {
+            if let Ok((_, mut transform, mut chess_piece)) = piece_query.get_mut(piece_entity) {
+                let board_coords = get_board_coords_from_cursor(
+                    position.unwrap(),
+                    camera,
+                    camera_transform,
+                    &board_transform,
+                    &board_dimensions,
+                )
+                .expect("Failed to get board coordinates"); // Consider handling this more gracefully
 
-                    let (col, row) =
-                        board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
+                let (col, row) =
+                    board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
 
-                    print!("board_coords: {:?}", board_coords);
-                    if (board_coords.x < 0.0)
-                        || (board_coords.x > board_dimensions.board_size.x)
-                        || (board_coords.y < 0.0)
-                        || (board_coords.y > board_dimensions.board_size.y)
-                        || (piece_is_picked_up.original_row_col.0 == row
-                            && piece_is_picked_up.original_row_col.1 == col)
-                    {
-                        //trying to drop piece outside board, or same position as picked up
-                        piece_is_picked_up.is_dragging = false;
-                        let (original_row, original_col) = piece_is_picked_up.original_row_col;
-                        transform.translation = chess_coord_to_board(
-                            original_row,
-                            original_col,
-                            board_dimensions.square_size,
-                            Vec3::new(
-                                -board_dimensions.board_size.x / 2.0,
-                                board_dimensions.board_size.y / 2.0,
-                                0.5,
-                            ),
-                        );
-                        return;
-                    }
-
-                    chess_piece.row = row;
-                    chess_piece.col = col;
+                print!("board_coords: {:?}", board_coords);
+                if (board_coords.x < 0.0)
+                    || (board_coords.x > board_dimensions.board_size.x)
+                    || (board_coords.y < 0.0)
+                    || (board_coords.y > board_dimensions.board_size.y)
+                    || (piece_is_picked_up.original_row_col.0 == row
+                        && piece_is_picked_up.original_row_col.1 == col)
+                {
+                    //trying to drop piece outside board, or same position as picked up
                     piece_is_picked_up.is_dragging = false;
-
-                    let mut the_move = ChessMove::new(
-                        board_row_col_to_square_index(
-                            piece_is_picked_up.original_row_col.0,
-                            piece_is_picked_up.original_row_col.1,
-                        ),
-                        board_row_col_to_square_index(row, col),
-                    );
-
-                    let is_capture = !(chess_board.chess_board.get_all_pieces()
-                        & Bitboard::from_square_index(the_move.target_square()))
-                    .is_empty();
-
-                    if chess_board.chess_board.make_move(&mut the_move) {
-                        //if chess_board.chess_board.get_piece_at(col)
-                        if is_capture {
-                            spawn_sound(&mut commands, &sound_effects, "capture.ogg");
-                        } else {
-                            spawn_sound(&mut commands, &sound_effects, "move-self.ogg");
-                        }
-                        println!("Released piece at row: {}, col: {}", row, col);
-                    }
+                    piece_is_picked_up.piece_entity = None;
+                    piece_is_picked_up.piece_type = None;
+                    piece_is_picked_up.original_row_col = (0, 0);
+                    piece_is_picked_up.current_position = Vec3::new(0.0, 0.0, 0.0);
                     refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
+                    return;
                 }
+
+                chess_piece.row = row;
+                chess_piece.col = col;
+
+                let mut the_move = ChessMove::new(
+                    board_row_col_to_square_index(
+                        piece_is_picked_up.original_row_col.0,
+                        piece_is_picked_up.original_row_col.1,
+                    ),
+                    board_row_col_to_square_index(row, col),
+                );
+
+                let is_capture = !(chess_board.chess_board.get_all_pieces()
+                    & Bitboard::from_square_index(the_move.target_square()))
+                .is_empty();
+
+                if chess_board.chess_board.make_move(&mut the_move) {
+                    //if chess_board.chess_board.get_piece_at(col)
+                    if is_capture {
+                        spawn_sound(&mut commands, &sound_effects, "capture.ogg");
+                    } else {
+                        spawn_sound(&mut commands, &sound_effects, "move-self.ogg");
+                    }
+                    println!("Released piece at row: {}, col: {}", row, col);
+                }
+                refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
             }
         }
     }

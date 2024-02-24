@@ -12,15 +12,33 @@
       display: flex; 
       justify-content: center;
       align-items: center;
+      -webkit-user-select: none; /* Safari */
+      -moz-user-select: none; /* Firefox */
+      -ms-user-select: none; /* Internet Explorer/Edge */
+      user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
     }
     #app {
       display: flex;
       justify-content: center;
       align-items: center;
+      -webkit-user-select: none; /* Safari */
+      -moz-user-select: none; /* Firefox */
+      -ms-user-select: none; /* Internet Explorer/Edge */
+      user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
     }
     #game-canvas {
       display: block; 
-      background-color: #359;
+      background-color: #000;
+      -webkit-user-select: none; /* Safari */
+      -moz-user-select: none; /* Firefox */
+      -ms-user-select: none; /* Internet Explorer/Edge */
+      user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
+      visibility: hidden;
+    }
+    #info{
+      color: white;
+      font-size: 40px;
+      text-align: center;
     }
   </style>
 </head>
@@ -28,10 +46,34 @@
   <div id="app">
     <canvas id="game-canvas" tabindex="0"></canvas>
   </div>
-
+  <div id="info">
+    <p>Loading...</p>
+  </div>
   <script type="module">
     import init from './target/chess.js';
-    init().catch(console.error);
+    const canvas = document.getElementById('game-canvas');
+    const info = document.getElementById('info');
+    init().then(()=>{
+      canvas.blur();
+      canvas.style.visibility = 'visible';
+      info.style.display = 'none';
+
+    }).catch((err)=>{
+      console.error(err);
+      canvas.blur();
+      canvas.style.visibility = 'visible';
+      info.style.display = 'none';
+    });
+
+  document.addEventListener('mousedown', function(event) {
+    if (event.target !== canvas) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  });
+
+  canvas.setAttribute('tabindex', '0');
+
   </script>
 </body>
 </html>

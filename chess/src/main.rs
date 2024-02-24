@@ -3,7 +3,7 @@ use std::env;
 use bevy::{
     audio::{AudioPlugin, SpatialScale},
     prelude::*,
-    window::WindowResolution,
+    window::{WindowMode, WindowResolution},
 };
 
 mod board;
@@ -20,15 +20,6 @@ use game_events::{
     ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent,
 };
 use move_generator::magic::Magic;
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = console)]
-    fn log(s: &str);
-}
 
 #[derive(Resource)]
 struct ChessBoardRes {
@@ -44,6 +35,7 @@ const AUDIO_SCALE: f32 = 1. / 100.0;
 
 fn main() {
     //env::set_var("WGPU_BACKEND", "dx12");
+    //env::set_var("RUST_BACKTRACE", "1");
     App::new()
         .add_plugins(
             DefaultPlugins
@@ -52,6 +44,7 @@ fn main() {
                         canvas: Some("#game-canvas".to_string()),
                         title: "XavChess".to_string(),
                         resizable: true,
+                        //mode: WindowMode::BorderlessFullscreen,
                         resolution: WindowResolution::new(1280., 1024.),
                         prevent_default_event_handling: false,
                         present_mode: bevy::window::PresentMode::AutoNoVsync,
@@ -59,10 +52,10 @@ fn main() {
                     }),
                     ..default()
                 })
-                .set(AudioPlugin {
-                    default_spatial_scale: SpatialScale::new_2d(AUDIO_SCALE),
-                    ..default()
-                }),
+                // .set(AudioPlugin {
+                //     default_spatial_scale: SpatialScale::new_2d(AUDIO_SCALE),
+                //     ..default()
+                // }),
         )
         // .add_plugins(WindowResizePlugin)
         .add_systems(
