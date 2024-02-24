@@ -8,12 +8,15 @@ use bevy::{
 
 mod board;
 mod board_accessories;
-
+mod keyboard_input;
+mod chess_event_handler;
+mod game_events;
 mod piece_picker;
 mod pieces;
 mod sound;
 use board::ResolutionInfo;
 
+use game_events::{ChessEvent};
 use move_generator::{magic::Magic};
 use pieces::RefreshPiecesFromBoardEvent;
 #[cfg(target_arch = "wasm32")]
@@ -80,6 +83,8 @@ fn main() {
             (
                 board::handle_resize_event,
                 board::resize_board,
+                keyboard_input::handle_keyboard_input,
+                chess_event_handler::handle_chess_events,
                 piece_picker::handle_pick_and_drag_piece,
                 board_accessories::update_marker_square,
                 board_accessories::update_debug_squares,
@@ -116,6 +121,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     let magic = Magic::new();
     commands.insert_resource(MagicRes { magic });
     commands.insert_resource(Events::<RefreshPiecesFromBoardEvent>::default());
+    commands.insert_resource(Events::<ChessEvent>::default());
     board::spawn_board(&mut commands, asset_server);
 
     #[cfg(target_arch = "wasm32")]

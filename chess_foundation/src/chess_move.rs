@@ -5,8 +5,8 @@ use crate::{piece::PieceType, ChessPiece};
 #[derive(Debug, Clone, Copy)]
 pub struct ChessMove {
     move_value: u16, // Compact representation of the move
-    chess_piece: Option<ChessPiece>,
-    capture: Option<ChessPiece>,
+    pub chess_piece: Option<ChessPiece>,
+    pub capture: Option<ChessPiece>,
 }
 
 impl default::Default for ChessMove {

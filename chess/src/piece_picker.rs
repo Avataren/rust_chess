@@ -174,7 +174,7 @@ fn pick_up_piece(
             board_row_col_to_square_index(row, col),
             &chess_board.chess_board,
             is_white,
-            &magic_res.magic
+            &magic_res.magic,
         );
 
         commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));

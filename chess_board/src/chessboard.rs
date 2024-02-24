@@ -30,10 +30,36 @@ impl ChessBoard {
     }
 
     pub fn get_all_pieces(&self) -> Bitboard {
-        self.get_white() | (self.get_black())  
+        self.get_white() | (self.get_black())
     }
 
-    pub fn make_move(&mut self,chess_move: &mut ChessMove) -> bool {
+    pub fn undo_move(&mut self) {
+        if let Some(chess_move) = self.move_histroy.pop() {
+            // Revert the moved piece to its starting position
+            if let Some(piece) = chess_move.chess_piece {
+                let target_square_bb = Bitboard::from_square_index(chess_move.target_square());
+                let start_square_bb = Bitboard::from_square_index(chess_move.start_square());
+    
+                // Move the piece back to its original position
+                self.update_piece_bitboard(piece.piece_type(), target_square_bb, start_square_bb);
+    
+                // Update color bitboards to reflect the piece's move back
+                self.update_color_bitboard(piece.is_white(), target_square_bb, start_square_bb);
+            }
+    
+            // Restore the captured piece, if there was one
+            if let Some(captured_piece) = chess_move.capture {
+                let target_square_bb = Bitboard::from_square_index(chess_move.target_square());
+    
+                // Directly set the captured piece back on the board
+                self.set_piece_bitboard(captured_piece.piece_type(), target_square_bb, captured_piece.is_white());
+            }
+        } else {
+            println!("No move to undo");
+        }
+    }
+
+    pub fn make_move(&mut self, chess_move: &mut ChessMove) -> bool {
         let start_square_bb = Bitboard::from_square_index(chess_move.start_square());
         let target_square_bb = Bitboard::from_square_index(chess_move.target_square());
 
@@ -42,6 +68,7 @@ impl ChessBoard {
         println!("Is white: {}", is_white);
         if let Some(piece_type) = self.get_piece_type(chess_move.start_square()) {
             //let piece = ChessPiece::new(piece_type, is_white);
+            chess_move.set_piece(ChessPiece::new(piece_type, is_white));
             if let Some(captured_piece) = self.get_piece(chess_move.target_square()) {
                 if captured_piece.is_white() == is_white {
                     println!(
@@ -81,6 +108,26 @@ impl ChessBoard {
             PieceType::Queen => self.queens = self.queens ^ (start_square_bb | target_square_bb),
             PieceType::King => self.kings = self.kings ^ (start_square_bb | target_square_bb),
             _ => {}
+        }
+    }
+
+    fn set_piece_bitboard(&mut self, piece_type: PieceType, square_bb: Bitboard, is_white: bool) {
+        match piece_type {
+            PieceType::Pawn => self.pawns |= square_bb,
+            PieceType::Knight => self.knights |= square_bb,
+            PieceType::Bishop => self.bishops |= square_bb,
+            PieceType::Rook => self.rooks |= square_bb,
+            PieceType::Queen => self.queens |= square_bb,
+            PieceType::King => self.kings |= square_bb,
+            _ => {
+                println!("No piece to set {}", piece_type as u8);
+            }
+        }
+
+        if is_white {
+            self.white |= square_bb;
+        } else {
+            self.black |= square_bb;
         }
     }
 
@@ -152,7 +199,10 @@ impl ChessBoard {
         if (self.pawns | self.knights | self.bishops | self.rooks | self.queens | self.kings)
             .is_set(index as usize)
         {
-            Some(ChessPiece::new(self.get_piece_type(index).unwrap(), is_white))
+            Some(ChessPiece::new(
+                self.get_piece_type(index).unwrap(),
+                is_white,
+            ))
         } else {
             None
         }

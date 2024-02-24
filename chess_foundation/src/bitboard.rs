@@ -1,4 +1,4 @@
-use std::ops::{BitAnd, BitAndAssign, BitOr, BitXor, Not};
+use std::ops::{BitAnd, BitAndAssign, BitOrAssign, BitOr, BitXor, Not};
 
 /// Represents a chessboard using a 64-bit integer, where each bit corresponds to a square.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -142,6 +142,12 @@ impl BitAnd for Bitboard {
 impl BitAndAssign for Bitboard {
     fn bitand_assign(&mut self, rhs: Self) {
         self.0 &= rhs.0;
+    }
+}
+
+impl BitOrAssign for Bitboard {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
     }
 }
 
