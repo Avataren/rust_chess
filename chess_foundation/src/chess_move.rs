@@ -21,15 +21,15 @@ impl default::Default for ChessMove {
 
 impl ChessMove {
     // Constants for flags
-    const NO_FLAG: u16 = 0b0000;
-    const EN_PASSANT_CAPTURE_FLAG: u16 = 0b0001;
-    const CASTLE_FLAG: u16 = 0b0010;
-    const PAWN_TWO_UP_FLAG: u16 = 0b0011;
+    pub const NO_FLAG: u16 = 0b0000;
+    pub const EN_PASSANT_CAPTURE_FLAG: u16 = 0b0001;
+    pub const CASTLE_FLAG: u16 = 0b0010;
+    pub const PAWN_TWO_UP_FLAG: u16 = 0b0011;
 
-    const PROMOTE_TO_QUEEN_FLAG: u16 = 0b0100;
-    const PROMOTE_TO_KNIGHT_FLAG: u16 = 0b0101;
-    const PROMOTE_TO_ROOK_FLAG: u16 = 0b0110;
-    const PROMOTE_TO_BISHOP_FLAG: u16 = 0b0111;
+    pub const PROMOTE_TO_QUEEN_FLAG: u16 = 0b0100;
+    pub const PROMOTE_TO_KNIGHT_FLAG: u16 = 0b0101;
+    pub const PROMOTE_TO_ROOK_FLAG: u16 = 0b0110;
+    pub const PROMOTE_TO_BISHOP_FLAG: u16 = 0b0111;
 
     // Masks
     const START_SQUARE_MASK: u16 = 0b0000000000111111;
@@ -75,6 +75,10 @@ impl ChessMove {
 
     pub fn flag(&self) -> u16 {
         (self.move_value & Self::FLAG_MASK) >> 12
+    }
+
+    pub fn has_flag(&self, flag: u16) -> bool {
+        self.flag() & (flag << 12) != 0
     }
 
     pub fn is_promotion(&self) -> bool {

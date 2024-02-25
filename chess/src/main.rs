@@ -14,6 +14,7 @@ mod keyboard_input;
 mod piece_picker;
 mod pieces;
 mod sound;
+mod game_resources;
 use board::ResolutionInfo;
 
 use game_events::{
@@ -109,6 +110,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(board::BoardDimensions::default());
     commands.insert_resource(pieces::PieceTextures::default());
     commands.insert_resource(sound::SoundEffects::default());
+    commands.insert_resource(game_resources::ValidMoves::new());
     commands.insert_resource(ResolutionInfo {
         width: 1280.0,
         height: 1080.0,

@@ -33,6 +33,14 @@ impl ChessBoard {
         self.get_white() | (self.get_black())
     }
 
+    pub fn get_empty(&self) -> Bitboard {
+        !(self.get_all_pieces())
+    }
+
+    pub fn get_last_move(&self) -> Option<ChessMove> {
+        self.move_histroy.last().cloned()
+    }
+
     pub fn undo_move(&mut self) {
         if let Some(chess_move) = self.move_histroy.pop() {
             // Revert the moved piece to its starting position
