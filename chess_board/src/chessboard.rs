@@ -85,6 +85,15 @@ impl ChessBoard {
         }
     }
 
+    
+    pub fn get_king(&self, is_white: bool) -> Bitboard {
+        if is_white {
+            self.kings & self.white
+        } else {
+            self.kings & self.black
+        }
+    }
+
     pub fn make_move(&mut self, chess_move: &mut ChessMove) -> bool {
         let start_square = chess_move.start_square();
         let target_square = chess_move.target_square();

@@ -7,6 +7,9 @@ use rand::Rng;
 
 use crate::magic_constants::{BISHOP_MAGICS, ROOK_MAGICS};
 use crate::masks::{BISHOP_MASKS, ROOK_MASKS};
+use crate::move_generator::{
+    get_legal_move_list_from_square, get_pseudo_legal_move_list_from_square,
+};
 use crate::{get_king_move_patterns, get_knight_move_patterns};
 
 pub struct Magic {
@@ -135,7 +138,12 @@ impl Magic {
         bishop_table
     }
 
-    pub fn get_rook_moves(&self, square:u16, relevant_blockers: Bitboard, chess_board: &ChessBoard) -> Vec<ChessMove> {
+    pub fn get_rook_moves(
+        &self,
+        square: u16,
+        relevant_blockers: Bitboard,
+        chess_board: &ChessBoard,
+    ) -> Vec<ChessMove> {
         let magic_index = Self::rook_magic_index(square as usize, chess_board.get_all_pieces());
         let mut moves_bitboard = self.rook_table[square as usize][magic_index] & !relevant_blockers;
         let mut move_list = Vec::new();
@@ -146,10 +154,67 @@ impl Magic {
         move_list
     }
 
+    pub fn get_rook_attacks(
+        &self,
+        square:usize,
+        relevant_blockers: Bitboard,
+    ) -> Bitboard {
+        let magic_index = Self::rook_magic_index(square, relevant_blockers);
+        self.rook_table[square][magic_index]
+    }
 
-    pub fn get_bishop_moves(&self, square:u16, relevant_blockers: Bitboard, chess_board: &ChessBoard) -> Vec<ChessMove> {
+    pub fn get_bishop_attacks(
+        &self,
+        square: usize,
+        relevant_blockers: Bitboard,
+    ) -> Bitboard {
+        let magic_index = Self::bishop_magic_index(square, relevant_blockers);
+        self.rook_table[square][magic_index] & !relevant_blockers
+    }      
+
+    pub fn get_pawn_attacks(&self, square: u16, is_white: bool) -> Bitboard {
+        let mut attacks = Bitboard::default();
+    
+        // Calculate rank (0-7) and file (0-7) from square index (0-63)
+        let rank = square / 8;
+        let file = square % 8;
+    
+        if is_white {
+            // Ensure pawn is not on 8th rank (no attacks from there)
+            if rank < 7 {
+                if file > 0 {  // Pawn is not on A-file
+                    attacks |= Bitboard::from_square_index(square + 7);
+                }
+                if file < 7 {  // Pawn is not on H-file
+                    attacks |= Bitboard::from_square_index(square + 9);
+                }
+            }
+        } else {
+            // Ensure pawn is not on 1st rank (no attacks from there)
+            if rank > 0 {
+                if file > 0 {  // Pawn is not on A-file
+                    attacks |= Bitboard::from_square_index(square - 9);
+                }
+                if file < 7 {  // Pawn is not on H-file
+                    attacks |= Bitboard::from_square_index(square - 7);
+                }
+            }
+        }
+    
+        attacks
+    }
+    
+
+
+    pub fn get_bishop_moves(
+        &self,
+        square: u16,
+        relevant_blockers: Bitboard,
+        chess_board: &ChessBoard,
+    ) -> Vec<ChessMove> {
         let magic_index = Self::bishop_magic_index(square as usize, chess_board.get_all_pieces());
-        let mut moves_bitboard = self.bishop_table[square as usize][magic_index] & !relevant_blockers;
+        let mut moves_bitboard =
+            self.bishop_table[square as usize][magic_index] & !relevant_blockers;
         let mut move_list = Vec::new();
         while !moves_bitboard.is_empty() {
             let target_square = moves_bitboard.pop_lsb();
@@ -192,6 +257,78 @@ impl Magic {
         }
 
         move_list
+    }
+
+    pub fn generate_threat_map_from_square(&self, mut chess_board: &mut ChessBoard, square: u16, relevant_blockers: Bitboard) -> Bitboard {
+        let is_white = chess_board.get_white().contains_square(square as i32);
+        let mut enemy_pieces_bitboard = if is_white {
+            chess_board.get_black()
+        } else {
+            chess_board.get_white()
+        };
+
+        let mut threats_bb = Bitboard::default();
+
+        while enemy_pieces_bitboard != Bitboard::default() {
+            let square = enemy_pieces_bitboard.pop_lsb() as u16;
+            match chess_board.get_piece_type(square as u16) {
+                Some(piece_type) => {
+                    match piece_type {
+                        chess_foundation::piece::PieceType::Rook => {
+                            threats_bb |= self.get_rook_attacks(square as usize, relevant_blockers);
+                        }
+                        chess_foundation::piece::PieceType::Bishop => {
+                            threats_bb |= self.get_bishop_attacks(square as usize, relevant_blockers);
+                        }
+                        chess_foundation::piece::PieceType::Queen => {
+                            threats_bb |= self.get_rook_attacks(square as usize, relevant_blockers);
+                            threats_bb |= self.get_bishop_attacks(square as usize, relevant_blockers);
+                        }
+                        chess_foundation::piece::PieceType::King => {
+                            threats_bb |= self.king_lut[square as usize];
+                        }
+                        chess_foundation::piece::PieceType::Knight => {
+                            threats_bb |= self.knight_lut[square as usize];
+                        }
+                        chess_foundation::piece::PieceType::Pawn => {
+                            threats_bb |= self.get_pawn_attacks(square, is_white);
+                        }                        
+                        _ => {}
+                    }
+                }
+                None => {}
+            }
+        }
+        threats_bb
+    }
+
+    pub fn is_king_in_check(&self, mut chess_board: &mut ChessBoard, is_white: bool) -> bool {
+        let king_bb = chess_board.get_king(is_white);
+        let king_square = king_bb.clone().pop_lsb() as u16;
+        let friendly_pieces = if is_white {
+            chess_board.get_white()
+        } else {
+            chess_board.get_black()
+        };
+
+        let threats = self.generate_threat_map_from_square(&mut chess_board, king_square, friendly_pieces);
+        (king_bb & threats) != Bitboard::default()
+    }
+
+    // Example implementation of can_castle_kingside
+    fn can_castle_kingside(&self, king_square: u16, friendly_pieces: Bitboard) -> bool {
+        // Check if the king and the rook in the kingside have not moved
+        // Check if the squares between the king and the rook are empty
+        // Check if the king is not in check
+        // Check if the squares the king passes through are not under attack
+        // Return true if all conditions are met, false otherwise
+        unimplemented!() // Replace with actual implementation
+    }
+
+    // Similar implementation for can_castle_queenside
+    fn can_castle_queenside(&self, king_square: u16, friendly_pieces: Bitboard) -> bool {
+        // Similar checks as can_castle_kingside, but for the queenside
+        unimplemented!() // Replace with actual implementation
     }
 
     fn random_uint64() -> u64 {

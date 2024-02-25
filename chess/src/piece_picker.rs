@@ -3,7 +3,7 @@ use bevy::{
     prelude::*,
     window::PrimaryWindow,
 };
-use move_generator::move_generator::get_move_list_from_square;
+use move_generator::move_generator::{get_legal_move_list_from_square, get_pseudo_legal_move_list_from_square};
 
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
@@ -116,7 +116,7 @@ pub fn pick_up_piece(
     q_camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     board_transform: Res<ChessBoardTransform>,
     board_dimensions: Res<BoardDimensions>,
-    chess_board: Res<ChessBoardRes>,
+    mut chess_board: ResMut<ChessBoardRes>,
     mut piece_is_picked_up: ResMut<PieceIsPickedUp>,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     magic_res: Res<MagicRes>,
@@ -155,9 +155,11 @@ pub fn pick_up_piece(
             piece_is_picked_up.piece_entity = Some(entity);
             piece_is_picked_up.is_dragging = true;
 
-            let valid_moves = get_move_list_from_square(
+            println!("**************** PICKUP ****************");
+
+            let valid_moves = get_legal_move_list_from_square(
                 board_row_col_to_square_index(row, col),
-                &chess_board.chess_board,
+                &mut chess_board.chess_board,
                 &magic_res.magic,
             );
 
