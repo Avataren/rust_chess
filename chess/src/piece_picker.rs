@@ -6,7 +6,13 @@ use bevy::{
 use move_generator::move_generator::get_move_list_from_square;
 
 use crate::{
-    board::{BoardDimensions, ChessBoardTransform}, board_accessories::{DebugSquare, EnableDebugMarkers}, game_events::{DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent}, game_resources::ValidMoves, pieces::{chess_coord_to_board, get_board_coords_from_cursor, ChessPieceComponent}, sound::{spawn_sound, SoundEffects}, ChessBoardRes, MagicRes
+    board::{BoardDimensions, ChessBoardTransform},
+    board_accessories::{DebugSquare, EnableDebugMarkers},
+    game_events::{DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent},
+    game_resources::ValidMoves,
+    pieces::{chess_coord_to_board, get_board_coords_from_cursor, ChessPieceComponent},
+    sound::{spawn_sound, SoundEffects},
+    ChessBoardRes, MagicRes,
 };
 use chess_foundation::{board_helper::board_row_col_to_square_index, Bitboard, ChessMove};
 
@@ -89,8 +95,8 @@ pub fn handle_mouse_input(
                 chess_drag_ew.send(DragPieceEvent {
                     position: cursor_position,
                 });
-            } 
-            
+            }
+
             if mouse_button_input.just_released(MouseButton::Left) {
                 chess_drop_ew.send(DropPieceEvent {
                     position: cursor_position,
@@ -269,11 +275,13 @@ pub fn drop_piece(
                 //println!("board_coords: {:?}", board_coords);
 
                 let square = board_row_col_to_square_index(row, col);
-                let valid_move = valid_moves_res.moves.iter().find(|chess_move| {
-                    chess_move.target_square() == square
-                });
+                let valid_move = valid_moves_res
+                    .moves
+                    .iter()
+                    .find(|chess_move| chess_move.target_square() == square);
 
-                if  valid_move.is_none() || (board_coords.x < 0.0)
+                if valid_move.is_none()
+                    || (board_coords.x < 0.0)
                     || (board_coords.x > board_dimensions.board_size.x)
                     || (board_coords.y < 0.0)
                     || (board_coords.y > board_dimensions.board_size.y)
@@ -297,11 +305,20 @@ pub fn drop_piece(
                 let is_capture = !(chess_board.chess_board.get_all_pieces()
                     & Bitboard::from_square_index(valid_move.unwrap().target_square()))
                 .is_empty();
-                println!("************************************");
-                println!("Making move from {} to {}", valid_move.unwrap().start_square(), valid_move.unwrap().target_square());
-                println!("************************************");
+                // println!("************************************");
+                // println!("Making move from {} to {}", valid_move.unwrap().start_square(), valid_move.unwrap().target_square());
+                // println!("************************************");
 
-                if chess_board.chess_board.make_move(&mut valid_move.unwrap().clone()) {
+                println!(
+                    "Doublemove: {}",
+                    valid_move.unwrap().has_flag(ChessMove::PAWN_TWO_UP_FLAG)
+                );
+
+                if chess_board
+                    .chess_board
+                    .make_move(&mut valid_move.unwrap().clone())
+                {
+                    valid_moves_res.moves.clear();
                     //if chess_board.chess_board.get_piece_at(col)
                     if is_capture {
                         spawn_sound(&mut commands, &sound_effects, "capture.ogg");

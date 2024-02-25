@@ -72,17 +72,12 @@ fn main() {
                 .chain(),
         )
         .add_systems(
-            PreUpdate,
-            (
-                piece_picker::handle_mouse_input,
-                piece_picker::handle_touch_input,
-            ),
-        )
-        .add_systems(
             Update,
             (
                 board::handle_resize_event,
                 board::resize_board,
+                piece_picker::handle_mouse_input,
+                piece_picker::handle_touch_input,
                 keyboard_input::handle_keyboard_input,
                 chess_event_handler::handle_chess_events,
                 piece_picker::pick_up_piece,

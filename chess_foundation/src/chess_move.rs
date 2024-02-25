@@ -78,9 +78,13 @@ impl ChessMove {
     }
 
     pub fn has_flag(&self, flag: u16) -> bool {
-        self.flag() & (flag << 12) != 0
+        self.flag() & flag != 0
     }
 
+    pub fn clear_flag(&mut self, flag: u16) {
+        self.move_value &= !(flag << 12);
+    }
+    
     pub fn is_promotion(&self) -> bool {
         let flag = self.flag();
         flag >= Self::PROMOTE_TO_QUEEN_FLAG && flag <= Self::PROMOTE_TO_BISHOP_FLAG

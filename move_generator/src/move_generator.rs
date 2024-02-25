@@ -72,6 +72,8 @@ pub fn get_pawn_moves(
                 double_move_pos as u16,
                 ChessMove::PAWN_TWO_UP_FLAG,
             ));
+
+            println!("did last register as double move? {}",move_list.last().unwrap().has_flag(ChessMove::PAWN_TWO_UP_FLAG));
         }
     }
 

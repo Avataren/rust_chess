@@ -43,24 +43,42 @@ impl ChessBoard {
 
     pub fn undo_move(&mut self) {
         if let Some(chess_move) = self.move_histroy.pop() {
+            let target_square = chess_move.target_square();
+            let start_square = chess_move.start_square();
+            let target_square_bb = Bitboard::from_square_index(target_square);
+            let start_square_bb = Bitboard::from_square_index(start_square);
+
             // Revert the moved piece to its starting position
             if let Some(piece) = chess_move.chess_piece {
-                let target_square_bb = Bitboard::from_square_index(chess_move.target_square());
-                let start_square_bb = Bitboard::from_square_index(chess_move.start_square());
-    
-                // Move the piece back to its original position
                 self.update_piece_bitboard(piece.piece_type(), target_square_bb, start_square_bb);
-    
-                // Update color bitboards to reflect the piece's move back
                 self.update_color_bitboard(piece.is_white(), target_square_bb, start_square_bb);
             }
-    
+
             // Restore the captured piece, if there was one
             if let Some(captured_piece) = chess_move.capture {
-                let target_square_bb = Bitboard::from_square_index(chess_move.target_square());
-    
-                // Directly set the captured piece back on the board
-                self.set_piece_bitboard(captured_piece.piece_type(), target_square_bb, captured_piece.is_white());
+                // If the move was an en passant capture, the captured pawn's location differs from the target square
+                if chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
+                    // Calculate the original position of the captured pawn
+                    let captured_pawn_square = if captured_piece.is_white() {
+                        target_square + 8
+                    } else {
+                        target_square - 8
+                    };
+                    let captured_pawn_bb = Bitboard::from_square_index(captured_pawn_square);
+
+                    self.set_piece_bitboard(
+                        captured_piece.piece_type(),
+                        captured_pawn_bb,
+                        captured_piece.is_white(),
+                    );
+                } else {
+                    // For regular captures, just place the piece back on the target square
+                    self.set_piece_bitboard(
+                        captured_piece.piece_type(),
+                        target_square_bb,
+                        captured_piece.is_white(),
+                    );
+                }
             }
         } else {
             println!("No move to undo");
@@ -68,16 +86,37 @@ impl ChessBoard {
     }
 
     pub fn make_move(&mut self, chess_move: &mut ChessMove) -> bool {
-        let start_square_bb = Bitboard::from_square_index(chess_move.start_square());
-        let target_square_bb = Bitboard::from_square_index(chess_move.target_square());
+        let start_square = chess_move.start_square();
+        let target_square = chess_move.target_square();
+        let start_square_bb = Bitboard::from_square_index(start_square);
+        let target_square_bb = Bitboard::from_square_index(target_square);
 
-        let is_white = self.white.is_set(chess_move.start_square() as usize);
-
+        let is_white = self.white.is_set(start_square as usize);
         println!("Is white: {}", is_white);
-        if let Some(piece_type) = self.get_piece_type(chess_move.start_square()) {
-            //let piece = ChessPiece::new(piece_type, is_white);
+
+        if let Some(piece_type) = self.get_piece_type(start_square) {
             chess_move.set_piece(ChessPiece::new(piece_type, is_white));
-            if let Some(captured_piece) = self.get_piece(chess_move.target_square()) {
+
+            // Check for en passant
+            if piece_type == PieceType::Pawn
+                && chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG)
+            {
+                // Calculate the position of the captured pawn
+                let captured_pawn_square = if is_white {
+                    target_square - 8
+                } else {
+                    target_square + 8
+                };
+
+                if let Some(captured_pawn) = self.get_piece(captured_pawn_square) {
+                    chess_move.set_capture(captured_pawn);
+                    // Remove the captured pawn
+                    let captured_pawn_bb = Bitboard::from_square_index(captured_pawn_square);
+                    self.clear_piece_bitboard(PieceType::Pawn, captured_pawn_bb, !is_white);
+                } else {
+                    chess_move.clear_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG);
+                }
+            } else if let Some(captured_piece) = self.get_piece(target_square) {
                 if captured_piece.is_white() == is_white {
                     println!(
                         "Invalid move: target square is occupied by a piece of the same color"
@@ -85,10 +124,9 @@ impl ChessBoard {
                     return false;
                 }
                 chess_move.set_capture(captured_piece);
-
                 self.clear_piece_bitboard(captured_piece.piece_type(), target_square_bb, !is_white);
             } else {
-                println!("No piece captured")
+                println!("No piece captured");
             }
 
             self.move_histroy.push(chess_move.clone());
