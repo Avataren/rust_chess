@@ -113,14 +113,18 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     let mut chessboard = chess_board::ChessBoard::new();
     //let fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq";
-    let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    //let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     
-    chessboard.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w  - 0 1");
-    //chessboard.set_from_fen("RN1QKBNR/PP2PPPP/2P5/3P4/8/8/ppppBppp/rnbqkbnr w KQkq - 0 1");
+    // chessboard.set_from_fen("8/8/8/8/7q/8/6k1/4K3 w  - 0 1");
+    //chessboard.set_from_fen("5K2/4Q3/3q4/1k6/8/8/8/8 w  - 0 1");
+    //chessboard.set_from_fen("4K3/4Q3/3q4/1k6/8/8/8/8 w  - 0 1");
+    //chessboard.set_from_fen("3Q1K2/8/3q4/1k6/8/8/8/8 w  - 0 1");
+    //chessboard.set_from_fen("8/8/5p1/4p3/4K3/8/8/8 w KQkq - 0 1");
     // chessboard.clear();
     // chessboard.set_piece_at_square(4, chess_foundation::piece::PieceType::King, true);
     // chessboard.set_piece_at_square(19, chess_foundation::piece::PieceType::Pawn, false);
     // chessboard.set_piece_at_square(20, chess_foundation::piece::PieceType::Queen, false);
+    // chessboard.set_from_fen("8/p2k4/1N6/8/8/8/8/4K3 w  - 0 1");
     commands.insert_resource(ChessBoardRes {
         chess_board: chessboard,
         //chess_board: chess_board::ChessBoard::new(),

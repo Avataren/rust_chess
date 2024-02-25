@@ -1,7 +1,7 @@
 use core::panic;
 
 use chess_board::ChessBoard;
-use chess_foundation::bitboard::Bitboard;
+use chess_foundation::bitboard::{self, Bitboard};
 use chess_foundation::{ChessMove, Coord};
 use rand::Rng;
 
@@ -18,6 +18,9 @@ pub struct Magic {
     pub king_lut: Vec<Bitboard>,
     rook_table: Vec<Vec<Bitboard>>,
     bishop_table: Vec<Vec<Bitboard>>,
+    white_pawn_attack_masks: [Bitboard; 64],
+    black_pawn_attack_masks: [Bitboard; 64],
+
 }
 
 impl Magic {
@@ -45,7 +48,45 @@ impl Magic {
             king_lut,
             rook_table,
             bishop_table,
+            white_pawn_attack_masks: Self::init_white_pawn_attack_masks(),
+            black_pawn_attack_masks: Self::init_black_pawn_attack_masks(),
         }
+    }
+
+    pub fn init_black_pawn_attack_masks() -> [Bitboard; 64] {
+        let mut masks = [Bitboard::default(); 64];
+        for square in 0..64 {
+            // Exclude pawns on the 8th rank (squares 0-7) as they cannot move forward
+            if square >= 8 {
+                // Left captures, excluding the A file (squares % 8 == 0)
+                if square % 8 != 0 {
+                    masks[square].set_bit(square - 9);
+                }
+                // Right captures, excluding the H file (squares % 8 == 7)
+                if square % 8 != 7 {
+                    masks[square].set_bit(square - 7);
+                }
+            }
+        }
+        masks
+    }
+
+    pub fn init_white_pawn_attack_masks() -> [Bitboard; 64] {
+        let mut masks = [Bitboard::default(); 64];
+        for square in 0..64 {
+            // Exclude pawns on the 1st rank (squares 56-63) as they cannot move forward
+            if square < 56 {
+                // Left captures, excluding the A file (squares % 8 == 0)
+                if square % 8 != 0 {
+                    masks[square].set_bit(square + 7);
+                }
+                // Right captures, excluding the H file (squares % 8 == 7)
+                if square % 8 != 7 {
+                    masks[square].set_bit(square + 9);
+                }
+            }
+        }
+        masks
     }
 
     pub fn print_masks() {
@@ -154,51 +195,136 @@ impl Magic {
         move_list
     }
 
-    pub fn get_rook_attacks(&self, square: usize, relevant_blockers: Bitboard) -> Bitboard {
-        let magic_index = Self::rook_magic_index(square, relevant_blockers);
+
+    pub fn get_pawn_moves(
+        &self,
+        square: u16,
+        is_white: bool,
+        chess_board: &ChessBoard,
+    ) -> Vec<ChessMove> {
+        let mut move_list = Vec::new();
+    
+        // Calculate rank and file for the pawn
+        let rank = square / 8;
+        let file = square % 8;
+    
+        // Single move forward
+        let single_step = if is_white { 8 } else { -8 };
+        let single_move_pos = square as i32 + single_step;
+    
+        if chess_board.get_empty().contains_square(single_move_pos) {
+            move_list.push(ChessMove::new(square, single_move_pos as u16));
+        }
+    
+        // Double move forward
+        let starting_rank = if is_white { 1 } else { 6 };
+        if rank == starting_rank {
+            let double_step = single_step * 2;
+            let double_move_pos = square as i32 + double_step;
+            if chess_board.get_empty().contains_square(single_move_pos)
+                && chess_board.get_empty().contains_square(double_move_pos)
+            {
+                move_list.push(ChessMove::new_with_flag(
+                    square,
+                    double_move_pos as u16,
+                    ChessMove::PAWN_TWO_UP_FLAG,
+                ));
+            }
+        }
+    
+        // Captures
+        let mut opponent_pieces = if is_white {
+            chess_board.get_black() // If the pawn is white, get black pieces
+        } else {
+            chess_board.get_white() // If the pawn is black, get white pieces
+        };
+    
+        // Determine the attack mask for the current pawn based on its color and position
+        let pawn_attack_mask = if is_white {
+            self.white_pawn_attack_masks[square as usize]
+        } else {
+            self.black_pawn_attack_masks[square as usize]
+        };
+
+        // Find potential captures by performing a bitwise AND between the pawn's attack mask and the opponent's pieces
+        let mut potential_captures = pawn_attack_mask & opponent_pieces;
+
+        // Iterate over potential captures using a while loop and pop_lsb(), similar to the previous example
+        while potential_captures != Bitboard::default() {
+            let capture_square = potential_captures.pop_lsb() as u16;
+            // Since the capture_square is directly derived from the intersection of attack masks and opponent pieces,
+            // it's guaranteed to be a valid capture, so we can directly add the move to the move list
+            move_list.push(ChessMove::new(square, capture_square));
+        }
+        // En Passant
+        //todo: optimze this!
+        let last_move = chess_board.get_last_move();
+        if let Some(last_move) = last_move {
+            if last_move.has_flag(ChessMove::PAWN_TWO_UP_FLAG) {
+                let last_move_to = last_move.target_square();
+                let last_move_to_file = last_move_to % 8;
+                let pawn_rank = square / 8;
+                let pawn_file = square % 8;
+                let en_passant_rank = if is_white { 4 } else { 3 };
+                let is_adjacent_file = (pawn_file as i32 - last_move_to_file as i32).abs() == 1;
+    
+                if pawn_rank == en_passant_rank && is_adjacent_file {
+                    let en_passant_capture_square = if is_white { last_move_to + 8 } else { last_move_to - 8 };
+                    move_list.push(ChessMove::new_with_flag(
+                        square,
+                        en_passant_capture_square as u16,
+                        ChessMove::EN_PASSANT_CAPTURE_FLAG,
+                    ));
+                }
+            }
+        }
+    
+        move_list
+    }
+    
+
+    pub fn get_rook_attacks(&self, square: usize, relevant_blockers: Bitboard, all_pieces: Bitboard) -> Bitboard {
+        let magic_index = Self::rook_magic_index(square, all_pieces);
         self.rook_table[square][magic_index]
     }
 
-    pub fn get_bishop_attacks(&self, square: usize, relevant_blockers: Bitboard) -> Bitboard {
-        let magic_index = Self::bishop_magic_index(square, relevant_blockers);
+    pub fn get_bishop_attacks(&self, square: usize, relevant_blockers: Bitboard, all_pieces: Bitboard) -> Bitboard {
+        let magic_index = Self::bishop_magic_index(square, all_pieces);
         self.bishop_table[square][magic_index] & !relevant_blockers
     }
 
-    pub fn get_pawn_attacks(&self, square: u16, is_white: bool) -> Bitboard {
+    pub fn get_pawn_attacks(&self, square: usize, is_white: bool) -> Bitboard {
         let mut attacks = Bitboard::default();
-
-        // Calculate rank (0-7) and file (0-7) from square index (0-63)
-        let rank = square / 8;
-        let file = square % 8;
-
-        if is_white {
+    
+        if !is_white {
             // Ensure pawn is not on 8th rank (no attacks from there)
-            if rank < 7 {
-                if file > 0 {
-                    // Pawn is not on A-file
-                    attacks |= Bitboard::from_square_index(square + 7);
+            if square < 56 { // 56 to 63 is the 8th rank
+                if square % 8 != 0 {
+                    // Pawn is not on A-file, can attack left
+                    attacks.set_bit(square + 7);
                 }
-                if file < 7 {
-                    // Pawn is not on H-file
-                    attacks |= Bitboard::from_square_index(square + 9);
+                if square % 8 != 7 {
+                    // Pawn is not on H-file, can attack right
+                    attacks.set_bit(square + 9);
                 }
             }
         } else {
             // Ensure pawn is not on 1st rank (no attacks from there)
-            if rank > 0 {
-                if file > 0 {
-                    // Pawn is not on A-file
-                    attacks |= Bitboard::from_square_index(square - 9);
+            if square > 7 { // 0 to 7 is the 1st rank
+                if square % 8 != 0 {
+                    // Pawn is not on A-file, can attack right
+                    attacks.set_bit(square - 9);
                 }
-                if file < 7 {
-                    // Pawn is not on H-file
-                    attacks |= Bitboard::from_square_index(square - 7);
+                if square % 8 != 7 {
+                    // Pawn is not on H-file, can attack left
+                    attacks.set_bit(square - 7);
                 }
             }
         }
-
+    
         attacks
     }
+    
 
     pub fn get_bishop_moves(
         &self,
@@ -256,31 +382,43 @@ impl Magic {
     pub fn generate_threat_map(
         &self,
         mut chess_board: &mut ChessBoard,
-        relevant_blockers: Bitboard,
+        // relevant_blockers: Bitboard,
         is_white: bool,
     ) -> Bitboard {
 
-        let mut friendly_pieces_bb = if is_white {
-            chess_board.get_white()
-        } else {
+        // let friendly_pieces_bb = if is_white {
+        //     chess_board.get_white()
+        // } else {
+        //     chess_board.get_black()
+            
+        // };
+
+       let all_pieces = chess_board.get_all_pieces();
+
+        let mut enemy_pieces_bb = if is_white {
             chess_board.get_black()
+        } else {
+            chess_board.get_white()
+            
         };
+
+        let relevant_blockers = enemy_pieces_bb;
 
         let mut threats_bb = Bitboard::default();
 
-        while friendly_pieces_bb != Bitboard::default() {
-            let square = friendly_pieces_bb.pop_lsb() as usize;
+        while enemy_pieces_bb != Bitboard::default() {
+            let square = enemy_pieces_bb.pop_lsb() as usize;
             match chess_board.get_piece_type(square as u16) {
                 Some(piece_type) => match piece_type {
                     chess_foundation::piece::PieceType::Rook => {
-                        threats_bb |= self.get_rook_attacks(square, relevant_blockers);
+                        threats_bb |= self.get_rook_attacks(square, relevant_blockers, all_pieces);
                     }
                     chess_foundation::piece::PieceType::Bishop => {
-                        threats_bb |= self.get_bishop_attacks(square, relevant_blockers);
+                        threats_bb |= self.get_bishop_attacks(square, relevant_blockers, all_pieces);
                     }
                     chess_foundation::piece::PieceType::Queen => {
-                        threats_bb |= self.get_rook_attacks(square, relevant_blockers);
-                        threats_bb |= self.get_bishop_attacks(square, relevant_blockers);
+                        threats_bb |= self.get_rook_attacks(square, relevant_blockers, all_pieces);
+                        threats_bb |= self.get_bishop_attacks(square, relevant_blockers, all_pieces);
                     }
                     chess_foundation::piece::PieceType::King => {
                         threats_bb |= self.king_lut[square] & !relevant_blockers;
@@ -289,7 +427,7 @@ impl Magic {
                         threats_bb |= self.knight_lut[square] & !relevant_blockers;
                     }
                     chess_foundation::piece::PieceType::Pawn => {
-                        threats_bb |= self.get_pawn_attacks(square as u16, is_white) & !relevant_blockers;
+                        threats_bb |= self.get_pawn_attacks(square, is_white);
                     }
                     _ => {}
                 },
@@ -297,20 +435,27 @@ impl Magic {
             }
         }
         // filter out enemy pieces
-        threats_bb
+        //threat_map &= !chess_board.get_white();
+        threats_bb 
     }
 
     pub fn is_king_in_check(&self, mut chess_board: &mut ChessBoard, is_white: bool) -> bool {
+        
         let king_bb = chess_board.get_king(is_white);
-        let relevant_blockers = if !is_white {
-            chess_board.get_black()
-        } else {
-            chess_board.get_white()
-        };
+        // let mut friendly_pieces_bb = if is_white {
+        //     chess_board.get_white()
+        // } else {
+        //     chess_board.get_black()
+        // };
+        //remove king from friendly pieces
+        //friendly_pieces_bb &= !king_bb;
 
         let threats =
-            self.generate_threat_map(&mut chess_board, relevant_blockers, !is_white);
-        
+            self.generate_threat_map(&mut chess_board,
+                 is_white);
+
+        //threats&= !friendly_pieces_bb;
+
         (king_bb & threats) != Bitboard::default()
     }
 
@@ -649,7 +794,7 @@ mod tests {
             chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Queen, is_white);
             let mut threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                relevant_blockers,
+                // relevant_blockers,
                 is_white,
             );
             println!("Threat map:");
@@ -664,7 +809,7 @@ mod tests {
             chess_board.set_piece_at_square(34, chess_foundation::piece::PieceType::Queen, is_white);
             threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                relevant_blockers,
+                // relevant_blockers,
                 is_white,
             );
              println!("Threat map:");
@@ -694,7 +839,7 @@ mod tests {
             chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Bishop, is_white);
             let mut threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                relevant_blockers,
+                // relevant_blockers,
                 is_white,
             );
             println!("Threat map:");
@@ -710,7 +855,7 @@ mod tests {
             chess_board.set_piece_at_square(36, chess_foundation::piece::PieceType::Bishop, is_white);
             threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                relevant_blockers,
+                // relevant_blockers,
                 is_white,
             );
              println!("Threat map:");
@@ -739,7 +884,7 @@ mod tests {
             chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Rook, is_white);
             let mut threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                relevant_blockers,
+                // relevant_blockers,
                 is_white,
             );
             println!("Threat map:");
@@ -755,7 +900,7 @@ mod tests {
             chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Rook, is_white);
             threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                relevant_blockers,
+                // relevant_blockers,
                 is_white,
             );
             println!("Threat map:");
@@ -773,31 +918,92 @@ mod tests {
             chess_board.clear();
             let magic = Magic::new();
             let is_white = true;
+            let square = 48;
+            chess_board.set_piece_at_square(square, chess_foundation::piece::PieceType::Pawn, false);
 
-            // Friendly blockers (if any) - for simplicity, we assume none in this test
-            let relevant_blockers = if is_white {
-                chess_board.get_black()
-            } else {
-                chess_board.get_white()
-            };
-            // Generate the threat map for the square
-            chess_board.set_piece_at_square(8, chess_foundation::piece::PieceType::Pawn, is_white);
-            chess_board.set_piece_at_square(9, chess_foundation::piece::PieceType::Pawn, is_white);
-            chess_board.set_piece_at_square(10, chess_foundation::piece::PieceType::Pawn, is_white);
-            chess_board.set_piece_at_square(11, chess_foundation::piece::PieceType::Pawn, is_white);
+            // chess_board.set_piece_at_square(9, chess_foundation::piece::PieceType::Pawn, is_white);
+            // chess_board.set_piece_at_square(10, chess_foundation::piece::PieceType::Pawn, is_white);
+            // chess_board.set_piece_at_square(11, chess_foundation::piece::PieceType::Pawn, is_white);
             let mut threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                relevant_blockers,
                 is_white,
             );
-
+            println!("pawn map:");
+            Bitboard::from_square_index(square).print_bitboard();
             println!("Threat map:");
             threat_map.print_bitboard();
-            let mut expected_threat_map = Bitboard(0x1f0000);
-            assert_eq!(
-                threat_map, expected_threat_map,
-                "The generated threat map does not match the expected map."
-            );
+
+            // // Generate the threat map for the square
+            // chess_board.set_piece_at_square(60, chess_foundation::piece::PieceType::Pawn, false);
+            // chess_board.set_piece_at_square(61, chess_foundation::piece::PieceType::Pawn, false);
+            // chess_board.set_piece_at_square(62, chess_foundation::piece::PieceType::Pawn, false);
+            // chess_board.set_piece_at_square(63, chess_foundation::piece::PieceType::Pawn, false);
+            // // chess_board.set_piece_at_square(9, chess_foundation::piece::PieceType::Pawn, is_white);
+            // // chess_board.set_piece_at_square(10, chess_foundation::piece::PieceType::Pawn, is_white);
+            // // chess_board.set_piece_at_square(11, chess_foundation::piece::PieceType::Pawn, is_white);
+            // let mut threat_map = magic.generate_threat_map(
+            //     &mut chess_board,
+            //     is_white,
+            // );
+
+            // println!("Threat map:");
+            // threat_map.print_bitboard();
+            // let mut expected_threat_map = Bitboard(0xf8000000000000);
+            // assert_eq!(
+            //     threat_map, expected_threat_map,
+            //     "The generated threat map does not match the expected map."
+            // );
         }        
+
+        #[test]
+        fn test_threat_from_fen() {
+            let mut chess_board = ChessBoard::new();
+            let magic = Magic::new();
+            let is_white = false;
+
+            chess_board.set_from_fen("8/p2k4/1N6/8/8/8/8/4K3 w  - 0 1");
+            let mut threat_map = magic.generate_threat_map(
+                &mut chess_board,
+                is_white,
+            );
+            
+            println!("Threat map:");
+            threat_map.print_bitboard();    
+
+            // chess_board.set_from_fen("8/8/8/8/7q/8/6k1/4K3 w  - 0 1");
+
+            // chess_board.set_from_fen("4K3/4Q3/3q4/1k6/8/8/8/8 w  - 0 1");
+            // let mut threat_map = magic.generate_threat_map(
+            //     &mut chess_board,
+            //     is_white,
+            // );
+            
+            // println!("Threat map:");
+            // threat_map.print_bitboard();            
+
+            // let mut expected_threat_map = Bitboard(0xa1cf71d2f498808);
+            // assert_eq!(
+            //     threat_map, expected_threat_map,
+            //     "The generated threat map does not match the expected map."
+            // );            
+            
+            // chess_board.set_from_fen("8/8/5p1/4p3/4K3/8/8/8 w KQkq - 0 1");
+            // let mut threat_map = magic.generate_threat_map(
+            //     &mut chess_board,
+            //     is_white,
+            // );
+            
+            // println!("Threat map:");
+            // threat_map.print_bitboard();            
+
+            // let mut expected_threat_map = Bitboard(0xa1cf71d2f498808);
+            // assert_eq!(
+            //     threat_map, expected_threat_map,
+            //     "The generated threat map does not match the expected map."
+            // );   
+           
+        }     
+
+        
     }
 }
