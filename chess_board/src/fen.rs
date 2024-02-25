@@ -76,7 +76,6 @@ impl FENParser {
     }
 
     fn set_castling_rights_from_fen(board: &mut ChessBoard, rights: &str) {
-        // Assuming ChessBoard has a method to set castling rights
         //board.set_castling_rights(rights);
     }
 
