@@ -38,7 +38,6 @@ impl ChessBoard {
         }
     }
 
-    
     pub fn clear(&mut self) {
         self.white = Bitboard(0);
         self.black = Bitboard(0);
@@ -93,20 +92,20 @@ impl ChessBoard {
     }
 
     pub fn is_path_clear(&self, start_square: u16, end_square: u16) -> bool {
-        let all_pieces = self.get_all_pieces(); 
-    
+        let all_pieces = self.get_all_pieces();
+
         let (start, end) = if start_square < end_square {
-            (start_square + 1, end_square) 
+            (start_square + 1, end_square)
         } else {
-            (end_square + 1, start_square) 
+            (end_square + 1, start_square)
         };
-    
+
         for square in start..end {
             if all_pieces.is_set(square as usize) {
-                return false; 
+                return false;
             }
         }
-        true 
+        true
     }
 
     pub fn set_from_fen(&mut self, fen: &str) {
@@ -139,12 +138,41 @@ impl ChessBoard {
             let target_square_bb = Bitboard::from_square_index(target_square);
             let start_square_bb = Bitboard::from_square_index(start_square);
             self.castling_rights = prev_castling_rights;
-            // Revert the moved piece to its starting position
+
+            // Undo the move for the king or other pieces
             if let Some(piece) = chess_move.chess_piece {
                 self.update_piece_bitboard(piece.piece_type(), target_square_bb, start_square_bb);
                 self.update_color_bitboard(piece.is_white(), target_square_bb, start_square_bb);
-            }
 
+                // Check if the move was a castling move and undo the rook's move
+                if chess_move.has_flag(ChessMove::CASTLE_FLAG) {
+                    // Determine rook's original and castled squares based on the castling type
+                    let (rook_start_square, rook_target_square) =
+                        match (start_square, target_square) {
+                            (4, 6) => (5, 7),      // White kingside castling
+                            (4, 2) => (3, 0),      // White queenside castling
+                            (60, 62) => (61, 63), // Black kingside castling
+                            (60, 58) => (59, 56), // Black queenside castling
+                            _ => panic!("Invalid castling move"),
+                        };
+
+                    // Move the rook back
+                    let rook_start_square_bb =
+                        Bitboard::from_square_index(rook_start_square as u16);
+                    let rook_target_square_bb =
+                        Bitboard::from_square_index(rook_target_square as u16);
+                    self.update_piece_bitboard(
+                        PieceType::Rook,
+                        rook_target_square_bb,
+                        rook_start_square_bb,
+                    );
+                    self.update_color_bitboard(
+                        piece.is_white(),
+                        rook_target_square_bb,
+                        rook_start_square_bb,
+                    );
+                }
+            }
             // Restore the captured piece, if there was one
             if let Some(captured_piece) = chess_move.capture {
                 // If the move was an en passant capture, the captured pawn's location differs from the target square
@@ -227,18 +255,37 @@ impl ChessBoard {
             } else {
                 println!("No piece captured");
             }
+
             // store history before altering castling rights!
-            self.move_history.push((chess_move.clone(), self.castling_rights));
+            self.move_history
+                .push((chess_move.clone(), self.castling_rights));
 
             if chess_move.has_flag(ChessMove::CASTLE_FLAG) {
-                //remove castling rights
-                if is_white {
-                    self.castling_rights &= !(CastlingRights::WhiteKingSide as u8);
-                    self.castling_rights &= !(CastlingRights::WhiteQueenSide as u8);
+                // Determine rook's initial and final positions based on the castling type
+                let (rook_start_square, rook_target_square) = match target_square {
+                    6 => (7, 5),    // White kingside castling
+                    2 => (0, 3),    // White queenside castling
+                    62 => (63, 61), // Black kingside castling
+                    58 => (56, 59), // Black queenside castling
+                    _ => panic!("Invalid castling move"),
+                };
+
+                // Move the rook
+                let rook_start_square_bb = Bitboard::from_square_index(rook_start_square);
+                let rook_target_square_bb = Bitboard::from_square_index(rook_target_square);
+                self.update_piece_bitboard(
+                    PieceType::Rook,
+                    rook_start_square_bb,
+                    rook_target_square_bb,
+                );
+                self.update_color_bitboard(is_white, rook_start_square_bb, rook_target_square_bb);
+
+                // Update castling rights
+                self.castling_rights &= if is_white {
+                    !(CastlingRights::WhiteKingSide as u8 | CastlingRights::WhiteQueenSide as u8)
                 } else {
-                    self.castling_rights &= !(CastlingRights::BlackKingSide as u8);
-                    self.castling_rights &= !(CastlingRights::BlackQueenSide as u8);
-                }
+                    !(CastlingRights::BlackKingSide as u8 | CastlingRights::BlackQueenSide as u8)
+                };
             }
 
             // Update the piece's bitboard
