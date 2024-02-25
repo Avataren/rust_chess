@@ -79,6 +79,77 @@ impl FENParser {
         //board.set_castling_rights(rights);
     }
 
+
+    pub fn board_to_fen(board: &ChessBoard) -> String {
+        let mut fen = String::new();
+
+        // 1. Piece placement
+        for rank in 0..8 {
+            let mut empty_squares = 0;
+            for file in 0..8 {
+                let square = (7-rank) * 8 + file;
+                if let Some(piece) = board.get_piece_at_square(square as u16) {
+                    if empty_squares > 0 {
+                        fen.push_str(&empty_squares.to_string());
+                        empty_squares = 0;
+                    }
+                    let piece_char = Self::fen_char_from_piece_type(piece.piece_type(), piece.is_white());
+                    fen.push(piece_char);
+                } else {
+                    empty_squares += 1;
+                }
+            }
+            if empty_squares > 0 {
+                fen.push_str(&empty_squares.to_string());
+            }
+            if rank < 7 {
+                fen.push('/');
+            }
+        }
+
+        // 2. Active color
+        fen.push(' ');
+        fen.push(if board.is_white_active() { 'w' } else { 'b' });
+
+        // 3. Castling availability
+        fen.push(' ');
+        fen.push_str(&board.get_castling_rights());
+
+        // 4. En passant target square
+        fen.push(' ');
+        //fen.push_str(&board.get_en_passant_target().unwrap_or("-".to_string()));
+        fen.push('-');
+
+        // 5. Halfmove clock
+        fen.push(' ');
+        fen.push('0');
+        //fen.push_str(&board.get_halfmove_clock().to_string());
+
+        // 6. Fullmove number
+        fen.push(' ');
+        fen.push('1');
+        //fen.push_str(&board.get_fullmove_number().to_string());
+
+        fen
+    }
+
+    fn fen_char_from_piece_type(piece_type: PieceType, is_white: bool) -> char {
+        let piece_char = match piece_type {
+            PieceType::Pawn => 'p',
+            PieceType::Knight => 'n',
+            PieceType::Bishop => 'b',
+            PieceType::Rook => 'r',
+            PieceType::Queen => 'q',
+            PieceType::King => 'k',
+            PieceType::None => panic!("Invalid piece type: None"),
+        };
+        if is_white {
+            piece_char.to_ascii_uppercase()
+        } else {
+            piece_char
+        }
+    }    
+
     fn piece_type_from_fen_char(c: char) -> PieceType {
         match c.to_ascii_lowercase() {
             'p' => PieceType::Pawn,

@@ -42,6 +42,10 @@ impl ChessBoard {
         self.move_histroy.clear();
     }
 
+    pub fn is_white_active(&self) -> bool {
+        true //todo
+    }
+
     pub fn set_from_fen(&mut self, fen: &str) {
         FENParser::set_board_from_fen(self, fen);
     }
@@ -138,7 +142,7 @@ impl ChessBoard {
                     target_square + 8
                 };
 
-                if let Some(captured_pawn) = self.get_piece(captured_pawn_square) {
+                if let Some(captured_pawn) = self.get_piece_at_square(captured_pawn_square) {
                     chess_move.set_capture(captured_pawn);
                     // Remove the captured pawn
                     let captured_pawn_bb = Bitboard::from_square_index(captured_pawn_square);
@@ -146,7 +150,7 @@ impl ChessBoard {
                 } else {
                     chess_move.clear_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG);
                 }
-            } else if let Some(captured_piece) = self.get_piece(target_square) {
+            } else if let Some(captured_piece) = self.get_piece_at_square(target_square) {
                 if captured_piece.is_white() == is_white {
                     println!(
                         "Invalid move: target square is occupied by a piece of the same color"
@@ -266,7 +270,7 @@ impl ChessBoard {
         }
     }
 
-    pub fn get_piece(&self, index: u16) -> Option<ChessPiece> {
+    pub fn get_piece_at_square(&self, index: u16) -> Option<ChessPiece> {
         let is_white = if self.white.is_set(index as usize) {
             true
         } else {

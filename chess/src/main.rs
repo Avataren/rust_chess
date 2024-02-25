@@ -112,8 +112,11 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 
     let mut chessboard = chess_board::ChessBoard::new();
-    let fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq";
-    chessboard.set_from_fen(fen);
+    //let fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq";
+    let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    
+    chessboard.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w  - 0 1");
+    //chessboard.set_from_fen("RN1QKBNR/PP2PPPP/2P5/3P4/8/8/ppppBppp/rnbqkbnr w KQkq - 0 1");
     // chessboard.clear();
     // chessboard.set_piece_at_square(4, chess_foundation::piece::PieceType::King, true);
     // chessboard.set_piece_at_square(19, chess_foundation::piece::PieceType::Pawn, false);
