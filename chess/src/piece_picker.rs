@@ -108,10 +108,22 @@ pub fn handle_mouse_input(
     }
 }
 
-fn board_coords_to_chess_coords(board_coords: Vec2, square_size: f32) -> (usize, usize) {
-    let col = (board_coords.x / square_size).floor() as usize;
-    let row = 7 - (board_coords.y / square_size).floor() as usize; // Assuming an 8x8 chess board
-    (col, row)
+fn board_coords_to_chess_coords(board_coords: Vec2, square_size: f32) -> Option<(usize, usize)> {
+    if board_coords.x < 0.0 || board_coords.y < 0.0 {
+        return None; // Early return for negative coordinates
+    }
+
+    let col_f = board_coords.x / square_size;
+    let row_f = board_coords.y / square_size;
+
+    if col_f >= 8.0 || row_f >= 8.0 || col_f < 0.0 || row_f < 0.0 {
+        return None; // Coordinates outside the chess board
+    }
+
+    let col = col_f.floor() as usize;
+    let row = (7.0 - row_f.floor()) as usize; // Adjust for chess board indexing
+
+    Some((col, row))
 }
 
 pub fn pick_up_piece(
@@ -144,38 +156,40 @@ pub fn pick_up_piece(
         )
         .expect("Failed to get board coordinates"); // Consider handling this more gracefully
 
-        let (col, row) = board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
-
-        // spawn debug pieces
-        if let Some((entity, transform, chess_piece)) = piece_query
-            .iter_mut()
-            .find(|(_, _, chess_piece)| chess_piece.row == row && chess_piece.col == col)
+        if let Some((col, row)) =
+            board_coords_to_chess_coords(board_coords, board_dimensions.square_size)
         {
-            piece_is_picked_up.piece_type = Some(chess_piece.piece_type);
-            piece_is_picked_up.original_row_col = (row, col);
-            piece_is_picked_up.current_position = transform.translation;
-            piece_is_picked_up.piece_entity = Some(entity);
-            piece_is_picked_up.is_dragging = true;
+            // spawn debug pieces
+            if let Some((entity, transform, chess_piece)) = piece_query
+                .iter_mut()
+                .find(|(_, _, chess_piece)| chess_piece.row == row && chess_piece.col == col)
+            {
+                piece_is_picked_up.piece_type = Some(chess_piece.piece_type);
+                piece_is_picked_up.original_row_col = (row, col);
+                piece_is_picked_up.current_position = transform.translation;
+                piece_is_picked_up.piece_entity = Some(entity);
+                piece_is_picked_up.is_dragging = true;
 
-            println!("**************** PICKUP ****************");
+                println!("**************** PICKUP ****************");
 
-            let valid_moves = get_legal_move_list_from_square(
-                board_row_col_to_square_index(row, col),
-                &mut chess_board.chess_board,
-                &magic_res.magic,
-            );
+                let valid_moves = get_legal_move_list_from_square(
+                    board_row_col_to_square_index(row, col),
+                    &mut chess_board.chess_board,
+                    &magic_res.magic,
+                );
 
-            commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
+                commands.spawn(EnableDebugMarkers::new(valid_moves.clone()));
 
-            valid_moves_res.set_moves(valid_moves);
+                valid_moves_res.set_moves(valid_moves);
 
-            println!("Picked up piece: {:?}", chess_piece.piece_type);
-        } else {
-            piece_is_picked_up.is_dragging = false;
-            piece_is_picked_up.piece_entity = None;
-            piece_is_picked_up.piece_type = None;
-            piece_is_picked_up.original_row_col = (0, 0);
-            piece_is_picked_up.current_position = Vec3::new(0.0, 0.0, 0.0);
+                println!("Picked up piece: {:?}", chess_piece.piece_type);
+            } else {
+                piece_is_picked_up.is_dragging = false;
+                piece_is_picked_up.piece_entity = None;
+                piece_is_picked_up.piece_type = None;
+                piece_is_picked_up.original_row_col = (0, 0);
+                piece_is_picked_up.current_position = Vec3::new(0.0, 0.0, 0.0);
+            }
         }
     }
 }
@@ -246,11 +260,7 @@ pub fn drop_piece(
     }
 
     if !piece_is_picked_up.is_dragging || piece_is_picked_up.piece_entity.is_none() {
-        piece_is_picked_up.is_dragging = false;
-        piece_is_picked_up.piece_entity = None;
-        piece_is_picked_up.piece_type = None;
-        piece_is_picked_up.original_row_col = (0, 0);
-        piece_is_picked_up.current_position = Vec3::new(0.0, 0.0, 0.0);
+        *piece_is_picked_up = PieceIsPickedUp::default();
         refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
         println!("Not dragging piece");
         return;
@@ -273,65 +283,65 @@ pub fn drop_piece(
                 )
                 .expect("Failed to get board coordinates"); // Consider handling this more gracefully
 
-                let (col, row) =
-                    board_coords_to_chess_coords(board_coords, board_dimensions.square_size);
-
-                //println!("board_coords: {:?}", board_coords);
-
-                let square = board_row_col_to_square_index(row, col);
-                let valid_move = valid_moves_res
-                    .moves
-                    .iter()
-                    .find(|chess_move| chess_move.target_square() == square);
-
-                if valid_move.is_none()
-                    || (board_coords.x < 0.0)
-                    || (board_coords.x > board_dimensions.board_size.x)
-                    || (board_coords.y < 0.0)
-                    || (board_coords.y > board_dimensions.board_size.y)
-                    || (piece_is_picked_up.original_row_col.0 == row
-                        && piece_is_picked_up.original_row_col.1 == col)
+                if let Some((col, row)) =
+                    board_coords_to_chess_coords(board_coords, board_dimensions.square_size)
                 {
-                    //trying to drop piece outside board, or same position as picked up
-                    println!("invalid move!");
-                    piece_is_picked_up.is_dragging = false;
-                    piece_is_picked_up.piece_entity = None;
-                    piece_is_picked_up.piece_type = None;
-                    piece_is_picked_up.original_row_col = (0, 0);
-                    piece_is_picked_up.current_position = Vec3::new(0.0, 0.0, 0.0);
-                    refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
-                    return;
-                }
+                    //println!("board_coords: {:?}", board_coords);
 
-                chess_piece.row = row;
-                chess_piece.col = col;
+                    let square = board_row_col_to_square_index(row, col);
+                    let valid_move = valid_moves_res
+                        .moves
+                        .iter()
+                        .find(|chess_move| chess_move.target_square() == square);
 
-                let is_capture = !(chess_board.chess_board.get_all_pieces()
-                    & Bitboard::from_square_index(valid_move.unwrap().target_square()))
-                .is_empty();
-                // println!("************************************");
-                // println!("Making move from {} to {}", valid_move.unwrap().start_square(), valid_move.unwrap().target_square());
-                // println!("************************************");
-
-                println!(
-                    "Doublemove: {}",
-                    valid_move.unwrap().has_flag(ChessMove::PAWN_TWO_UP_FLAG)
-                );
-
-                if chess_board
-                    .chess_board
-                    .make_move(&mut valid_move.unwrap().clone())
-                {
-                    valid_moves_res.moves.clear();
-                    //if chess_board.chess_board.get_piece_at(col)
-                    if is_capture {
-                        spawn_sound(&mut commands, &sound_effects, "capture.ogg");
-                    } else {
-                        spawn_sound(&mut commands, &sound_effects, "move-self.ogg");
+                    if valid_move.is_none()
+                        || (board_coords.x < 0.0)
+                        || (board_coords.x > board_dimensions.board_size.x)
+                        || (board_coords.y < 0.0)
+                        || (board_coords.y > board_dimensions.board_size.y)
+                        || (piece_is_picked_up.original_row_col.0 == row
+                            && piece_is_picked_up.original_row_col.1 == col)
+                    {
+                        //trying to drop piece outside board, or same position as picked up
+                        println!("invalid move!");
+                        *piece_is_picked_up = PieceIsPickedUp::default();
+                        refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
+                        return;
                     }
-                    println!("Released piece at row: {}, col: {}", row, col);
+
+                    chess_piece.row = row;
+                    chess_piece.col = col;
+
+                    let is_capture = !(chess_board.chess_board.get_all_pieces()
+                        & Bitboard::from_square_index(valid_move.unwrap().target_square()))
+                    .is_empty();
+                    // println!("************************************");
+                    // println!("Making move from {} to {}", valid_move.unwrap().start_square(), valid_move.unwrap().target_square());
+                    // println!("************************************");
+
+                    println!(
+                        "Doublemove: {}",
+                        valid_move.unwrap().has_flag(ChessMove::PAWN_TWO_UP_FLAG)
+                    );
+
+                    if chess_board
+                        .chess_board
+                        .make_move(&mut valid_move.unwrap().clone())
+                    {
+                        valid_moves_res.moves.clear();
+                        //if chess_board.chess_board.get_piece_at(col)
+                        if is_capture {
+                            spawn_sound(&mut commands, &sound_effects, "capture.ogg");
+                        } else {
+                            spawn_sound(&mut commands, &sound_effects, "move-self.ogg");
+                        }
+                        println!("Released piece at row: {}, col: {}", row, col);
+                    }
+                    refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
+                } else {
+                    *piece_is_picked_up = PieceIsPickedUp::default();
+                    refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
                 }
-                refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
             }
         }
     }

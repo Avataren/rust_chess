@@ -10,11 +10,11 @@ mod board;
 mod board_accessories;
 mod chess_event_handler;
 mod game_events;
+mod game_resources;
 mod keyboard_input;
 mod piece_picker;
 mod pieces;
 mod sound;
-mod game_resources;
 use board::ResolutionInfo;
 
 use game_events::{
@@ -35,25 +35,26 @@ struct MagicRes {
 const AUDIO_SCALE: f32 = 1. / 100.0;
 
 fn main() {
+    if cfg!(debug_assertions) {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
     //env::set_var("WGPU_BACKEND", "dx12");
-    //env::set_var("RUST_BACKTRACE", "1");
+
     App::new()
         .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        canvas: Some("#game-canvas".to_string()),
-                        title: "XavChess".to_string(),
-                        resizable: true,
-                        //mode: WindowMode::BorderlessFullscreen,
-                        resolution: WindowResolution::new(1280., 1024.),
-                        prevent_default_event_handling: false,
-                        present_mode: bevy::window::PresentMode::AutoNoVsync,
-                        ..default()
-                    }),
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    canvas: Some("#game-canvas".to_string()),
+                    title: "XavChess".to_string(),
+                    resizable: true,
+                    //mode: WindowMode::BorderlessFullscreen,
+                    resolution: WindowResolution::new(1280., 1024.),
+                    prevent_default_event_handling: false,
+                    present_mode: bevy::window::PresentMode::AutoNoVsync,
                     ..default()
-                })
-                // .set(AudioPlugin {
+                }),
+                ..default()
+            }), // .set(AudioPlugin {
                 //     default_spatial_scale: SpatialScale::new_2d(AUDIO_SCALE),
                 //     ..default()
                 // }),
@@ -114,7 +115,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     let mut chessboard = chess_board::ChessBoard::new();
     //let fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq";
     //let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-    
     // chessboard.set_from_fen("8/8/8/8/7q/8/6k1/4K3 w  - 0 1");
     //chessboard.set_from_fen("5K2/4Q3/3q4/1k6/8/8/8/8 w  - 0 1");
     //chessboard.set_from_fen("4K3/4Q3/3q4/1k6/8/8/8/8 w  - 0 1");

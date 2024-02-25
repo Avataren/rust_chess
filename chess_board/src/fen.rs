@@ -37,7 +37,7 @@ impl FENParser {
         // board.set_active_color(active_color == "w");
 
         // // Set castling rights
-        // Self::set_castling_rights_from_fen(board, castling_rights);
+        board.set_castling_rights_from_fen(castling_rights);
 
         // // Set en passant target square
         // // Assuming ChessBoard has a method to set en passant target
@@ -74,11 +74,6 @@ impl FENParser {
             }
         }
     }
-
-    fn set_castling_rights_from_fen(board: &mut ChessBoard, rights: &str) {
-        //board.set_castling_rights(rights);
-    }
-
 
     pub fn board_to_fen(board: &ChessBoard) -> String {
         let mut fen = String::new();

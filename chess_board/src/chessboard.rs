@@ -1,5 +1,5 @@
-use chess_foundation::{bitboard::Bitboard, piece::PieceType, ChessMove, ChessPiece};
 use crate::FENParser;
+use chess_foundation::{bitboard::Bitboard, piece::PieceType, ChessMove, ChessPiece};
 pub struct ChessBoard {
     white: Bitboard,
     black: Bitboard,
@@ -13,6 +13,15 @@ pub struct ChessBoard {
     move_histroy: Vec<ChessMove>,
 }
 
+#[repr(u8)]
+pub enum CastlingRights {
+    WHITE_KING_SIDE = 0b1000,
+    WHITE_QUEEN_SIDE = 0b0100,
+    BLACK_KING_SIDE = 0b0010,
+    BLACK_QUEEN_SIDE = 0b0001,
+    ALL_CASTLING_RIGHTS = 0b1111,
+}
+
 impl ChessBoard {
     pub fn new() -> Self {
         ChessBoard {
@@ -24,7 +33,7 @@ impl ChessBoard {
             rooks: Bitboard(0x8100_0000_0000_0081),   // a1, h1, a8, h8
             queens: Bitboard(0x0800_0000_0000_0008),  // d1, d8
             kings: Bitboard(0x1000_0000_0000_0010),   // e1, e8
-            castling_rights: 0b00001111,
+            castling_rights: CastlingRights::ALL_CASTLING_RIGHTS as u8,
             move_histroy: Vec::with_capacity(100),
         }
     }
@@ -40,6 +49,42 @@ impl ChessBoard {
         self.kings = Bitboard(0);
         self.castling_rights = 0;
         self.move_histroy.clear();
+    }
+
+    pub fn get_fen_castling_rights(&self) -> String {
+        let mut result = String::new();
+        if self.castling_rights & CastlingRights::WHITE_KING_SIDE as u8 != 0 {
+            result.push('K');
+        }
+        if self.castling_rights & CastlingRights::WHITE_QUEEN_SIDE as u8 != 0 {
+            result.push('Q');
+        }
+        if self.castling_rights & CastlingRights::BLACK_KING_SIDE as u8 != 0 {
+            result.push('k');
+        }
+        if self.castling_rights & CastlingRights::BLACK_QUEEN_SIDE as u8 != 0 {
+            result.push('q');
+        }
+        result
+    }
+
+    pub fn set_castling_rights_from_fen(&mut self, fen_castling: &str) {
+        let mut castling_rights: u8 = 0;
+
+        if fen_castling.contains('K') {
+            castling_rights |= CastlingRights::WHITE_KING_SIDE as u8;
+        }
+        if fen_castling.contains('Q') {
+            castling_rights |= CastlingRights::WHITE_QUEEN_SIDE as u8;
+        }
+        if fen_castling.contains('k') {
+            castling_rights |= CastlingRights::BLACK_KING_SIDE as u8;
+        }
+        if fen_castling.contains('q') {
+            castling_rights |= CastlingRights::BLACK_QUEEN_SIDE as u8;
+        }
+
+        self.castling_rights = castling_rights;
     }
 
     pub fn is_white_active(&self) -> bool {
