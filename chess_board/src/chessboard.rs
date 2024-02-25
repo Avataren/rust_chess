@@ -9,17 +9,17 @@ pub struct ChessBoard {
     rooks: Bitboard,
     queens: Bitboard,
     kings: Bitboard,
-    castling_rights: u8,
-    move_histroy: Vec<ChessMove>,
+    pub castling_rights: u8,
+    move_history: Vec<(ChessMove, u8)>,
 }
 
 #[repr(u8)]
 pub enum CastlingRights {
-    WHITE_KING_SIDE = 0b1000,
-    WHITE_QUEEN_SIDE = 0b0100,
-    BLACK_KING_SIDE = 0b0010,
-    BLACK_QUEEN_SIDE = 0b0001,
-    ALL_CASTLING_RIGHTS = 0b1111,
+    WhiteKingSide = 0b1000,
+    WhiteQueenSide = 0b0100,
+    BlackKingSide = 0b0010,
+    BlackQueenSide = 0b0001,
+    AllCastlingRights = 0b1111,
 }
 
 impl ChessBoard {
@@ -33,11 +33,12 @@ impl ChessBoard {
             rooks: Bitboard(0x8100_0000_0000_0081),   // a1, h1, a8, h8
             queens: Bitboard(0x0800_0000_0000_0008),  // d1, d8
             kings: Bitboard(0x1000_0000_0000_0010),   // e1, e8
-            castling_rights: CastlingRights::ALL_CASTLING_RIGHTS as u8,
-            move_histroy: Vec::with_capacity(100),
+            castling_rights: CastlingRights::AllCastlingRights as u8,
+            move_history: Vec::with_capacity(100),
         }
     }
 
+    
     pub fn clear(&mut self) {
         self.white = Bitboard(0);
         self.black = Bitboard(0);
@@ -47,22 +48,22 @@ impl ChessBoard {
         self.rooks = Bitboard(0);
         self.queens = Bitboard(0);
         self.kings = Bitboard(0);
-        self.castling_rights = 0;
-        self.move_histroy.clear();
+        self.castling_rights = CastlingRights::AllCastlingRights as u8;
+        self.move_history.clear();
     }
 
     pub fn get_fen_castling_rights(&self) -> String {
         let mut result = String::new();
-        if self.castling_rights & CastlingRights::WHITE_KING_SIDE as u8 != 0 {
+        if self.castling_rights & CastlingRights::WhiteKingSide as u8 != 0 {
             result.push('K');
         }
-        if self.castling_rights & CastlingRights::WHITE_QUEEN_SIDE as u8 != 0 {
+        if self.castling_rights & CastlingRights::WhiteQueenSide as u8 != 0 {
             result.push('Q');
         }
-        if self.castling_rights & CastlingRights::BLACK_KING_SIDE as u8 != 0 {
+        if self.castling_rights & CastlingRights::BlackKingSide as u8 != 0 {
             result.push('k');
         }
-        if self.castling_rights & CastlingRights::BLACK_QUEEN_SIDE as u8 != 0 {
+        if self.castling_rights & CastlingRights::BlackQueenSide as u8 != 0 {
             result.push('q');
         }
         result
@@ -72,16 +73,16 @@ impl ChessBoard {
         let mut castling_rights: u8 = 0;
 
         if fen_castling.contains('K') {
-            castling_rights |= CastlingRights::WHITE_KING_SIDE as u8;
+            castling_rights |= CastlingRights::WhiteKingSide as u8;
         }
         if fen_castling.contains('Q') {
-            castling_rights |= CastlingRights::WHITE_QUEEN_SIDE as u8;
+            castling_rights |= CastlingRights::WhiteQueenSide as u8;
         }
         if fen_castling.contains('k') {
-            castling_rights |= CastlingRights::BLACK_KING_SIDE as u8;
+            castling_rights |= CastlingRights::BlackKingSide as u8;
         }
         if fen_castling.contains('q') {
-            castling_rights |= CastlingRights::BLACK_QUEEN_SIDE as u8;
+            castling_rights |= CastlingRights::BlackQueenSide as u8;
         }
 
         self.castling_rights = castling_rights;
@@ -89,6 +90,23 @@ impl ChessBoard {
 
     pub fn is_white_active(&self) -> bool {
         true //todo
+    }
+
+    pub fn is_path_clear(&self, start_square: u16, end_square: u16) -> bool {
+        let all_pieces = self.get_all_pieces(); 
+    
+        let (start, end) = if start_square < end_square {
+            (start_square + 1, end_square) 
+        } else {
+            (end_square + 1, start_square) 
+        };
+    
+        for square in start..end {
+            if all_pieces.is_set(square as usize) {
+                return false; 
+            }
+        }
+        true 
     }
 
     pub fn set_from_fen(&mut self, fen: &str) {
@@ -109,16 +127,18 @@ impl ChessBoard {
     }
 
     pub fn get_last_move(&self) -> Option<ChessMove> {
-        self.move_histroy.last().cloned()
+        self.move_history
+            .last()
+            .map(|(chess_move, _)| chess_move.clone())
     }
 
     pub fn undo_move(&mut self) {
-        if let Some(chess_move) = self.move_histroy.pop() {
+        if let Some((chess_move, prev_castling_rights)) = self.move_history.pop() {
             let target_square = chess_move.target_square();
             let start_square = chess_move.start_square();
             let target_square_bb = Bitboard::from_square_index(target_square);
             let start_square_bb = Bitboard::from_square_index(start_square);
-
+            self.castling_rights = prev_castling_rights;
             // Revert the moved piece to its starting position
             if let Some(piece) = chess_move.chess_piece {
                 self.update_piece_bitboard(piece.piece_type(), target_square_bb, start_square_bb);
@@ -207,8 +227,19 @@ impl ChessBoard {
             } else {
                 println!("No piece captured");
             }
+            // store history before altering castling rights!
+            self.move_history.push((chess_move.clone(), self.castling_rights));
 
-            self.move_histroy.push(chess_move.clone());
+            if chess_move.has_flag(ChessMove::CASTLE_FLAG) {
+                //remove castling rights
+                if is_white {
+                    self.castling_rights &= !(CastlingRights::WhiteKingSide as u8);
+                    self.castling_rights &= !(CastlingRights::WhiteQueenSide as u8);
+                } else {
+                    self.castling_rights &= !(CastlingRights::BlackKingSide as u8);
+                    self.castling_rights &= !(CastlingRights::BlackQueenSide as u8);
+                }
+            }
 
             // Update the piece's bitboard
             self.update_piece_bitboard(piece_type, start_square_bb, target_square_bb);

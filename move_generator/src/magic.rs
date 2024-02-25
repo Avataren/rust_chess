@@ -1,5 +1,6 @@
 use core::panic;
 
+use chess_board::chessboard::CastlingRights;
 use chess_board::ChessBoard;
 use chess_foundation::bitboard::{self, Bitboard};
 use chess_foundation::{ChessMove, Coord};
@@ -364,10 +365,12 @@ impl Magic {
     pub fn get_king_moves(
         &self,
         square: u16,
-        friendly_pieces_bitboard: Bitboard,
+        friendly_pieces_bb: Bitboard,
+        chess_board: &mut ChessBoard,
+        is_white: bool
     ) -> Vec<ChessMove> {
         let king_moves_bitboard = self.king_lut[square as usize];
-        let valid_moves_bitboard = king_moves_bitboard & !friendly_pieces_bitboard;
+        let valid_moves_bitboard = king_moves_bitboard & !friendly_pieces_bb;
         let mut move_list = Vec::new();
 
         let mut moves_bitboard = valid_moves_bitboard;
@@ -375,23 +378,60 @@ impl Magic {
             let target_square = moves_bitboard.pop_lsb();
             move_list.push(ChessMove::new(square, target_square as u16));
         }
-
+        
+        move_list.extend(self.get_castling_moves(chess_board, square, is_white));
         move_list
     }
-
+    pub fn get_castling_moves(&self, chess_board: &mut ChessBoard, square: u16, is_white: bool) -> Vec<ChessMove> {
+        let mut castling_moves = Vec::new();
+    
+        // Assume the king is in its original square; otherwise, castling isn't possible.
+        let original_king_square = if is_white { 4 } else { 60 };
+        if square != original_king_square {
+            return castling_moves; // Return an empty list if the king isn't in its original square.
+        }
+    
+        // Determine castling rights based on the color
+        let king_side_rights = if is_white { CastlingRights::WhiteKingSide } else { CastlingRights::BlackKingSide } as u8;
+        let queen_side_rights = if is_white { CastlingRights::WhiteQueenSide } else { CastlingRights::BlackQueenSide } as u8;
+    
+        // King's potential castling squares
+        let king_side_square = if is_white { 7 } else { 63 };
+        let queen_side_square = if is_white { 0 } else { 56 };
+    
+        // Check if castling rights are available for each side
+        let can_castle_king_side = chess_board.castling_rights & king_side_rights != 0;
+        let can_castle_queen_side = chess_board.castling_rights & queen_side_rights != 0;
+    
+        // Check if the path is clear for castling
+        let king_side_path_clear = chess_board.is_path_clear(square, king_side_square);
+        let queen_side_path_clear = chess_board.is_path_clear(square, queen_side_square);
+    
+        // Check if the king is in check or the squares it passes through are under attack
+        let king_not_in_check = !self.is_king_in_check(chess_board, is_white);
+        let threat_map = self.generate_threat_map(chess_board, is_white);
+        let king_side_squares_safe = self.are_squares_safe(chess_board, [square + 1, square + 2], is_white, threat_map);
+        let queen_side_squares_safe = self.are_squares_safe(chess_board, [square - 1, square - 2], is_white, threat_map);
+    
+        // Add kingside castling move if applicable
+        if can_castle_king_side && king_side_path_clear && king_not_in_check && king_side_squares_safe {
+            castling_moves.push(ChessMove::new_with_flag(square, square + 2, ChessMove::CASTLE_FLAG));
+        }
+    
+        // Add queenside castling move if applicable
+        if can_castle_queen_side && queen_side_path_clear && king_not_in_check && queen_side_squares_safe {
+            castling_moves.push(ChessMove::new_with_flag(square, square - 2, ChessMove::CASTLE_FLAG));
+        }
+    
+        castling_moves
+    }
+    
     pub fn generate_threat_map(
         &self,
         mut chess_board: &mut ChessBoard,
         // relevant_blockers: Bitboard,
         is_white: bool,
     ) -> Bitboard {
-
-        // let friendly_pieces_bb = if is_white {
-        //     chess_board.get_white()
-        // } else {
-        //     chess_board.get_black()
-            
-        // };
 
        let all_pieces = chess_board.get_all_pieces();
 
@@ -439,23 +479,24 @@ impl Magic {
         threats_bb 
     }
 
+    pub fn are_squares_safe(&self, chess_board: &mut ChessBoard, squares: [u16; 2], is_white: bool, threat_map:Bitboard) -> bool {
+        
+        for &square in squares.iter() {
+            let square_bb = Bitboard::from_square_index(square);
+            // Check if the square is under attack by seeing if it intersects with the threat map
+            if (threat_map & square_bb) != Bitboard::default() {
+                return false; // If any square is under attack, return false
+            }
+        }
+        true // If none of the squares are under attack, return true
+    }
+
     pub fn is_king_in_check(&self, mut chess_board: &mut ChessBoard, is_white: bool) -> bool {
         
         let king_bb = chess_board.get_king(is_white);
-        // let mut friendly_pieces_bb = if is_white {
-        //     chess_board.get_white()
-        // } else {
-        //     chess_board.get_black()
-        // };
-        //remove king from friendly pieces
-        //friendly_pieces_bb &= !king_bb;
-
         let threats =
             self.generate_threat_map(&mut chess_board,
                  is_white);
-
-        //threats&= !friendly_pieces_bb;
-
         (king_bb & threats) != Bitboard::default()
     }
 

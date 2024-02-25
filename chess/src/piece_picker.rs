@@ -116,12 +116,12 @@ fn board_coords_to_chess_coords(board_coords: Vec2, square_size: f32) -> Option<
     let col_f = board_coords.x / square_size;
     let row_f = board_coords.y / square_size;
 
-    if col_f >= 8.0 || row_f >= 8.0 || col_f < 0.0 || row_f < 0.0 {
+    if col_f >= 8.0 || row_f >= 8.0  {
         return None; // Coordinates outside the chess board
     }
 
     let col = col_f.floor() as usize;
-    let row = (7.0 - row_f.floor()) as usize; // Adjust for chess board indexing
+    let row = (7.0 - row_f.floor()) as usize; 
 
     Some((col, row))
 }
@@ -184,11 +184,7 @@ pub fn pick_up_piece(
 
                 println!("Picked up piece: {:?}", chess_piece.piece_type);
             } else {
-                piece_is_picked_up.is_dragging = false;
-                piece_is_picked_up.piece_entity = None;
-                piece_is_picked_up.piece_type = None;
-                piece_is_picked_up.original_row_col = (0, 0);
-                piece_is_picked_up.current_position = Vec3::new(0.0, 0.0, 0.0);
+                *piece_is_picked_up = PieceIsPickedUp::default();
             }
         }
     }

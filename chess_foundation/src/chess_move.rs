@@ -41,14 +41,17 @@ impl ChessMove {
         Self {
             //use 6 bits pr square position
             move_value: start_square | (target_square << 6),
-            ..Default::default()
+            capture: None,
+            chess_piece: None,
         }
     }
 
     pub fn new_with_flag(start_square: u16, target_square: u16, flag: u16) -> Self {
+        // println!("ChessMove new_with_flag --- start_square: {}, target_square: {}, flag: {}", start_square, target_square, flag);
         Self {
             move_value: start_square | (target_square << 6) | (flag << 12),
-            ..Default::default()
+            capture: None,
+            chess_piece: None,
         }
     }
 
@@ -78,7 +81,7 @@ impl ChessMove {
     }
 
     pub fn has_flag(&self, flag: u16) -> bool {
-        self.flag() & flag != 0
+        self.flag() == flag
     }
 
     pub fn clear_flag(&mut self, flag: u16) {
