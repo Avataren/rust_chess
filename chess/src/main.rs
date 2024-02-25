@@ -111,13 +111,16 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         height: 1080.0,
     });
 
-    //let mut chessboard = chess_board::ChessBoard::new();
+    let mut chessboard = chess_board::ChessBoard::new();
+    let fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq";
+    chessboard.set_from_fen(fen);
     // chessboard.clear();
     // chessboard.set_piece_at_square(4, chess_foundation::piece::PieceType::King, true);
     // chessboard.set_piece_at_square(19, chess_foundation::piece::PieceType::Pawn, false);
     // chessboard.set_piece_at_square(20, chess_foundation::piece::PieceType::Queen, false);
     commands.insert_resource(ChessBoardRes {
-        chess_board: chess_board::ChessBoard::new(),
+        chess_board: chessboard,
+        //chess_board: chess_board::ChessBoard::new(),
     });
 
     let magic = Magic::new();

@@ -1,5 +1,5 @@
 use chess_foundation::{bitboard::Bitboard, piece::PieceType, ChessMove, ChessPiece};
-
+use crate::FENParser;
 pub struct ChessBoard {
     white: Bitboard,
     black: Bitboard,
@@ -29,7 +29,7 @@ impl ChessBoard {
         }
     }
 
-    pub fn clear(&mut self){
+    pub fn clear(&mut self) {
         self.white = Bitboard(0);
         self.black = Bitboard(0);
         self.pawns = Bitboard(0);
@@ -42,7 +42,11 @@ impl ChessBoard {
         self.move_histroy.clear();
     }
 
-    pub fn set_piece_at_square(&mut self, square: u16, piece_type:PieceType, is_white: bool) {
+    pub fn set_from_fen(&mut self, fen: &str) {
+        FENParser::set_board_from_fen(self, fen);
+    }
+
+    pub fn set_piece_at_square(&mut self, square: u16, piece_type: PieceType, is_white: bool) {
         let square_bb = Bitboard::from_square_index(square);
         self.set_piece_bitboard(piece_type, square_bb, is_white);
     }
@@ -103,7 +107,6 @@ impl ChessBoard {
         }
     }
 
-    
     pub fn get_king(&self, is_white: bool) -> Bitboard {
         if is_white {
             self.kings & self.white

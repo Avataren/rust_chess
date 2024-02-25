@@ -259,42 +259,37 @@ impl Magic {
         relevant_blockers: Bitboard,
         is_white: bool,
     ) -> Bitboard {
+
         let mut friendly_pieces_bb = if is_white {
             chess_board.get_white()
         } else {
             chess_board.get_black()
         };
 
-        // let mut enemy_pieces_bb = if is_white {
-        //     chess_board.get_black()
-        // } else {
-        //     chess_board.get_white()
-        // };
-
         let mut threats_bb = Bitboard::default();
 
         while friendly_pieces_bb != Bitboard::default() {
-            let square = friendly_pieces_bb.pop_lsb() as u16;
+            let square = friendly_pieces_bb.pop_lsb() as usize;
             match chess_board.get_piece_type(square as u16) {
                 Some(piece_type) => match piece_type {
                     chess_foundation::piece::PieceType::Rook => {
-                        threats_bb |= self.get_rook_attacks(square as usize, relevant_blockers);
+                        threats_bb |= self.get_rook_attacks(square, relevant_blockers);
                     }
                     chess_foundation::piece::PieceType::Bishop => {
-                        threats_bb |= self.get_bishop_attacks(square as usize, relevant_blockers);
+                        threats_bb |= self.get_bishop_attacks(square, relevant_blockers);
                     }
                     chess_foundation::piece::PieceType::Queen => {
-                        threats_bb |= self.get_rook_attacks(square as usize, relevant_blockers);
-                        threats_bb |= self.get_bishop_attacks(square as usize, relevant_blockers);
+                        threats_bb |= self.get_rook_attacks(square, relevant_blockers);
+                        threats_bb |= self.get_bishop_attacks(square, relevant_blockers);
                     }
                     chess_foundation::piece::PieceType::King => {
-                        threats_bb |= self.king_lut[square as usize] & !relevant_blockers;
+                        threats_bb |= self.king_lut[square] & !relevant_blockers;
                     }
                     chess_foundation::piece::PieceType::Knight => {
-                        threats_bb |= self.knight_lut[square as usize] & !relevant_blockers;
+                        threats_bb |= self.knight_lut[square] & !relevant_blockers;
                     }
                     chess_foundation::piece::PieceType::Pawn => {
-                        threats_bb |= self.get_pawn_attacks(square, is_white) & !relevant_blockers;
+                        threats_bb |= self.get_pawn_attacks(square as u16, is_white) & !relevant_blockers;
                     }
                     _ => {}
                 },
