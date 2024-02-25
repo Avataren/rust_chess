@@ -154,57 +154,51 @@ impl Magic {
         move_list
     }
 
-    pub fn get_rook_attacks(
-        &self,
-        square:usize,
-        relevant_blockers: Bitboard,
-    ) -> Bitboard {
+    pub fn get_rook_attacks(&self, square: usize, relevant_blockers: Bitboard) -> Bitboard {
         let magic_index = Self::rook_magic_index(square, relevant_blockers);
         self.rook_table[square][magic_index]
     }
 
-    pub fn get_bishop_attacks(
-        &self,
-        square: usize,
-        relevant_blockers: Bitboard,
-    ) -> Bitboard {
+    pub fn get_bishop_attacks(&self, square: usize, relevant_blockers: Bitboard) -> Bitboard {
         let magic_index = Self::bishop_magic_index(square, relevant_blockers);
-        self.rook_table[square][magic_index] & !relevant_blockers
-    }      
+        self.bishop_table[square][magic_index] & !relevant_blockers
+    }
 
     pub fn get_pawn_attacks(&self, square: u16, is_white: bool) -> Bitboard {
         let mut attacks = Bitboard::default();
-    
+
         // Calculate rank (0-7) and file (0-7) from square index (0-63)
         let rank = square / 8;
         let file = square % 8;
-    
+
         if is_white {
             // Ensure pawn is not on 8th rank (no attacks from there)
             if rank < 7 {
-                if file > 0 {  // Pawn is not on A-file
+                if file > 0 {
+                    // Pawn is not on A-file
                     attacks |= Bitboard::from_square_index(square + 7);
                 }
-                if file < 7 {  // Pawn is not on H-file
+                if file < 7 {
+                    // Pawn is not on H-file
                     attacks |= Bitboard::from_square_index(square + 9);
                 }
             }
         } else {
             // Ensure pawn is not on 1st rank (no attacks from there)
             if rank > 0 {
-                if file > 0 {  // Pawn is not on A-file
+                if file > 0 {
+                    // Pawn is not on A-file
                     attacks |= Bitboard::from_square_index(square - 9);
                 }
-                if file < 7 {  // Pawn is not on H-file
+                if file < 7 {
+                    // Pawn is not on H-file
                     attacks |= Bitboard::from_square_index(square - 7);
                 }
             }
         }
-    
+
         attacks
     }
-    
-
 
     pub fn get_bishop_moves(
         &self,
@@ -259,59 +253,69 @@ impl Magic {
         move_list
     }
 
-    pub fn generate_threat_map_from_square(&self, mut chess_board: &mut ChessBoard, square: u16, relevant_blockers: Bitboard) -> Bitboard {
-        let is_white = chess_board.get_white().contains_square(square as i32);
-        let mut enemy_pieces_bitboard = if is_white {
-            chess_board.get_black()
-        } else {
+    pub fn generate_threat_map(
+        &self,
+        mut chess_board: &mut ChessBoard,
+        relevant_blockers: Bitboard,
+        is_white: bool,
+    ) -> Bitboard {
+        let mut friendly_pieces_bb = if is_white {
             chess_board.get_white()
+        } else {
+            chess_board.get_black()
         };
+
+        // let mut enemy_pieces_bb = if is_white {
+        //     chess_board.get_black()
+        // } else {
+        //     chess_board.get_white()
+        // };
 
         let mut threats_bb = Bitboard::default();
 
-        while enemy_pieces_bitboard != Bitboard::default() {
-            let square = enemy_pieces_bitboard.pop_lsb() as u16;
+        while friendly_pieces_bb != Bitboard::default() {
+            let square = friendly_pieces_bb.pop_lsb() as u16;
             match chess_board.get_piece_type(square as u16) {
-                Some(piece_type) => {
-                    match piece_type {
-                        chess_foundation::piece::PieceType::Rook => {
-                            threats_bb |= self.get_rook_attacks(square as usize, relevant_blockers);
-                        }
-                        chess_foundation::piece::PieceType::Bishop => {
-                            threats_bb |= self.get_bishop_attacks(square as usize, relevant_blockers);
-                        }
-                        chess_foundation::piece::PieceType::Queen => {
-                            threats_bb |= self.get_rook_attacks(square as usize, relevant_blockers);
-                            threats_bb |= self.get_bishop_attacks(square as usize, relevant_blockers);
-                        }
-                        chess_foundation::piece::PieceType::King => {
-                            threats_bb |= self.king_lut[square as usize];
-                        }
-                        chess_foundation::piece::PieceType::Knight => {
-                            threats_bb |= self.knight_lut[square as usize];
-                        }
-                        chess_foundation::piece::PieceType::Pawn => {
-                            threats_bb |= self.get_pawn_attacks(square, is_white);
-                        }                        
-                        _ => {}
+                Some(piece_type) => match piece_type {
+                    chess_foundation::piece::PieceType::Rook => {
+                        threats_bb |= self.get_rook_attacks(square as usize, relevant_blockers);
                     }
-                }
+                    chess_foundation::piece::PieceType::Bishop => {
+                        threats_bb |= self.get_bishop_attacks(square as usize, relevant_blockers);
+                    }
+                    chess_foundation::piece::PieceType::Queen => {
+                        threats_bb |= self.get_rook_attacks(square as usize, relevant_blockers);
+                        threats_bb |= self.get_bishop_attacks(square as usize, relevant_blockers);
+                    }
+                    chess_foundation::piece::PieceType::King => {
+                        threats_bb |= self.king_lut[square as usize] & !relevant_blockers;
+                    }
+                    chess_foundation::piece::PieceType::Knight => {
+                        threats_bb |= self.knight_lut[square as usize] & !relevant_blockers;
+                    }
+                    chess_foundation::piece::PieceType::Pawn => {
+                        threats_bb |= self.get_pawn_attacks(square, is_white) & !relevant_blockers;
+                    }
+                    _ => {}
+                },
                 None => {}
             }
         }
+        // filter out enemy pieces
         threats_bb
     }
 
     pub fn is_king_in_check(&self, mut chess_board: &mut ChessBoard, is_white: bool) -> bool {
         let king_bb = chess_board.get_king(is_white);
-        let king_square = king_bb.clone().pop_lsb() as u16;
-        let friendly_pieces = if is_white {
-            chess_board.get_white()
-        } else {
+        let relevant_blockers = if !is_white {
             chess_board.get_black()
+        } else {
+            chess_board.get_white()
         };
 
-        let threats = self.generate_threat_map_from_square(&mut chess_board, king_square, friendly_pieces);
+        let threats =
+            self.generate_threat_map(&mut chess_board, relevant_blockers, !is_white);
+        
         (king_bb & threats) != Bitboard::default()
     }
 
@@ -621,5 +625,184 @@ impl Magic {
         }
 
         blocker_bitboards
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chess_board::ChessBoard;
+    use chess_foundation::bitboard::Bitboard;
+    // Group related tests into a submodule
+    mod threat_map_tests {
+        use super::*;
+
+        #[test]
+        fn test_threat_map_queen() {
+            let mut chess_board = ChessBoard::new();
+            chess_board.clear();
+            let magic = Magic::new();
+            let is_white = false;
+
+            // Friendly blockers (if any) - for simplicity, we assume none in this test
+            let relevant_blockers = if is_white {
+                chess_board.get_black()
+            } else {
+                chess_board.get_white()
+            };
+            // Generate the threat map for the square
+            chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Queen, is_white);
+            let mut threat_map = magic.generate_threat_map(
+                &mut chess_board,
+                relevant_blockers,
+                is_white,
+            );
+            println!("Threat map:");
+            threat_map.print_bitboard();
+            let mut expected_threat_map = Bitboard(0x81412111090503fe);
+            assert_eq!(
+                threat_map, expected_threat_map,
+                "The generated threat map does not match the expected map."
+            );
+            // // // test for a different square
+            chess_board.clear();
+            chess_board.set_piece_at_square(34, chess_foundation::piece::PieceType::Queen, is_white);
+            threat_map = magic.generate_threat_map(
+                &mut chess_board,
+                relevant_blockers,
+                is_white,
+            );
+             println!("Threat map:");
+             threat_map.print_bitboard();
+            expected_threat_map = Bitboard(0x24150efb0e152444);
+            assert_eq!(
+                threat_map, expected_threat_map,
+                "The generated threat map does not match the expected map."
+            );
+        }
+
+
+        #[test]
+        fn test_threat_map_bishop() {
+            let mut chess_board = ChessBoard::new();
+            chess_board.clear();
+            let magic = Magic::new();
+            let is_white = false;
+
+            // Friendly blockers (if any) - for simplicity, we assume none in this test
+            let relevant_blockers = if is_white {
+                chess_board.get_black()
+            } else {
+                chess_board.get_white()
+            };
+            // Generate the threat map for the square
+            chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Bishop, is_white);
+            let mut threat_map = magic.generate_threat_map(
+                &mut chess_board,
+                relevant_blockers,
+                is_white,
+            );
+            println!("Threat map:");
+            threat_map.print_bitboard();
+            let mut expected_threat_map = Bitboard(0x8040201008040200);
+            assert_eq!(
+                threat_map, expected_threat_map,
+                "The generated threat map does not match the expected map."
+            );
+            // // test for a different square
+            chess_board.clear();
+            chess_board.set_piece_at_square(34, chess_foundation::piece::PieceType::Bishop, is_white);
+            chess_board.set_piece_at_square(36, chess_foundation::piece::PieceType::Bishop, is_white);
+            threat_map = magic.generate_threat_map(
+                &mut chess_board,
+                relevant_blockers,
+                is_white,
+            );
+             println!("Threat map:");
+             threat_map.print_bitboard();
+            expected_threat_map = Bitboard(0xa2552a002a55a241);
+            assert_eq!(
+                threat_map, expected_threat_map,
+                "The generated threat map does not match the expected map."
+            );
+        }
+
+        #[test]
+        fn test_threat_map_rook() {
+            let mut chess_board = ChessBoard::new();
+            chess_board.clear();
+            let magic = Magic::new();
+            let is_white = false;
+
+            // Friendly blockers (if any) - for simplicity, we assume none in this test
+            let relevant_blockers = if is_white {
+                chess_board.get_black()
+            } else {
+                chess_board.get_white()
+            };
+            // Generate the threat map for the square
+            chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Rook, is_white);
+            let mut threat_map = magic.generate_threat_map(
+                &mut chess_board,
+                relevant_blockers,
+                is_white,
+            );
+            println!("Threat map:");
+            threat_map.print_bitboard();
+            let mut expected_threat_map = Bitboard(0x1010101010101fe);
+            assert_eq!(
+                threat_map, expected_threat_map,
+                "The generated threat map does not match the expected map."
+            );
+            // test for a different square
+            chess_board.clear();
+            chess_board.set_piece_at_square(63, chess_foundation::piece::PieceType::Rook, is_white);
+            chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Rook, is_white);
+            threat_map = magic.generate_threat_map(
+                &mut chess_board,
+                relevant_blockers,
+                is_white,
+            );
+            println!("Threat map:");
+            threat_map.print_bitboard();
+            expected_threat_map = Bitboard(0x7f818181818181fe);
+            assert_eq!(
+                threat_map, expected_threat_map,
+                "The generated threat map does not match the expected map."
+            );
+        }
+
+        #[test]
+        fn test_threat_map_pawn() {
+            let mut chess_board = ChessBoard::new();
+            chess_board.clear();
+            let magic = Magic::new();
+            let is_white = true;
+
+            // Friendly blockers (if any) - for simplicity, we assume none in this test
+            let relevant_blockers = if is_white {
+                chess_board.get_black()
+            } else {
+                chess_board.get_white()
+            };
+            // Generate the threat map for the square
+            chess_board.set_piece_at_square(8, chess_foundation::piece::PieceType::Pawn, is_white);
+            chess_board.set_piece_at_square(9, chess_foundation::piece::PieceType::Pawn, is_white);
+            chess_board.set_piece_at_square(10, chess_foundation::piece::PieceType::Pawn, is_white);
+            chess_board.set_piece_at_square(11, chess_foundation::piece::PieceType::Pawn, is_white);
+            let mut threat_map = magic.generate_threat_map(
+                &mut chess_board,
+                relevant_blockers,
+                is_white,
+            );
+
+            println!("Threat map:");
+            threat_map.print_bitboard();
+            let mut expected_threat_map = Bitboard(0x1f0000);
+            assert_eq!(
+                threat_map, expected_threat_map,
+                "The generated threat map does not match the expected map."
+            );
+        }        
     }
 }

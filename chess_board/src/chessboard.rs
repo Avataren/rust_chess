@@ -29,6 +29,24 @@ impl ChessBoard {
         }
     }
 
+    pub fn clear(&mut self){
+        self.white = Bitboard(0);
+        self.black = Bitboard(0);
+        self.pawns = Bitboard(0);
+        self.knights = Bitboard(0);
+        self.bishops = Bitboard(0);
+        self.rooks = Bitboard(0);
+        self.queens = Bitboard(0);
+        self.kings = Bitboard(0);
+        self.castling_rights = 0;
+        self.move_histroy.clear();
+    }
+
+    pub fn set_piece_at_square(&mut self, square: u16, piece_type:PieceType, is_white: bool) {
+        let square_bb = Bitboard::from_square_index(square);
+        self.set_piece_bitboard(piece_type, square_bb, is_white);
+    }
+
     pub fn get_all_pieces(&self) -> Bitboard {
         self.get_white() | (self.get_black())
     }

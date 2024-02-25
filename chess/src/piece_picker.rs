@@ -3,7 +3,9 @@ use bevy::{
     prelude::*,
     window::PrimaryWindow,
 };
-use move_generator::move_generator::{get_legal_move_list_from_square, get_pseudo_legal_move_list_from_square};
+use move_generator::move_generator::{
+    get_legal_move_list_from_square, get_pseudo_legal_move_list_from_square,
+};
 
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
