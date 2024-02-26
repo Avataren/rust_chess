@@ -1,6 +1,5 @@
 use chess_board::ChessBoard;
-use chess_foundation::{Bitboard, ChessMove};
-
+use chess_foundation::ChessMove;
 use crate::magic::Magic;
 
 pub fn get_legal_move_list_from_square(
@@ -17,7 +16,6 @@ pub fn get_legal_move_list_from_square(
         
         chess_board.make_move(&mut chess_move);
         let in_check = magic.is_king_in_check(chess_board, is_white);
-        // println!("in check? {}",in_check);
         if !in_check {
             move_list.push(chess_move);
         }
@@ -28,7 +26,7 @@ pub fn get_legal_move_list_from_square(
 
 pub fn get_pseudo_legal_move_list_from_square(
     square: u16,
-    chess_board: &mut ChessBoard,
+    chess_board: &ChessBoard,
     magic: &Magic,
     is_white: bool,
 ) -> Vec<ChessMove> {

@@ -378,7 +378,7 @@ impl Magic {
         &self,
         square: u16,
         friendly_pieces_bb: Bitboard,
-        chess_board: &mut ChessBoard,
+        chess_board: &ChessBoard,
         is_white: bool,
     ) -> Vec<ChessMove> {
         let king_moves_bitboard = self.king_lut[square as usize];
@@ -396,7 +396,7 @@ impl Magic {
     }
     pub fn get_castling_moves(
         &self,
-        chess_board: &mut ChessBoard,
+        chess_board: &ChessBoard,
         square: u16,
         is_white: bool,
     ) -> Vec<ChessMove> {
@@ -436,9 +436,9 @@ impl Magic {
         let king_not_in_check = !self.is_king_in_check(chess_board, is_white);
         let threat_map = self.generate_threat_map(chess_board, is_white);
         let king_side_squares_safe =
-            self.are_squares_safe(chess_board, [square + 1, square + 2], is_white, threat_map);
+            self.are_squares_safe([square + 1, square + 2], is_white, threat_map);
         let queen_side_squares_safe =
-            self.are_squares_safe(chess_board, [square - 1, square - 2], is_white, threat_map);
+            self.are_squares_safe([square - 1, square - 2], is_white, threat_map);
 
         // Add kingside castling move if applicable
         if can_castle_king_side
@@ -471,7 +471,7 @@ impl Magic {
 
     pub fn generate_threat_map(
         &self,
-        mut chess_board: &mut ChessBoard,
+        chess_board: &ChessBoard,
         // relevant_blockers: Bitboard,
         is_white: bool,
     ) -> Bitboard {
@@ -526,7 +526,6 @@ impl Magic {
 
     pub fn are_squares_safe(
         &self,
-        chess_board: &mut ChessBoard,
         squares: [u16; 2],
         is_white: bool,
         threat_map: Bitboard,
@@ -541,9 +540,9 @@ impl Magic {
         true // If none of the squares are under attack, return true
     }
 
-    pub fn is_king_in_check(&self, mut chess_board: &mut ChessBoard, is_white: bool) -> bool {
+    pub fn is_king_in_check(&self, chess_board: &ChessBoard, is_white: bool) -> bool {
         let king_bb = chess_board.get_king(is_white);
-        let threats = self.generate_threat_map(&mut chess_board, is_white);
+        let threats = self.generate_threat_map(chess_board, is_white);
         (king_bb & threats) != Bitboard::default()
     }
 
