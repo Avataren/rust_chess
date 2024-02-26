@@ -13,13 +13,6 @@ use crate::move_generator::{
 };
 use crate::{get_king_move_patterns, get_knight_move_patterns};
 
-const BOARD_SIZE: u16 = 64;
-const BOARD_WIDTH: u16 = 8;
-const WHITE_PAWN_START_RANK: u16 = 1;
-const BLACK_PAWN_START_RANK: u16 = 6;
-const WHITE_EN_PASSANT_RANK: u16 = 4;
-const BLACK_EN_PASSANT_RANK: u16 = 3;
-
 pub struct Magic {
     //pub pawn_lut: Vec<Bitboard>,
     pub knight_lut: Vec<Bitboard>,
@@ -209,54 +202,99 @@ impl Magic {
         chess_board: &ChessBoard,
     ) -> Vec<ChessMove> {
         let mut move_list = Vec::new();
-        let rank = square >> 3; // equivalent to `square / 8` but faster
-        let file = square & 7; // equivalent to `square % 8` but faster
-        let single_step = if is_white { 8 } else { -8 };
-        let starting_rank = if is_white { 1 } else { 6 };
-        let free_squares = chess_board.get_free_squares();
-        // Single move forward
-        let single_move_pos = square as i32 + single_step;
-        if (0..64).contains(&single_move_pos) && free_squares.contains_square(single_move_pos) {
-            move_list.push(ChessMove::new(square, single_move_pos as u16));
-        }
 
-        // Double move forward
-        if rank == starting_rank && free_squares.contains_square(single_move_pos) {
-            let double_move_pos = single_move_pos + single_step;
-            if free_squares.contains_square(double_move_pos) {
-                move_list.push(ChessMove::new_with_flag(
-                    square,
-                    double_move_pos as u16,
-                    ChessMove::PAWN_TWO_UP_FLAG,
-                ));
+        // Calculate rank and file for the pawn
+        let rank = square / 8;
+        let file = square % 8;
+
+        // Single move forward
+        let single_step = if is_white { 8 } else { -8 };
+        let single_move_pos = square as i32 + single_step;
+
+        // Prevent underflow/overflow
+        if single_move_pos >= 0 && single_move_pos < 64 {
+            if chess_board
+                .get_empty()
+                .contains_square(single_move_pos as i32)
+            {
+                move_list.push(ChessMove::new(square, single_move_pos as u16));
             }
         }
 
-        // Captures to the left and right
-        let capture_offsets = if is_white { [7, 9] } else { [u16::MAX; 2] }; // Default to MAX for underflow protection
-        let potential_captures = [
-            file.checked_sub(1).map(|_| square + capture_offsets[0]), // Capture left
-            (file < 7).then(|| square + capture_offsets[1]),          // Capture right
-        ];
-
-        for &capture_pos in &potential_captures {
-            if let Some(pos) = capture_pos {
-                if pos < 64
+        // Double move forward
+        let starting_rank = if is_white { 1 } else { 6 };
+        if rank == starting_rank {
+            let double_step = single_step * 2;
+            let double_move_pos = square as i32 + double_step;
+            // Prevent underflow/overflow
+            if double_move_pos >= 0 && double_move_pos < 64 {
+                if chess_board
+                    .get_empty()
+                    .contains_square(single_move_pos as i32)
                     && chess_board
-                        .get_opponent_pieces(is_white)
-                        .contains_square(pos as i32)
+                        .get_empty()
+                        .contains_square(double_move_pos as i32)
                 {
-                    move_list.push(ChessMove::new(square, pos));
+                    move_list.push(ChessMove::new_with_flag(
+                        square,
+                        double_move_pos as u16,
+                        ChessMove::PAWN_TWO_UP_FLAG,
+                    ));
                 }
             }
         }
 
+        // Captures
+        if file > 0 {
+            // Can capture to the left
+            let capture_left = if is_white {
+                square + 7 // For white pawns
+            } else {
+                // For black pawns, ensure no underflow
+                square.checked_sub(9).unwrap_or_else(|| u16::MAX)
+            };
+
+            // Check if capture_left is a legal board position
+            if capture_left < 64
+                && chess_board
+                    .get_opponent_pieces(is_white)
+                    .contains_square(capture_left as i32)
+            {
+                move_list.push(ChessMove::new(square, capture_left));
+            }
+        }
+        if file < 7 {
+            // Can capture to the right
+            let capture_right = if is_white {
+                // For white pawns, ensure no overflow
+                square.checked_add(9).unwrap_or_else(|| u16::MAX)
+            } else {
+                // For black pawns, ensure no underflow
+                square.checked_sub(7).unwrap_or_else(|| u16::MAX)
+            };
+
+            // Check if capture_right is a legal board position
+            if capture_right < 64
+                && chess_board
+                    .get_opponent_pieces(is_white)
+                    .contains_square(capture_right as i32)
+            {
+                move_list.push(ChessMove::new(square, capture_right));
+            }
+        }
         // En Passant
-        if let Some(last_move) = chess_board.get_last_move() {
-            if last_move.has_flag(ChessMove::PAWN_TWO_UP_FLAG) && (rank == 3 || rank == 4) {
+        //todo: optimze this!
+        let last_move = chess_board.get_last_move();
+        if let Some(last_move) = last_move {
+            if last_move.has_flag(ChessMove::PAWN_TWO_UP_FLAG) {
                 let last_move_to = last_move.target_square();
-                let last_move_to_file = last_move_to & 7;
-                if (file as i32 - last_move_to_file as i32).abs() == 1 {
+                let last_move_to_file = last_move_to % 8;
+                let pawn_rank = square / 8;
+                let pawn_file = square % 8;
+                let en_passant_rank = if is_white { 4 } else { 3 };
+                let is_adjacent_file = (pawn_file as i32 - last_move_to_file as i32).abs() == 1;
+
+                if pawn_rank == en_passant_rank && is_adjacent_file {
                     let en_passant_capture_square = if is_white {
                         last_move_to + 8
                     } else {
@@ -849,7 +887,7 @@ mod tests {
     use chess_board::ChessBoard;
     use chess_foundation::bitboard::Bitboard;
 
-    pub fn perft(depth: i32, chess_board: &mut ChessBoard, magic: &Magic, is_white: bool) -> u64 {
+    pub fn perft(depth: i32, chess_board: &mut ChessBoard, magic: &Magic, is_white:bool) -> u64 {
         if depth == 0 {
             return 1; // Leaf node, count as a single position
         }
@@ -861,6 +899,7 @@ mod tests {
 
         let mut nodes = 0;
         while all_pieces != Bitboard::default() {
+            
             let square = all_pieces.pop_lsb() as u16;
             let legal_moves = get_legal_move_list_from_square(square, chess_board, magic);
             for mut m in legal_moves {
@@ -874,45 +913,36 @@ mod tests {
     }
 
     // Group related tests into a submodule
-
+    
     mod perft_tests {
         use super::*;
-        use std::{
-            fs::File,
-            io::{BufWriter, Write},
-            time::Instant,
-        };
+        use std::{fs::File, io::{BufWriter, Write}, time::Instant};
 
         #[test]
         fn perft_test() {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
-
+    
             for depth in 0..6 {
                 let mut chess_board = ChessBoard::new();
-
+                
                 let start = Instant::now(); // Start timing
                 let nodes = perft(depth, &mut chess_board, &mut magic, true);
                 let duration = start.elapsed(); // End timing
-
-                let line = format!(
-                    "Perft depth {}, nodes: {}, time taken: {:?}\n",
-                    depth, nodes, duration
-                );
+                
+                let line = format!("Perft depth {}, nodes: {}, time taken: {:?}\n", depth, nodes, duration);
                 output.push(line); // Collect each line of output
             }
-
+    
             // Write the collected output to a file
             let file_path = "perft_test_results.txt"; // Specify your file path here
             let file = File::create(file_path).expect("Failed to create file");
             let mut writer = BufWriter::new(file);
-
+    
             for line in output {
-                writer
-                    .write_all(line.as_bytes())
-                    .expect("Failed to write to file");
+                writer.write_all(line.as_bytes()).expect("Failed to write to file");
             }
-
+    
             println!("Test results with timing written to {}", file_path);
         }
     }
