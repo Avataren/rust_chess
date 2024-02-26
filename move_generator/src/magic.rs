@@ -43,13 +43,25 @@ impl Magic {
         let rook_table = Self::init_rook_table();
         let bishop_table = Self::init_bishop_table();
 
+        let mut white_pawn_attack_masks = [Bitboard::default(); 64];
+        for square in 0..64 {
+            white_pawn_attack_masks[square] = Self::get_pawn_attacks(square, true);
+        }
+
+        let mut black_pawn_attack_masks = [Bitboard::default(); 64];
+        for square in 0..64 {
+            black_pawn_attack_masks[square] = Self::get_pawn_attacks(square, false);
+        }
+
         Magic {
             knight_lut,
             king_lut,
             rook_table,
             bishop_table,
-            white_pawn_attack_masks: Self::init_white_pawn_attack_masks(),
-            black_pawn_attack_masks: Self::init_black_pawn_attack_masks(),
+            //white_pawn_attack_masks,
+            white_pawn_attack_masks,
+            black_pawn_attack_masks, //Self::init_white_pawn_attack_masks(),
+                                     //black_pawn_attack_masks: Self::init_black_pawn_attack_masks(),
         }
     }
 
@@ -330,44 +342,38 @@ impl Magic {
         self.bishop_table[square][magic_index] & !relevant_blockers
     }
 
-    pub fn get_pawn_attacks(&self, square: usize, is_white: bool) -> Bitboard {
-        if is_white {
-            self.white_pawn_attack_masks[square]
+    fn get_pawn_attacks(square: usize, is_white: bool) -> Bitboard {
+        let mut attacks = Bitboard::default();
+
+        if !is_white {
+            // Ensure pawn is not on 8th rank (no attacks from there)
+            if square < 56 {
+                // 56 to 63 is the 8th rank
+                let smod = square & 7;
+                if smod != 0 {
+                    // Pawn is not on A-file, can attack left
+                    attacks.set_bit(square + 7);
+                }
+                if smod != 7 {
+                    // Pawn is not on H-file, can attack right
+                    attacks.set_bit(square + 9);
+                }
+            }
         } else {
-            self.black_pawn_attack_masks[square]
+            // Ensure pawn is not on 1st rank (no attacks from there)
+            if square > 7 {
+                // 0 to 7 is the 1st rank
+                if (square >> 3) != 0 && square > 9 {
+                    // Pawn is not on A-file, can attack right
+                    attacks.set_bit(square - 9);
+                }
+                if (square & 7) != 7 {
+                    // Pawn is not on H-file, can attack left
+                    attacks.set_bit(square - 7);
+                }
+            }
         }
-
-        // let mut attacks = Bitboard::default();
-
-        // if !is_white {
-        //     // Ensure pawn is not on 8th rank (no attacks from there)
-        //     if square < 56 {
-        //         // 56 to 63 is the 8th rank
-        //         let smod = square & 7;
-        //         if smod != 0 {
-        //             // Pawn is not on A-file, can attack left
-        //             attacks.set_bit(square + 7);
-        //         }
-        //         if smod != 7 {
-        //             // Pawn is not on H-file, can attack right
-        //             attacks.set_bit(square + 9);
-        //         }
-        //     }
-        // } else {
-        //     // Ensure pawn is not on 1st rank (no attacks from there)
-        //     if square > 7 {
-        //         // 0 to 7 is the 1st rank
-        //         if (square >> 3) != 0 {
-        //             // Pawn is not on A-file, can attack right
-        //             attacks.set_bit(square - 9);
-        //         }
-        //         if (square & 7) != 7 {
-        //             // Pawn is not on H-file, can attack left
-        //             attacks.set_bit(square - 7);
-        //         }
-        //     }
-        // }
-        //attacks
+        attacks
     }
 
     pub fn get_bishop_moves(
@@ -541,7 +547,12 @@ impl Magic {
                         threats_bb |= self.knight_lut[square] & !relevant_blockers;
                     }
                     chess_foundation::piece::PieceType::Pawn => {
-                        threats_bb |= self.get_pawn_attacks(square, is_white);
+                        threats_bb |= if is_white {
+                            self.white_pawn_attack_masks[square]
+                        } else {
+                            self.black_pawn_attack_masks[square]
+                        };
+                        // self.get_pawn_attacks(square, is_white);
                     }
                     _ => {}
                 },
