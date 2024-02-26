@@ -916,18 +916,34 @@ mod tests {
     
     mod perft_tests {
         use super::*;
-        use std::time::Instant;
+        use std::{fs::File, io::{BufWriter, Write}, time::Instant};
 
         #[test]
         fn perft_test() {
             let mut magic = Magic::new();
+            let mut output = Vec::new(); // Use a vector to collect output
+    
             for depth in 0..6 {
                 let mut chess_board = ChessBoard::new();
-                let start = Instant::now(); 
+                
+                let start = Instant::now(); // Start timing
                 let nodes = perft(depth, &mut chess_board, &mut magic, true);
-                let duration = start.elapsed();
-                println!("Perft depth {}, nodes: {}, time taken: {:?}", depth, nodes, duration);
+                let duration = start.elapsed(); // End timing
+                
+                let line = format!("Perft depth {}, nodes: {}, time taken: {:?}\n", depth, nodes, duration);
+                output.push(line); // Collect each line of output
             }
+    
+            // Write the collected output to a file
+            let file_path = "perft_test_results.txt"; // Specify your file path here
+            let file = File::create(file_path).expect("Failed to create file");
+            let mut writer = BufWriter::new(file);
+    
+            for line in output {
+                writer.write_all(line.as_bytes()).expect("Failed to write to file");
+            }
+    
+            println!("Test results with timing written to {}", file_path);
         }
     }
 
