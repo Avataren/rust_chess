@@ -58,95 +58,58 @@ impl Magic {
             king_lut,
             rook_table,
             bishop_table,
-            //white_pawn_attack_masks,
             white_pawn_attack_masks,
-            black_pawn_attack_masks, //Self::init_white_pawn_attack_masks(),
-                                     //black_pawn_attack_masks: Self::init_black_pawn_attack_masks(),
+            black_pawn_attack_masks,
         }
     }
 
-    pub fn init_black_pawn_attack_masks() -> [Bitboard; 64] {
-        let mut masks = [Bitboard::default(); 64];
-        for square in 0..64 {
-            // Exclude pawns on the 8th rank (squares 0-7) as they cannot move forward
-            if square >= 8 {
-                // Left captures, excluding the A file (squares % 8 == 0)
-                if square % 8 != 0 {
-                    masks[square].set_bit(square - 9);
-                }
-                // Right captures, excluding the H file (squares % 8 == 7)
-                if square % 8 != 7 {
-                    masks[square].set_bit(square - 7);
-                }
-            }
-        }
-        masks
-    }
+    // for precalculating masks and magics
+    // pub fn print_masks() {
+    //     println!("pub const ROOK_MASKS: [Bitboard; 64] = [");
+    //     //for r in rook_masks.iter() {
+    //     for square in 0..64 {
+    //         println!("Bitboard(0x{:X}), ", Self::rmask(square));
+    //     }
+    //     println!("];");
 
-    pub fn init_white_pawn_attack_masks() -> [Bitboard; 64] {
-        let mut masks = [Bitboard::default(); 64];
-        for square in 0..64 {
-            // Exclude pawns on the 1st rank (squares 56-63) as they cannot move forward
-            if square < 56 {
-                // Left captures, excluding the A file (squares % 8 == 0)
-                if square % 8 != 0 {
-                    masks[square].set_bit(square + 7);
-                }
-                // Right captures, excluding the H file (squares % 8 == 7)
-                if square % 8 != 7 {
-                    masks[square].set_bit(square + 9);
-                }
-            }
-        }
-        masks
-    }
+    //     println!("pub const BISHOP_MASKS: [Bitboard; 64] = [");
+    //     //for r in bishop_masks.iter() {
+    //     for square in 0..64 {
+    //         println!("Bitboard(0x{:X}), ", Self::bmask(square));
+    //     }
+    //     println!("\n];");
+    // }
 
-    pub fn print_masks() {
-        println!("pub const ROOK_MASKS: [Bitboard; 64] = [");
-        //for r in rook_masks.iter() {
-        for square in 0..64 {
-            println!("Bitboard(0x{:X}), ", Self::rmask(square));
-        }
-        println!("];");
+    // pub fn print_magics() {
+    //     let mut bishop_magix = Vec::new();
+    //     let mut rook_magix = Vec::new();
 
-        println!("pub const BISHOP_MASKS: [Bitboard; 64] = [");
-        //for r in bishop_masks.iter() {
-        for square in 0..64 {
-            println!("Bitboard(0x{:X}), ", Self::bmask(square));
-        }
-        println!("\n];");
-    }
+    //     // Fill the bishop_magix vector
+    //     for square in 0..64 {
+    //         let m = Self::find_magic(square, Self::BBITS[square as usize], true);
+    //         bishop_magix.push(m);
+    //     }
 
-    pub fn print_magics() {
-        let mut bishop_magix = Vec::new();
-        let mut rook_magix = Vec::new();
+    //     // Fill the rook_magix vector
+    //     for square in 0..64 {
+    //         let m = Self::find_magic(square, Self::RBITS[square as usize], false);
+    //         rook_magix.push(m);
+    //     }
 
-        // Fill the bishop_magix vector
-        for square in 0..64 {
-            let m = Self::find_magic(square, Self::BBITS[square as usize], true);
-            bishop_magix.push(m);
-        }
+    //     // Format and print bishop_magix as a const array in uppercase hexadecimal
+    //     println!("pub const BISHOP_MAGICS: [u64; 64] = [");
+    //     for m in bishop_magix.iter() {
+    //         print!("0x{:X}, ", m);
+    //     }
+    //     println!("\n];");
 
-        // Fill the rook_magix vector
-        for square in 0..64 {
-            let m = Self::find_magic(square, Self::RBITS[square as usize], false);
-            rook_magix.push(m);
-        }
-
-        // Format and print bishop_magix as a const array in uppercase hexadecimal
-        println!("pub const BISHOP_MAGICS: [u64; 64] = [");
-        for m in bishop_magix.iter() {
-            print!("0x{:X}, ", m);
-        }
-        println!("\n];");
-
-        // Format and print rook_magix as a const array in uppercase hexadecimal
-        println!("pub const ROOK_MAGICS: [u64; 64] = [");
-        for m in rook_magix.iter() {
-            print!("0x{:X}, ", m);
-        }
-        println!("\n];");
-    }
+    //     // Format and print rook_magix as a const array in uppercase hexadecimal
+    //     println!("pub const ROOK_MAGICS: [u64; 64] = [");
+    //     for m in rook_magix.iter() {
+    //         print!("0x{:X}, ", m);
+    //     }
+    //     println!("\n];");
+    // }
 
     fn rook_magic_index(square: usize, blockers: Bitboard) -> usize {
         let mask = ROOK_MASKS[square];
@@ -552,15 +515,12 @@ impl Magic {
                         } else {
                             self.black_pawn_attack_masks[square]
                         };
-                        // self.get_pawn_attacks(square, is_white);
                     }
                     _ => {}
                 },
                 None => {}
             }
         }
-        // filter out enemy pieces
-        //threat_map &= !chess_board.get_white();
         threats_bb
     }
 
@@ -585,22 +545,6 @@ impl Magic {
         let king_bb = chess_board.get_king(is_white);
         let threats = self.generate_threat_map(&mut chess_board, is_white);
         (king_bb & threats) != Bitboard::default()
-    }
-
-    // Example implementation of can_castle_kingside
-    fn can_castle_kingside(&self, king_square: u16, friendly_pieces: Bitboard) -> bool {
-        // Check if the king and the rook in the kingside have not moved
-        // Check if the squares between the king and the rook are empty
-        // Check if the king is not in check
-        // Check if the squares the king passes through are not under attack
-        // Return true if all conditions are met, false otherwise
-        unimplemented!() // Replace with actual implementation
-    }
-
-    // Similar implementation for can_castle_queenside
-    fn can_castle_queenside(&self, king_square: u16, friendly_pieces: Bitboard) -> bool {
-        // Similar checks as can_castle_kingside, but for the queenside
-        unimplemented!() // Replace with actual implementation
     }
 
     fn random_uint64() -> u64 {
@@ -941,7 +885,7 @@ mod tests {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
 
-            for depth in 0..6 {
+            for depth in 0..7 {
                 let mut chess_board = ChessBoard::new();
 
                 let start = Instant::now(); // Start timing
