@@ -1,6 +1,6 @@
-use chess_board::ChessBoard;
-use chess_foundation::ChessMove;
 use crate::magic::Magic;
+use chess_board::{chessboard::GameState, ChessBoard};
+use chess_foundation::{Bitboard, ChessMove};
 
 pub fn get_legal_move_list_from_square(
     square: u16,
@@ -9,11 +9,10 @@ pub fn get_legal_move_list_from_square(
 ) -> Vec<ChessMove> {
     let mut move_list = Vec::new();
     let is_white = chess_board.get_white().contains_square(square as i32);
-    let pseudo_legal_moves = get_pseudo_legal_move_list_from_square(square, chess_board, magic, is_white);
-
+    let pseudo_legal_moves =
+        get_pseudo_legal_move_list_from_square(square, chess_board, magic, is_white);
     // check if move would leave king in check
     for mut chess_move in pseudo_legal_moves {
-        
         chess_board.make_move(&mut chess_move);
         let in_check = magic.is_king_in_check(chess_board, is_white);
         if !in_check {
@@ -21,6 +20,37 @@ pub fn get_legal_move_list_from_square(
         }
         chess_board.undo_move();
     }
+
+    move_list
+}
+
+pub fn get_all_legal_moves_for_color(
+    chess_board: &mut ChessBoard,
+    magic: &Magic,
+    is_white: bool,
+) -> Vec<ChessMove> {
+    let mut move_list = Vec::new();
+    let mut friendly_pieces_bitboard = if is_white {
+        chess_board.get_white()
+    } else {
+        chess_board.get_black()
+    };
+
+    while (friendly_pieces_bitboard != Bitboard::default()) {
+        let square = friendly_pieces_bitboard.pop_lsb() as u16;
+        let pseudo_legal_moves =
+            get_pseudo_legal_move_list_from_square(square, chess_board, magic, is_white);
+        // check if move would leave king in check
+        for mut chess_move in pseudo_legal_moves {
+            chess_board.make_move(&mut chess_move);
+            let in_check = magic.is_king_in_check(chess_board, is_white);
+            if !in_check {
+                move_list.push(chess_move);
+            }
+            chess_board.undo_move();
+        }
+    }
+
     move_list
 }
 

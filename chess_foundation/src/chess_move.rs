@@ -84,6 +84,10 @@ impl ChessMove {
         self.flag() == flag
     }
 
+    pub fn set_flag(&mut self, flag: u16) {
+        self.move_value |= flag << 12;
+    }
+
     pub fn clear_flag(&mut self, flag: u16) {
         self.move_value &= !(flag << 12);
     }

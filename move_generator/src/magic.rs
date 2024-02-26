@@ -256,6 +256,15 @@ impl Magic {
                 move_list.push(ChessMove::new(square, capture_right));
             }
         }
+
+        //check if any moves are promotions
+        let promotion_rank = if is_white { 7 } else { 0 };
+        for cm in move_list.iter_mut() {
+            if cm.target_square() >> 3 == promotion_rank {
+                cm.set_flag(ChessMove::PROMOTE_TO_QUEEN_FLAG);
+            }
+        }
+
         // En Passant
         //todo: optimze this!
         let last_move = chess_board.get_last_move();
@@ -884,9 +893,9 @@ mod tests {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
 
-            for depth in 0..7 {
+            for depth in 0..8 {
                 let mut chess_board = ChessBoard::new();
-
+                //chess_board.set_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq –");
                 let start = Instant::now(); // Start timing
                 let nodes = perft(depth, &mut chess_board, &mut magic, true);
                 let duration = start.elapsed(); // End timing

@@ -1,7 +1,8 @@
 Perft depth 0, nodes: 1, time taken: 100ns
-Perft depth 1, nodes: 20, time taken: 5.8µs
-Perft depth 2, nodes: 400, time taken: 52.8µs
-Perft depth 3, nodes: 8902, time taken: 1.1481ms
-Perft depth 4, nodes: 197281, time taken: 26.2978ms
-Perft depth 5, nodes: 4865609, time taken: 673.331ms
-Perft depth 6, nodes: 119060324, time taken: 16.1125301s
+Perft depth 1, nodes: 20, time taken: 4.5µs
+Perft depth 2, nodes: 400, time taken: 53.3µs
+Perft depth 3, nodes: 8902, time taken: 1.1773ms
+Perft depth 4, nodes: 197281, time taken: 25.9217ms
+Perft depth 5, nodes: 4865609, time taken: 654.2345ms
+Perft depth 6, nodes: 119060324, time taken: 16.1110774s
+Perft depth 7, nodes: 3195898416, time taken: 434.095804s

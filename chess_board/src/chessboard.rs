@@ -1,5 +1,24 @@
 use crate::FENParser;
 use chess_foundation::{bitboard::Bitboard, piece::PieceType, ChessMove, ChessPiece};
+
+
+#[repr(u8)]
+pub enum CastlingRights {
+    WhiteKingSide = 0b1000,
+    WhiteQueenSide = 0b0100,
+    BlackKingSide = 0b0010,
+    BlackQueenSide = 0b0001,
+    AllCastlingRights = 0b1111,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum GameState{
+    InProgress,
+    Checkmate,
+    Stalemate,
+}
+
+
 pub struct ChessBoard {
     white: Bitboard,
     black: Bitboard,
@@ -11,15 +30,7 @@ pub struct ChessBoard {
     kings: Bitboard,
     pub castling_rights: u8,
     move_history: Vec<(ChessMove, u8)>,
-}
-
-#[repr(u8)]
-pub enum CastlingRights {
-    WhiteKingSide = 0b1000,
-    WhiteQueenSide = 0b0100,
-    BlackKingSide = 0b0010,
-    BlackQueenSide = 0b0001,
-    AllCastlingRights = 0b1111,
+    game_state: GameState,
 }
 
 impl ChessBoard {
@@ -35,6 +46,7 @@ impl ChessBoard {
             kings: Bitboard(0x1000_0000_0000_0010),   // e1, e8
             castling_rights: CastlingRights::AllCastlingRights as u8,
             move_history: Vec::with_capacity(100),
+            game_state: GameState::InProgress,
         }
     }
 
@@ -49,6 +61,15 @@ impl ChessBoard {
         self.kings = Bitboard(0);
         self.castling_rights = CastlingRights::AllCastlingRights as u8;
         self.move_history.clear();
+        self.game_state = GameState::InProgress;
+    }
+
+    pub fn get_game_state(&self) -> GameState {
+        self.game_state
+    }
+
+    pub fn set_game_state(&mut self, game_state: GameState) {
+        self.game_state = game_state;
     }
 
     pub fn get_fen_castling_rights(&self) -> String {
@@ -147,8 +168,22 @@ impl ChessBoard {
             let start_square_bb = Bitboard::from_square_index(start_square);
             self.castling_rights = prev_castling_rights;
 
-            // Undo the move for the king or other pieces
-            if let Some(piece) = chess_move.chess_piece {
+            // Undo pawn promotion first, if applicable
+            if let Some(promotion_piece) = chess_move.promotion_piece_type() {
+                // Remove the promotion piece from the target square
+                self.clear_piece_bitboard(
+                    promotion_piece,
+                    target_square_bb,
+                    chess_move.chess_piece.unwrap().is_white(),
+                );
+                // Add a pawn back to the start square
+                self.set_piece_bitboard(
+                    PieceType::Pawn,
+                    start_square_bb,
+                    chess_move.chess_piece.unwrap().is_white(),
+                );
+            } else if let Some(piece) = chess_move.chess_piece {
+                // Undo the move for regular pieces or the king
                 self.update_piece_bitboard(piece.piece_type(), target_square_bb, start_square_bb);
                 self.update_color_bitboard(piece.is_white(), target_square_bb, start_square_bb);
 
@@ -157,18 +192,16 @@ impl ChessBoard {
                     // Determine rook's original and castled squares based on the castling type
                     let (rook_start_square, rook_target_square) =
                         match (start_square, target_square) {
-                            (4, 6) => (5, 7),     // White kingside castling
-                            (4, 2) => (3, 0),     // White queenside castling
-                            (60, 62) => (61, 63), // Black kingside castling
-                            (60, 58) => (59, 56), // Black queenside castling
+                            (4, 6) => (7, 5),     // White kingside castling
+                            (4, 2) => (0, 3),     // White queenside castling
+                            (60, 62) => (63, 61), // Black kingside castling
+                            (60, 58) => (56, 59), // Black queenside castling
                             _ => panic!("Invalid castling move"),
                         };
 
                     // Move the rook back
-                    let rook_start_square_bb =
-                        Bitboard::from_square_index(rook_start_square as u16);
-                    let rook_target_square_bb =
-                        Bitboard::from_square_index(rook_target_square as u16);
+                    let rook_start_square_bb = Bitboard::from_square_index(rook_start_square);
+                    let rook_target_square_bb = Bitboard::from_square_index(rook_target_square);
                     self.update_piece_bitboard(
                         PieceType::Rook,
                         rook_target_square_bb,
@@ -181,6 +214,7 @@ impl ChessBoard {
                     );
                 }
             }
+
             // Restore the captured piece, if there was one
             if let Some(captured_piece) = chess_move.capture {
                 // If the move was an en passant capture, the captured pawn's location differs from the target square
@@ -192,7 +226,6 @@ impl ChessBoard {
                         target_square - 8
                     };
                     let captured_pawn_bb = Bitboard::from_square_index(captured_pawn_square);
-
                     self.set_piece_bitboard(
                         captured_piece.piece_type(),
                         captured_pawn_bb,
@@ -295,11 +328,15 @@ impl ChessBoard {
                 };
             }
 
-            // Update the piece's bitboard
+            // Update the piece's bitboard and color bitboards for regular moves
             self.update_piece_bitboard(piece_type, start_square_bb, target_square_bb);
-
-            // Update the color bitboards
             self.update_color_bitboard(is_white, start_square_bb, target_square_bb);
+            // Handle pawn promotion
+            if let Some(promotion_piece) = chess_move.promotion_piece_type() {
+                // Clear the pawn from the target square and replace it with the promotion piece
+                self.clear_piece_bitboard(PieceType::Pawn, target_square_bb, is_white);
+                self.set_piece_bitboard(promotion_piece, target_square_bb, is_white);
+            }
         }
         true
     }
