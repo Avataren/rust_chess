@@ -24,6 +24,39 @@ pub fn get_legal_move_list_from_square(
     move_list
 }
 
+pub fn get_legal_move_list_from_square_perft(
+    square: u16,
+    chess_board: &mut ChessBoard,
+    magic: &Magic,
+) -> Vec<ChessMove> {
+    let mut move_list = Vec::new();
+    let is_white = chess_board.get_white().contains_square(square as i32);
+    let pseudo_legal_moves =
+        get_pseudo_legal_move_list_from_square(square, chess_board, magic, is_white);
+    // check if move would leave king in check
+    for mut chess_move in pseudo_legal_moves {
+        chess_board.make_move(&mut chess_move);
+        let in_check = magic.is_king_in_check(chess_board, is_white);
+        if !in_check {
+            if chess_move.promotion_piece_type().is_some() {
+                chess_move.set_flag(ChessMove::PROMOTE_TO_QUEEN_FLAG);
+                move_list.push(chess_move);
+                chess_move.set_flag(ChessMove::PROMOTE_TO_ROOK_FLAG);
+                move_list.push(chess_move);
+                chess_move.set_flag(ChessMove::PROMOTE_TO_KNIGHT_FLAG);
+                move_list.push(chess_move);
+                chess_move.set_flag(ChessMove::PROMOTE_TO_BISHOP_FLAG);
+                move_list.push(chess_move);
+            } else {
+                move_list.push(chess_move);
+            }
+        }
+        chess_board.undo_move();
+    }
+
+    move_list
+}
+
 pub fn get_all_legal_moves_for_color(
     chess_board: &mut ChessBoard,
     magic: &Magic,

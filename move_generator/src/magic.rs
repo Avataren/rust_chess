@@ -850,6 +850,8 @@ impl Magic {
 
 #[cfg(test)]
 mod tests {
+    use crate::move_generator::get_legal_move_list_from_square_perft;
+
     use super::*;
     use chess_board::ChessBoard;
     use chess_foundation::bitboard::Bitboard;
@@ -867,7 +869,7 @@ mod tests {
         let mut nodes = 0;
         while all_pieces != Bitboard::default() {
             let square = all_pieces.pop_lsb() as u16;
-            let legal_moves = get_legal_move_list_from_square(square, chess_board, magic);
+            let legal_moves = get_legal_move_list_from_square_perft(square, chess_board, magic);
             for mut m in legal_moves {
                 chess_board.make_move(&mut m);
                 //chess_board.get_all_pieces().print_bitboard();
@@ -893,9 +895,10 @@ mod tests {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
 
-            for depth in 0..8 {
+            for depth in 0..5 {
                 let mut chess_board = ChessBoard::new();
                 //chess_board.set_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq –");
+                chess_board.set_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
                 let start = Instant::now(); // Start timing
                 let nodes = perft(depth, &mut chess_board, &mut magic, true);
                 let duration = start.elapsed(); // End timing
@@ -932,12 +935,6 @@ mod tests {
             let magic = Magic::new();
             let is_white = false;
 
-            // Friendly blockers (if any) - for simplicity, we assume none in this test
-            let relevant_blockers = if is_white {
-                chess_board.get_black()
-            } else {
-                chess_board.get_white()
-            };
             // Generate the threat map for the square
             chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Queen, is_white);
             let mut threat_map = magic.generate_threat_map(
@@ -980,12 +977,6 @@ mod tests {
             let magic = Magic::new();
             let is_white = false;
 
-            // Friendly blockers (if any) - for simplicity, we assume none in this test
-            let relevant_blockers = if is_white {
-                chess_board.get_black()
-            } else {
-                chess_board.get_white()
-            };
             // Generate the threat map for the square
             chess_board.set_piece_at_square(
                 0,
@@ -1037,12 +1028,6 @@ mod tests {
             let magic = Magic::new();
             let is_white = false;
 
-            // Friendly blockers (if any) - for simplicity, we assume none in this test
-            let relevant_blockers = if is_white {
-                chess_board.get_black()
-            } else {
-                chess_board.get_white()
-            };
             // Generate the threat map for the square
             chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Rook, is_white);
             let mut threat_map = magic.generate_threat_map(
@@ -1126,7 +1111,7 @@ mod tests {
             let is_white = false;
 
             chess_board.set_from_fen("8/p2k4/1N6/8/8/8/8/4K3 w  - 0 1");
-            let mut threat_map = magic.generate_threat_map(&mut chess_board, is_white);
+            let threat_map = magic.generate_threat_map(&mut chess_board, is_white);
 
             println!("Threat map:");
             threat_map.print_bitboard();
