@@ -204,8 +204,8 @@ impl Magic {
         let mut move_list = Vec::new();
 
         // Calculate rank and file for the pawn
-        let rank = square / 8;
-        let file = square % 8;
+        let rank = square >> 3;
+        let file = square & 7;
 
         // Single move forward
         let single_step = if is_white { 8 } else { -8 };
@@ -214,7 +214,7 @@ impl Magic {
         // Prevent underflow/overflow
         if single_move_pos >= 0 && single_move_pos < 64 {
             if chess_board
-                .get_empty()
+                .get_all_free_squares()
                 .contains_square(single_move_pos as i32)
             {
                 move_list.push(ChessMove::new(square, single_move_pos as u16));
@@ -224,15 +224,14 @@ impl Magic {
         // Double move forward
         let starting_rank = if is_white { 1 } else { 6 };
         if rank == starting_rank {
-            let double_step = single_step * 2;
-            let double_move_pos = square as i32 + double_step;
+            let double_move_pos = single_move_pos + single_step;
             // Prevent underflow/overflow
             if double_move_pos >= 0 && double_move_pos < 64 {
                 if chess_board
-                    .get_empty()
+                    .get_all_free_squares()
                     .contains_square(single_move_pos as i32)
                     && chess_board
-                        .get_empty()
+                        .get_all_free_squares()
                         .contains_square(double_move_pos as i32)
                 {
                     move_list.push(ChessMove::new_with_flag(
@@ -288,9 +287,9 @@ impl Magic {
         if let Some(last_move) = last_move {
             if last_move.has_flag(ChessMove::PAWN_TWO_UP_FLAG) {
                 let last_move_to = last_move.target_square();
-                let last_move_to_file = last_move_to % 8;
-                let pawn_rank = square / 8;
-                let pawn_file = square % 8;
+                let last_move_to_file = last_move_to & 7;
+                let pawn_rank = square >> 3;
+                let pawn_file = square & 7;
                 let en_passant_rank = if is_white { 4 } else { 3 };
                 let is_adjacent_file = (pawn_file as i32 - last_move_to_file as i32).abs() == 1;
 
@@ -311,7 +310,6 @@ impl Magic {
 
         move_list
     }
-
     pub fn get_rook_attacks(
         &self,
         square: usize,
@@ -333,37 +331,43 @@ impl Magic {
     }
 
     pub fn get_pawn_attacks(&self, square: usize, is_white: bool) -> Bitboard {
-        let mut attacks = Bitboard::default();
-
-        if !is_white {
-            // Ensure pawn is not on 8th rank (no attacks from there)
-            if square < 56 {
-                // 56 to 63 is the 8th rank
-                if square % 8 != 0 {
-                    // Pawn is not on A-file, can attack left
-                    attacks.set_bit(square + 7);
-                }
-                if square % 8 != 7 {
-                    // Pawn is not on H-file, can attack right
-                    attacks.set_bit(square + 9);
-                }
-            }
+        if is_white {
+            self.white_pawn_attack_masks[square]
         } else {
-            // Ensure pawn is not on 1st rank (no attacks from there)
-            if square > 7 {
-                // 0 to 7 is the 1st rank
-                if square % 8 != 0 {
-                    // Pawn is not on A-file, can attack right
-                    attacks.set_bit(square - 9);
-                }
-                if square % 8 != 7 {
-                    // Pawn is not on H-file, can attack left
-                    attacks.set_bit(square - 7);
-                }
-            }
+            self.black_pawn_attack_masks[square]
         }
 
-        attacks
+        // let mut attacks = Bitboard::default();
+
+        // if !is_white {
+        //     // Ensure pawn is not on 8th rank (no attacks from there)
+        //     if square < 56 {
+        //         // 56 to 63 is the 8th rank
+        //         let smod = square & 7;
+        //         if smod != 0 {
+        //             // Pawn is not on A-file, can attack left
+        //             attacks.set_bit(square + 7);
+        //         }
+        //         if smod != 7 {
+        //             // Pawn is not on H-file, can attack right
+        //             attacks.set_bit(square + 9);
+        //         }
+        //     }
+        // } else {
+        //     // Ensure pawn is not on 1st rank (no attacks from there)
+        //     if square > 7 {
+        //         // 0 to 7 is the 1st rank
+        //         if (square >> 3) != 0 {
+        //             // Pawn is not on A-file, can attack right
+        //             attacks.set_bit(square - 9);
+        //         }
+        //         if (square & 7) != 7 {
+        //             // Pawn is not on H-file, can attack left
+        //             attacks.set_bit(square - 7);
+        //         }
+        //     }
+        // }
+        //attacks
     }
 
     pub fn get_bishop_moves(
@@ -887,7 +891,7 @@ mod tests {
     use chess_board::ChessBoard;
     use chess_foundation::bitboard::Bitboard;
 
-    pub fn perft(depth: i32, chess_board: &mut ChessBoard, magic: &Magic, is_white:bool) -> u64 {
+    pub fn perft(depth: i32, chess_board: &mut ChessBoard, magic: &Magic, is_white: bool) -> u64 {
         if depth == 0 {
             return 1; // Leaf node, count as a single position
         }
@@ -899,7 +903,6 @@ mod tests {
 
         let mut nodes = 0;
         while all_pieces != Bitboard::default() {
-            
             let square = all_pieces.pop_lsb() as u16;
             let legal_moves = get_legal_move_list_from_square(square, chess_board, magic);
             for mut m in legal_moves {
@@ -913,36 +916,45 @@ mod tests {
     }
 
     // Group related tests into a submodule
-    
+
     mod perft_tests {
         use super::*;
-        use std::{fs::File, io::{BufWriter, Write}, time::Instant};
+        use std::{
+            fs::File,
+            io::{BufWriter, Write},
+            time::Instant,
+        };
 
         #[test]
         fn perft_test() {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
-    
+
             for depth in 0..6 {
                 let mut chess_board = ChessBoard::new();
-                
+
                 let start = Instant::now(); // Start timing
                 let nodes = perft(depth, &mut chess_board, &mut magic, true);
                 let duration = start.elapsed(); // End timing
-                
-                let line = format!("Perft depth {}, nodes: {}, time taken: {:?}\n", depth, nodes, duration);
+
+                let line = format!(
+                    "Perft depth {}, nodes: {}, time taken: {:?}\n",
+                    depth, nodes, duration
+                );
                 output.push(line); // Collect each line of output
             }
-    
+
             // Write the collected output to a file
             let file_path = "perft_test_results.txt"; // Specify your file path here
             let file = File::create(file_path).expect("Failed to create file");
             let mut writer = BufWriter::new(file);
-    
+
             for line in output {
-                writer.write_all(line.as_bytes()).expect("Failed to write to file");
+                writer
+                    .write_all(line.as_bytes())
+                    .expect("Failed to write to file");
             }
-    
+
             println!("Test results with timing written to {}", file_path);
         }
     }

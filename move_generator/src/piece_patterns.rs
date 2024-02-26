@@ -14,8 +14,8 @@ pub fn get_rook_move_patterns() -> Vec<Bitboard> {
     }
 
     for square in 0..64 {
-        let row = square / 8;
-        let col = square % 8;
+        let row = square >> 3;
+        let col = square & 7;
         // Start with the union of the row and column masks
         let mut move_pattern = row_masks[row].or(col_masks[col]);
         // Clear the bit for the square itself, as the rook can't move to its current position
@@ -47,8 +47,8 @@ pub fn get_bishop_move_patterns() -> Vec<Bitboard> {
     }
 
     for square in 0..64 {
-        let row = square / 8;
-        let col = square % 8;
+        let row = square >> 3;
+        let col = square & 7;
         let diag = row + col;
         let anti_diag = row + 7 - col;
         // Combine the masks for the main diagonal and anti-diagonal
@@ -75,10 +75,10 @@ pub fn get_knight_move_patterns() -> Vec<Bitboard> {
         for &move_offset in &knight_moves {
             let to_square = square as i32 + move_offset;
             if to_square >= 0 && to_square < 64 {
-                let to_row = to_square / 8;
-                let to_col = to_square % 8;
-                let row_diff = (to_row - (square / 8) as i32).abs();
-                let col_diff = (to_col - (square % 8) as i32).abs();
+                let to_row = to_square >> 3;
+                let to_col = to_square & 7;
+                let row_diff = (to_row - (square >> 3) as i32).abs();
+                let col_diff = (to_col - (square & 7) as i32).abs();
 
                 // Ensure the move stays within an L-shape
                 if row_diff + col_diff == 3 && row_diff != 0 && col_diff != 0 {
@@ -102,10 +102,10 @@ pub fn get_king_move_patterns() -> Vec<Bitboard> {
         for &move_offset in &king_moves {
             let to_square = square as i32 + move_offset;
             if to_square >= 0 && to_square < 64 {
-                let to_row = to_square / 8;
-                let to_col = to_square % 8;
-                let row_diff = (to_row - (square / 8) as i32).abs();
-                let col_diff = (to_col - (square % 8) as i32).abs();
+                let to_row = to_square >> 3;
+                let to_col = to_square & 7;
+                let row_diff = (to_row - (square >> 3) as i32).abs();
+                let col_diff = (to_col - (square & 7) as i32).abs();
 
                 // Ensure the move is within one square of the original position
                 if row_diff <= 1 && col_diff <= 1 {
@@ -128,8 +128,8 @@ pub fn get_pawn_move_patterns() -> Vec<((Bitboard, Bitboard), (Bitboard, Bitboar
         let mut white_captures = Bitboard(0);
         let mut black_captures = Bitboard(0);
 
-        let row = square / 8;
-        let col = square % 8;
+        let row = square >> 3;
+        let col = square & 7;
 
         // White pawn moves
         if row < 7 {

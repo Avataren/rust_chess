@@ -129,7 +129,7 @@ impl ChessBoard {
         self.get_white() | (self.get_black())
     }
 
-    pub fn get_empty(&self) -> Bitboard {
+    pub fn get_all_free_squares(&self) -> Bitboard {
         !(self.get_all_pieces())
     }
 
@@ -157,8 +157,8 @@ impl ChessBoard {
                     // Determine rook's original and castled squares based on the castling type
                     let (rook_start_square, rook_target_square) =
                         match (start_square, target_square) {
-                            (4, 6) => (5, 7),      // White kingside castling
-                            (4, 2) => (3, 0),      // White queenside castling
+                            (4, 6) => (5, 7),     // White kingside castling
+                            (4, 2) => (3, 0),     // White queenside castling
                             (60, 62) => (61, 63), // Black kingside castling
                             (60, 58) => (59, 56), // Black queenside castling
                             _ => panic!("Invalid castling move"),
