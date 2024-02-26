@@ -17,7 +17,7 @@ pub fn get_legal_move_list_from_square(
         
         chess_board.make_move(&mut chess_move);
         let in_check = magic.is_king_in_check(chess_board, is_white);
-        println!("in check? {}",in_check);
+        // println!("in check? {}",in_check);
         if !in_check {
             move_list.push(chess_move);
         }

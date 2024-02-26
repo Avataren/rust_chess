@@ -108,6 +108,14 @@ impl ChessBoard {
         true
     }
 
+    pub fn get_opponent_pieces(&self, is_white: bool) -> Bitboard {
+        if is_white {
+            self.black
+        } else {
+            self.white
+        }
+    }
+
     pub fn set_from_fen(&mut self, fen: &str) {
         FENParser::set_board_from_fen(self, fen);
     }
@@ -219,7 +227,6 @@ impl ChessBoard {
         let target_square_bb = Bitboard::from_square_index(target_square);
 
         let is_white = self.white.is_set(start_square as usize);
-        println!("Is white: {}", is_white);
 
         if let Some(piece_type) = self.get_piece_type(start_square) {
             chess_move.set_piece(ChessPiece::new(piece_type, is_white));
@@ -253,7 +260,7 @@ impl ChessBoard {
                 chess_move.set_capture(captured_piece);
                 self.clear_piece_bitboard(captured_piece.piece_type(), target_square_bb, !is_white);
             } else {
-                println!("No piece captured");
+                // println!("No piece captured");
             }
 
             // store history before altering castling rights!
