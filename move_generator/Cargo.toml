@@ -10,3 +10,4 @@ chess_foundation = { path = "../chess_foundation" }
 chess_board = { path = "../chess_board" }
 rand = "0.8.4"
 nalgebra = "0.32.4"
+rayon = "1.8.1"

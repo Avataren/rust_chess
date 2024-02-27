@@ -2,15 +2,12 @@ use core::panic;
 
 use chess_board::chessboard::CastlingRights;
 use chess_board::ChessBoard;
-use chess_foundation::bitboard::{self, Bitboard};
+use chess_foundation::bitboard::Bitboard;
 use chess_foundation::{ChessMove, Coord};
 use rand::Rng;
 
 use crate::magic_constants::{BISHOP_MAGICS, ROOK_MAGICS};
 use crate::masks::{BISHOP_MASKS, ROOK_MASKS};
-use crate::move_generator::{
-    get_legal_move_list_from_square, get_pseudo_legal_move_list_from_square,
-};
 use crate::{get_king_move_patterns, get_knight_move_patterns};
 
 pub struct Magic {
@@ -882,7 +879,7 @@ impl Magic {
 
 #[cfg(test)]
 mod tests {
-    use crate::move_generator::get_legal_move_list_from_square_perft;
+    use crate::move_generator::{get_all_legal_moves_for_color, get_legal_move_list_from_square};
 
     use super::*;
     use chess_board::ChessBoard;
@@ -892,22 +889,14 @@ mod tests {
         if depth == 0 {
             return 1; // Leaf node, count as a single position
         }
-        let mut all_pieces = if is_white {
-            chess_board.get_white()
-        } else {
-            chess_board.get_black()
-        };
-
         let mut nodes = 0;
-        while all_pieces != Bitboard::default() {
-            let square = all_pieces.pop_lsb() as u16;
-            let legal_moves = get_legal_move_list_from_square(square, chess_board, magic);
-            for mut m in legal_moves {
-                chess_board.make_move(&mut m);
-                //chess_board.get_all_pieces().print_bitboard();
-                nodes += perft(depth - 1, chess_board, magic, !is_white);
-                chess_board.undo_move();
-            }
+        let legal_moves = get_all_legal_moves_for_color(chess_board, magic, is_white);
+
+        for mut m in legal_moves {
+            chess_board.make_move(&mut m);
+            //chess_board.get_all_pieces().print_bitboard();
+            nodes += perft(depth - 1, chess_board, magic, !is_white);
+            chess_board.undo_move();
         }
         nodes
     }
@@ -927,11 +916,11 @@ mod tests {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
 
-            for depth in 0..5 {
+            for depth in 0..6 {
                 let mut chess_board = ChessBoard::new();
-                chess_board.set_from_fen(
-                    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
-                );
+                // chess_board.set_from_fen(
+                //     "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+                // );
 
                 let start = Instant::now(); // Start timing
                 let nodes = perft(depth, &mut chess_board, &mut magic, true);

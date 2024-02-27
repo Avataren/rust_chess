@@ -1,7 +1,6 @@
 use crate::FENParser;
 use chess_foundation::{bitboard::Bitboard, piece::PieceType, ChessMove, ChessPiece};
 
-
 #[repr(u8)]
 pub enum CastlingRights {
     WhiteKingSide = 0b1000,
@@ -12,13 +11,13 @@ pub enum CastlingRights {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum GameState{
+pub enum GameState {
     InProgress,
     Checkmate,
     Stalemate,
 }
 
-
+#[derive(Clone)]
 pub struct ChessBoard {
     white: Bitboard,
     black: Bitboard,
