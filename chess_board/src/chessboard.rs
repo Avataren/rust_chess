@@ -30,6 +30,7 @@ pub struct ChessBoard {
     pub castling_rights: u8,
     move_history: Vec<(ChessMove, u8)>,
     game_state: GameState,
+    white_is_active: bool
 }
 
 impl ChessBoard {
@@ -46,6 +47,7 @@ impl ChessBoard {
             castling_rights: CastlingRights::AllCastlingRights as u8,
             move_history: Vec::with_capacity(100),
             game_state: GameState::InProgress,
+            white_is_active: true
         }
     }
 
@@ -61,6 +63,10 @@ impl ChessBoard {
         self.castling_rights = CastlingRights::AllCastlingRights as u8;
         self.move_history.clear();
         self.game_state = GameState::InProgress;
+    }
+
+    pub fn set_active_color(&mut self, is_white: bool) {
+        self.white_is_active = is_white;
     }
 
     pub fn get_game_state(&self) -> GameState {
@@ -108,7 +114,7 @@ impl ChessBoard {
     }
 
     pub fn is_white_active(&self) -> bool {
-        true //todo
+        return self.white_is_active;
     }
 
     pub fn is_path_clear(&self, start_square: u16, end_square: u16) -> bool {
@@ -239,6 +245,7 @@ impl ChessBoard {
                     );
                 }
             }
+            self.white_is_active = !self.white_is_active;
         } else {
             println!("No move to undo");
         }
@@ -353,6 +360,7 @@ impl ChessBoard {
                 self.set_piece_bitboard(promotion_piece, target_square_bb, is_white);
             }
         }
+        self.white_is_active = !self.white_is_active;
         true
     }
 

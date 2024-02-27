@@ -35,7 +35,7 @@ impl FENParser {
 
         // // Set active color
         // board.set_active_color(active_color == "w");
-
+        board.set_active_color(active_color == "w");
         // // Set castling rights
         board.set_castling_rights_from_fen(castling_rights);
 

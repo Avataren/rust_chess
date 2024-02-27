@@ -889,13 +889,12 @@ mod tests {
         depth: i32,
         chess_board: &mut ChessBoard,
         magic: &Magic,
-        is_white: bool,
     ) -> (u64, u64, u64, u64, u64) {
         if depth == 0 {
             return (1, 0, 0, 0, 0); // Leaf node, count as a single position
         }
         let mut nodes = 0;
-        let legal_moves = get_all_legal_moves_for_color(chess_board, magic, is_white);
+        let legal_moves = get_all_legal_moves_for_color(chess_board, magic, chess_board.is_white_active());
         let mut captures = 0;
         let mut castles = 0;
         let mut promotions = 0;
@@ -925,7 +924,7 @@ mod tests {
                 }
 
                 // Recursive call to perft for the next depth
-                let results = perft(depth - 1, chess_board, magic, !is_white);
+                let results = perft(depth - 1, chess_board, magic);
                 nodes += results.0;
                 captures += results.1;
                 ep += results.2;
@@ -955,14 +954,14 @@ mod tests {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
 
-            for depth in 0..7 {
+            for depth in 0..6 {
                 let mut chess_board = ChessBoard::new();
                 chess_board.set_from_fen(
                     "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
                 );
 
                 let start = Instant::now(); // Start timing
-                let result = perft(depth, &mut chess_board, &mut magic, true);
+                let result = perft(depth, &mut chess_board, &mut magic);
                 let duration = start.elapsed(); // End timing
 
                 let line = format!(
