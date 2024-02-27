@@ -55,6 +55,19 @@ impl ChessMove {
         }
     }
 
+    pub fn new_capture_with_flag(
+        start_square: u16,
+        capture: Option<ChessPiece>,
+        target_square: u16,
+        flag: u16,
+    ) -> Self {
+        Self {
+            move_value: start_square | (target_square << 6) | (flag << 12),
+            capture: capture,
+            chess_piece: None,
+        }
+    }
+
     pub fn set_piece(&mut self, piece: ChessPiece) {
         self.chess_piece = Some(piece);
     }

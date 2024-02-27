@@ -257,14 +257,6 @@ impl Magic {
             }
         }
 
-        //check if any moves are promotions
-        let promotion_rank = if is_white { 7 } else { 0 };
-        for cm in move_list.iter_mut() {
-            if cm.target_square() >> 3 == promotion_rank {
-                cm.set_flag(ChessMove::PROMOTE_TO_QUEEN_FLAG);
-            }
-        }
-
         // En Passant
         //todo: optimze this!
         let last_move = chess_board.get_last_move();
@@ -290,6 +282,46 @@ impl Magic {
                     ));
                 }
             }
+        }
+
+        //check if any moves are promotions
+        let promotion_rank = if is_white { 7 } else { 0 };
+        //for cm in move_list.iter_mut() {
+        let promotion_moves = move_list
+            .iter()
+            .filter(|cm| cm.target_square() >> 3 == promotion_rank)
+            .cloned()
+            .collect::<Vec<ChessMove>>();
+
+        if (promotion_moves.len() > 0) {
+            move_list.clear();
+        }
+
+        for cm in promotion_moves {
+            move_list.push(ChessMove::new_capture_with_flag(
+                cm.start_square(),
+                cm.capture,
+                cm.target_square(),
+                ChessMove::PROMOTE_TO_QUEEN_FLAG,
+            ));
+            move_list.push(ChessMove::new_capture_with_flag(
+                cm.start_square(),
+                cm.capture,
+                cm.target_square(),
+                ChessMove::PROMOTE_TO_ROOK_FLAG,
+            ));
+            move_list.push(ChessMove::new_capture_with_flag(
+                cm.start_square(),
+                cm.capture,
+                cm.target_square(),
+                ChessMove::PROMOTE_TO_BISHOP_FLAG,
+            ));
+            move_list.push(ChessMove::new_capture_with_flag(
+                cm.start_square(),
+                cm.capture,
+                cm.target_square(),
+                ChessMove::PROMOTE_TO_KNIGHT_FLAG,
+            ));
         }
 
         move_list
@@ -869,7 +901,7 @@ mod tests {
         let mut nodes = 0;
         while all_pieces != Bitboard::default() {
             let square = all_pieces.pop_lsb() as u16;
-            let legal_moves = get_legal_move_list_from_square_perft(square, chess_board, magic);
+            let legal_moves = get_legal_move_list_from_square(square, chess_board, magic);
             for mut m in legal_moves {
                 chess_board.make_move(&mut m);
                 //chess_board.get_all_pieces().print_bitboard();
@@ -897,8 +929,10 @@ mod tests {
 
             for depth in 0..5 {
                 let mut chess_board = ChessBoard::new();
-                //chess_board.set_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq –");
-                chess_board.set_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1");
+                chess_board.set_from_fen(
+                    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+                );
+
                 let start = Instant::now(); // Start timing
                 let nodes = perft(depth, &mut chess_board, &mut magic, true);
                 let duration = start.elapsed(); // End timing
