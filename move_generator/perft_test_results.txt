@@ -1,6 +1,7 @@
-Perft depth 0, nodes: 1, captures:0 ep:0, castles:0, promotions:0, time taken: 100ns
-Perft depth 1, nodes: 6, captures:0 ep:0, castles:0, promotions:0, time taken: 5.7µs
-Perft depth 2, nodes: 264, captures:87 ep:48, castles:0, promotions:6, time taken: 45.4µs
-Perft depth 3, nodes: 9467, captures:1021 ep:0, castles:120, promotions:4, time taken: 1.2499ms
-Perft depth 4, nodes: 422333, captures:131393 ep:0, castles:7795, promotions:60032, time taken: 57.0527ms
-Perft depth 5, nodes: 15833292, captures:2046173 ep:329464, castles:6512, promotions:0, time taken: 1.9690365s
+Perft depth 0, nodes: 1, captures:0 ep:0, castles:0, promotions:0, time taken: 200ns
+Perft depth 1, nodes: 6, captures:0 ep:0, castles:0, promotions:0, time taken: 5.8µs
+Perft depth 2, nodes: 264, captures:87 ep:0, castles:6, promotions:48, time taken: 44.6µs
+Perft depth 3, nodes: 9467, captures:1021 ep:4, castles:0, promotions:120, time taken: 1.1931ms
+Perft depth 4, nodes: 422333, captures:131393 ep:0, castles:7795, promotions:60032, time taken: 51.0433ms
+Perft depth 5, nodes: 15833292, captures:2046173 ep:6512, castles:0, promotions:329464, time taken: 1.9588951s
+Perft depth 6, nodes: 706058287, captures:210369132 ep:212, castles:10895260, promotions:81102984, time taken: 85.1314431s

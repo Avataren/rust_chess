@@ -928,9 +928,10 @@ mod tests {
                 let results = perft(depth - 1, chess_board, magic, !is_white);
                 nodes += results.0;
                 captures += results.1;
-                castles += results.2;
-                promotions += results.3;
-                ep += results.4;
+                ep += results.2;
+                castles += results.3;
+                promotions += results.4;
+                
 
                 // Undo the move to backtrack
                 chess_board.undo_move(); // Ensure undo_move uses the move to undo correctly
@@ -954,7 +955,7 @@ mod tests {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
 
-            for depth in 0..6 {
+            for depth in 0..7 {
                 let mut chess_board = ChessBoard::new();
                 chess_board.set_from_fen(
                     "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
