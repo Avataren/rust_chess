@@ -954,10 +954,10 @@ mod tests {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
 
-            for depth in 0..6 {
+            for depth in 0..8 {
                 let mut chess_board = ChessBoard::new();
                 chess_board.set_from_fen(
-                    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+                    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
                 );
 
                 let start = Instant::now(); // Start timing
