@@ -885,20 +885,58 @@ mod tests {
     use chess_board::ChessBoard;
     use chess_foundation::bitboard::Bitboard;
 
-    pub fn perft(depth: i32, chess_board: &mut ChessBoard, magic: &Magic, is_white: bool) -> u64 {
+    pub fn perft(
+        depth: i32,
+        chess_board: &mut ChessBoard,
+        magic: &Magic,
+        is_white: bool,
+    ) -> (u64, u64, u64, u64, u64) {
         if depth == 0 {
-            return 1; // Leaf node, count as a single position
+            return (1, 0, 0, 0, 0); // Leaf node, count as a single position
         }
         let mut nodes = 0;
         let legal_moves = get_all_legal_moves_for_color(chess_board, magic, is_white);
+        let mut captures = 0;
+        let mut castles = 0;
+        let mut promotions = 0;
+        let mut ep = 0;
 
         for mut m in legal_moves {
-            chess_board.make_move(&mut m);
-            //chess_board.get_all_pieces().print_bitboard();
-            nodes += perft(depth - 1, chess_board, magic, !is_white);
-            chess_board.undo_move();
+            // Make the move on the chess board
+            let move_was_made = chess_board.make_move(&mut m); // Ensure make_move returns a bool indicating success
+
+            if move_was_made {
+                if depth == 1 {
+                    // Increment counts based on move flags
+                    if m.has_flag(ChessMove::CASTLE_FLAG) {
+                        castles += 1;
+                    }
+                    if m.promotion_piece_type().is_some() {
+                        promotions += 1;
+                    } 
+                    if m.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
+                        ep += 1;
+                    } 
+                    if m.capture.is_some()
+                    {
+                        captures += 1; // Only count as capture if not en passant
+                    }
+  
+                }
+
+                // Recursive call to perft for the next depth
+                let results = perft(depth - 1, chess_board, magic, !is_white);
+                nodes += results.0;
+                captures += results.1;
+                castles += results.2;
+                promotions += results.3;
+                ep += results.4;
+
+                // Undo the move to backtrack
+                chess_board.undo_move(); // Ensure undo_move uses the move to undo correctly
+            }
         }
-        nodes
+        (nodes, captures, ep, castles, promotions)
     }
 
     // Group related tests into a submodule
@@ -918,17 +956,17 @@ mod tests {
 
             for depth in 0..6 {
                 let mut chess_board = ChessBoard::new();
-                // chess_board.set_from_fen(
-                //     "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
-                // );
+                chess_board.set_from_fen(
+                    "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+                );
 
                 let start = Instant::now(); // Start timing
-                let nodes = perft(depth, &mut chess_board, &mut magic, true);
+                let result = perft(depth, &mut chess_board, &mut magic, true);
                 let duration = start.elapsed(); // End timing
 
                 let line = format!(
-                    "Perft depth {}, nodes: {}, time taken: {:?}\n",
-                    depth, nodes, duration
+                    "Perft depth {}, nodes: {}, captures:{} ep:{}, castles:{}, promotions:{}, time taken: {:?}\n",
+                    depth, result.0, result.1, result.2, result.3, result.4, duration
                 );
                 output.push(line); // Collect each line of output
             }
