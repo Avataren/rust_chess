@@ -1,8 +1,8 @@
-Perft depth 0, nodes: 1, captures:0 ep:0, castles:0, promotions:0, time taken: 0ns
-Perft depth 1, nodes: 20, captures:0 ep:0, castles:0, promotions:0, time taken: 5µs
-Perft depth 2, nodes: 400, captures:0 ep:0, castles:0, promotions:0, time taken: 53µs
-Perft depth 3, nodes: 8902, captures:34 ep:0, castles:0, promotions:0, time taken: 1.1352ms
-Perft depth 4, nodes: 197281, captures:1576 ep:0, castles:0, promotions:0, time taken: 25.3476ms
-Perft depth 5, nodes: 4865609, captures:82719 ep:258, castles:0, promotions:0, time taken: 599.4467ms
-Perft depth 6, nodes: 119060324, captures:2812008 ep:5248, castles:0, promotions:0, time taken: 14.9622549s
-Perft depth 7, nodes: 3195898416, captures:108329906 ep:319617, castles:883453, promotions:0, time taken: 407.5971314s
+Depth | Nodes        | Captures   | EP       | Castles | Promotions | Time Taken (s)
+-------------------------------------------------------------------------------------
+0     | 1            | 0          | 0        | 0       | 0          | 0.0000009
+1     | 20           | 0          | 0        | 0       | 0          | 0.0000146
+2     | 400          | 0          | 0        | 0       | 0          | 0.0001223
+3     | 8902         | 34         | 0        | 0       | 0          | 0.0022747
+4     | 197281       | 1576       | 0        | 0       | 0          | 0.069814
+5     | 4865609      | 82719      | 258      | 0       | 0          | 0.9029702

@@ -1,10 +1,7 @@
-use core::panic;
-
 use chess_board::chessboard::CastlingRights;
 use chess_board::ChessBoard;
 use chess_foundation::bitboard::Bitboard;
 use chess_foundation::{ChessMove, Coord};
-use rand::Rng;
 
 use crate::magic_constants::{BISHOP_MAGICS, ROOK_MAGICS};
 use crate::masks::{BISHOP_MASKS, ROOK_MASKS};
@@ -584,251 +581,6 @@ impl Magic {
         (king_bb & threats) != Bitboard::default()
     }
 
-    fn random_uint64() -> u64 {
-        let mut rng = rand::thread_rng();
-        let u1: u64 = rng.gen::<u16>() as u64;
-        let u2: u64 = rng.gen::<u16>() as u64;
-        let u3: u64 = rng.gen::<u16>() as u64;
-        let u4: u64 = rng.gen::<u16>() as u64;
-        u1 | (u2 << 16) | (u3 << 32) | (u4 << 48)
-    }
-
-    fn random_uint64_fewbits() -> u64 {
-        Self::random_uint64() & Self::random_uint64() & Self::random_uint64()
-    }
-
-    /// Transforms a 64-bit block using a magic number and the number of bits to use.
-    fn transform(b: u64, magic: u64, bits: i32) -> i32 {
-        (((b.wrapping_mul(magic)) >> (64 - bits)) & ((1 << bits) - 1) as u64) as i32
-    }
-
-    /// Counts the number of set bits in a 64-bit unsigned integer.
-    fn count_1s(mut b: u64) -> i32 {
-        let mut r = 0;
-        while b != 0 {
-            r += 1;
-            b &= b - 1;
-        }
-        r
-    }
-
-    fn index_to_uint64(index: i32, bits: i32, mut mask: u64) -> u64 {
-        let mut result: u64 = 0;
-        let mut j: i32 = 0;
-        for i in 0..bits {
-            let mut bit = mask & !(mask - 1); // Isolate the lowest bit of the mask
-            mask &= mask - 1; // Clear the lowest bit of the mask
-            if (index & (1 << i)) != 0 {
-                result |= bit;
-            }
-            while bit != 0 {
-                bit >>= 1;
-                j += 1;
-            }
-        }
-        result
-    }
-
-    fn rmask(sq: i32) -> u64 {
-        let mut result: u64 = 0;
-        let rk = sq / 8;
-        let fl = sq % 8;
-        for r in (rk + 1)..7 {
-            result |= 1 << (fl + r * 8);
-        }
-        for r in (1..rk).rev() {
-            result |= 1 << (fl + r * 8);
-        }
-        for f in (fl + 1)..7 {
-            result |= 1 << (f + rk * 8);
-        }
-        for f in (1..fl).rev() {
-            result |= 1 << (f + rk * 8);
-        }
-        result
-    }
-
-    fn bmask(sq: i32) -> u64 {
-        let mut result: u64 = 0;
-        let rk = sq / 8;
-        let fl = sq % 8;
-        let mut r;
-        let mut f;
-        r = rk + 1;
-        f = fl + 1;
-        while r <= 6 && f <= 6 {
-            result |= 1 << (f + r * 8);
-            r += 1;
-            f += 1;
-        }
-        r = rk + 1;
-        f = fl - 1;
-        while r <= 6 && f >= 1 {
-            result |= 1 << (f + r * 8);
-            r += 1;
-            f -= 1;
-        }
-        r = rk - 1;
-        f = fl + 1;
-        while r >= 1 && f <= 6 {
-            result |= 1 << (f + r * 8);
-            r -= 1;
-            f += 1;
-        }
-        r = rk - 1;
-        f = fl - 1;
-        while r >= 1 && f >= 1 {
-            result |= 1 << (f + r * 8);
-            r -= 1;
-            f -= 1;
-        }
-        result
-    }
-
-    fn ratt(sq: i32, block: u64) -> u64 {
-        let mut result: u64 = 0;
-        let rk = sq / 8; // Rank
-        let fl = sq % 8; // File
-
-        // Positive rank direction
-        for r in (rk + 1)..8 {
-            result |= 1 << (fl + r * 8);
-            if block & (1 << (fl + r * 8)) != 0 {
-                break;
-            }
-        }
-
-        // Negative rank direction
-        for r in (0..rk).rev() {
-            result |= 1 << (fl + r * 8);
-            if block & (1 << (fl + r * 8)) != 0 {
-                break;
-            }
-        }
-
-        // Positive file direction
-        for f in (fl + 1)..8 {
-            result |= 1 << (f + rk * 8);
-            if block & (1 << (f + rk * 8)) != 0 {
-                break;
-            }
-        }
-
-        // Negative file direction
-        for f in (0..fl).rev() {
-            result |= 1 << (f + rk * 8);
-            if block & (1 << (f + rk * 8)) != 0 {
-                break;
-            }
-        }
-
-        result
-    }
-
-    fn batt(sq: i32, block: u64) -> u64 {
-        let mut result: u64 = 0;
-        let rk = sq / 8; // Rank
-        let fl = sq % 8; // File
-
-        // Diagonal: bottom left to top right
-        let mut r = rk + 1;
-        let mut f = fl + 1;
-        while r < 8 && f < 8 {
-            result |= 1 << (f + r * 8);
-            if block & (1 << (f + r * 8)) != 0 {
-                break;
-            }
-            r += 1;
-            f += 1;
-        }
-
-        // Diagonal: top left to bottom right
-        r = rk + 1;
-        f = fl - 1;
-        while r < 8 && f >= 0 {
-            result |= 1 << (f + r * 8);
-            if block & (1 << (f + r * 8)) != 0 {
-                break;
-            }
-            r += 1;
-            f -= 1;
-        }
-
-        // Diagonal: top right to bottom left
-        r = rk - 1;
-        f = fl + 1;
-        while r >= 0 && f < 8 {
-            result |= 1 << (f + r * 8);
-            if block & (1 << (f + r * 8)) != 0 {
-                break;
-            }
-            r -= 1;
-            f += 1;
-        }
-
-        // Diagonal: bottom right to top left
-        r = rk - 1;
-        f = fl - 1;
-        while r >= 0 && f >= 0 {
-            result |= 1 << (f + r * 8);
-            if block & (1 << (f + r * 8)) != 0 {
-                break;
-            }
-            r -= 1;
-            f -= 1;
-        }
-
-        result
-    }
-
-    /// Finds a suitable magic number for the given square and mask.
-    fn find_magic(sq: i32, m: i32, bishop: bool) -> u64 {
-        let mask = if bishop {
-            BISHOP_MASKS[sq as usize]
-        } else {
-            ROOK_MASKS[sq as usize]
-        };
-        let n = Self::count_1s(mask.0);
-        let mut b = vec![0; 1 << n];
-        let mut a = vec![0; 1 << n];
-        let mut used = vec![0; 1 << n];
-
-        for i in 0..(1 << n) {
-            b[i] = Self::index_to_uint64(i as i32, n, mask.0);
-            a[i] = if bishop {
-                Self::batt(sq, b[i])
-            } else {
-                Self::ratt(sq, b[i])
-            };
-        }
-
-        for _ in 0..100_000_000 {
-            let magic = Self::random_uint64_fewbits();
-            if Self::count_1s((mask.0.wrapping_mul(magic)) & 0xFF00000000000000) < 6 {
-                continue;
-            }
-
-            used.iter_mut().for_each(|x| *x = 0);
-
-            let mut fail = false;
-            for i in 0..(1 << n) {
-                let j = Self::transform(b[i], magic, m) as usize;
-                if used[j] == 0 {
-                    used[j] = a[i];
-                } else if used[j] != a[i] {
-                    fail = true;
-                    break;
-                }
-            }
-
-            if !fail {
-                return magic;
-            }
-        }
-
-        panic!("Failed to find a magic number");
-    }
-
     fn generate_legal_moves_from_blockers(
         square: u16,
         blocker_bitboard: &Bitboard,
@@ -879,7 +631,7 @@ impl Magic {
 
 #[cfg(test)]
 mod tests {
-    use crate::move_generator::{get_all_legal_moves_for_color, get_legal_move_list_from_square};
+    use crate::move_generator::get_all_legal_moves_for_color;
 
     use super::*;
     use chess_board::ChessBoard;
@@ -894,7 +646,8 @@ mod tests {
             return (1, 0, 0, 0, 0); // Leaf node, count as a single position
         }
         let mut nodes = 0;
-        let legal_moves = get_all_legal_moves_for_color(chess_board, magic, chess_board.is_white_active());
+        let legal_moves =
+            get_all_legal_moves_for_color(chess_board, magic, chess_board.is_white_active());
         let mut captures = 0;
         let mut castles = 0;
         let mut promotions = 0;
@@ -912,15 +665,13 @@ mod tests {
                     }
                     if m.promotion_piece_type().is_some() {
                         promotions += 1;
-                    } 
+                    }
                     if m.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
                         ep += 1;
-                    } 
-                    if m.capture.is_some()
-                    {
+                    }
+                    if m.capture.is_some() {
                         captures += 1; // Only count as capture if not en passant
                     }
-  
                 }
 
                 // Recursive call to perft for the next depth
@@ -930,7 +681,6 @@ mod tests {
                 ep += results.2;
                 castles += results.3;
                 promotions += results.4;
-                
 
                 // Undo the move to backtrack
                 chess_board.undo_move(); // Ensure undo_move uses the move to undo correctly
@@ -953,24 +703,42 @@ mod tests {
         fn perft_test() {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
-
-            for depth in 0..8 {
+            let headers = format!(
+                "{:<5} | {:<12} | {:<10} | {:<8} | {:<7} | {:<10} | {}\n",
+                "Depth", "Nodes", "Captures", "EP", "Castles", "Promotions", "Time Taken (s)"
+            );
+            output.push(headers.clone());
+            let mut seperator = String::new();
+            for _ in 0..headers.len() {
+                seperator.push('-');
+            }
+            output.push(seperator + "\n");
+            for depth in 0..6 {
                 let mut chess_board = ChessBoard::new();
-                chess_board.set_from_fen(
-                    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-                );
+                chess_board
+                    .set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
 
                 let start = Instant::now(); // Start timing
                 let result = perft(depth, &mut chess_board, &mut magic);
                 let duration = start.elapsed(); // End timing
-
                 let line = format!(
-                    "Perft depth {}, nodes: {}, captures:{} ep:{}, castles:{}, promotions:{}, time taken: {:?}\n",
-                    depth, result.0, result.1, result.2, result.3, result.4, duration
+                    "{:<5} | {:<12} | {:<10} | {:<8} | {:<7} | {:<10} | {}\n",
+                    depth,
+                    result.0,
+                    result.1,
+                    result.2,
+                    result.3,
+                    result.4,
+                    duration.as_secs_f64()
                 );
                 output.push(line); // Collect each line of output
             }
 
+            if cfg!(debug_assertions) {
+                for line in &output {
+                    println!("{}", line);
+                }
+            }
             // Write the collected output to a file
             let file_path = "perft_test_results.txt"; // Specify your file path here
             let file = File::create(file_path).expect("Failed to create file");
@@ -981,7 +749,6 @@ mod tests {
                     .write_all(line.as_bytes())
                     .expect("Failed to write to file");
             }
-
             println!("Test results with timing written to {}", file_path);
         }
     }

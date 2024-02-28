@@ -1,5 +1,6 @@
 pub mod magic;
 pub mod magic_constants;
+mod magics_generator;
 pub mod masks;
 pub mod move_generator;
 pub mod piece_patterns;
