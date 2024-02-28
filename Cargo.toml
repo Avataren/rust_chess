@@ -1,5 +1,5 @@
 [workspace]
 members = [
-    "chess", "move_generator", "chess_board", "chess_foundation",
+    "chess", "perft", "move_generator", "chess_board", "chess_foundation",
 ]
 resolver = "2"

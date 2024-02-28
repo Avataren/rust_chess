@@ -124,38 +124,63 @@ impl ChessMove {
         }
     }
 
-    pub fn to_basic_algebraic_notation(&self) -> String {
-        let start_square = self.start_square() as u8;
-        let target_square = self.target_square() as u8;
-        let piece = self
-            .chess_piece
-            .unwrap_or_else(|| ChessPiece::new(PieceType::None, true)); // Default to a dummy piece if None
+    pub fn to_san_simple(&self) -> String {
+        let mut san = String::new();
 
-        // Convert square indices to board coordinates
-        let start_file = (97 + (start_square % 8)) as char;
-        //let start_rank = 1 + start_square / 8; //ignore disambiguation for now
-        let target_pos = format!(
-            "{}{}",
-            (97 + (target_square % 8)) as char,
-            1 + target_square / 8
-        );
+        // Add the destination square
+        san.push(char::from_u32('a' as u32 + (self.start_square() % 8) as u32).unwrap()); // file
+        san.push(char::from_u32('1' as u32 + (self.start_square() / 8) as u32).unwrap()); // rank
 
-        let piece_type = piece.piece_type();
-        match self.capture {
-            Some(_) => {
-                // For pawn captures, include the starting file in the notation
-                if piece_type == PieceType::Pawn {
-                    format!("{}x{}", start_file, target_pos)
-                } else {
-                    format!("{}x{}", piece_type, target_pos)
-                }
-            }
-            None => {
-                // For non-captures, just use the piece type and target position
-                // Include start position if necessary for disambiguation
-                format!("{}{}", piece_type, target_pos)
+        san.push(char::from_u32('a' as u32 + (self.target_square() % 8) as u32).unwrap()); // file
+        san.push(char::from_u32('1' as u32 + (self.target_square() / 8) as u32).unwrap()); // rank
+
+        // Add promotion notation
+        if let Some(promotion_piece_type) = self.promotion_piece_type() {
+            //san.push('=');
+            san.push(ChessPiece::piecetype_to_char(promotion_piece_type).to_ascii_uppercase()); // Assuming `to_char()` method exists for PieceType
+        }
+        san
+    }        
+
+    pub fn to_san(&self) -> String {
+        let mut san = String::new();
+
+        // Identify the piece
+        if let Some(piece) = self.chess_piece {
+            match piece.piece_type() {
+                PieceType::Pawn => {
+                    if self.capture.is_some() {
+                        // Pawn captures include the file of the departing pawn
+                        san.push(char::from_u32('a' as u32 + (self.start_square() % 8) as u32).unwrap());
+                    }
+                },
+                _ => san.push(piece.to_char()), // Non-pawn pieces use their single uppercase letter
             }
         }
-        // Additional logic for special moves (castling, en passant, promotion) can be added here
-    }
+
+        // Add capture notation
+        if self.capture.is_some() {
+            san.push('x');
+        }
+
+        // Add the destination square
+        san.push(char::from_u32('a' as u32 + (self.target_square() % 8) as u32).unwrap()); // file
+        san.push(char::from_u32('1' as u32 + (self.target_square() / 8) as u32).unwrap()); // rank
+
+        // Add promotion notation
+        if let Some(promotion_piece_type) = self.promotion_piece_type() {
+            san.push('=');
+            san.push(ChessPiece::piecetype_to_char(promotion_piece_type)); // Assuming `to_char()` method exists for PieceType
+        }
+
+        // Optional: Add check or checkmate notation
+        // if self.is_check() {
+        //     san.push('+');
+        // } else if self.is_checkmate() {
+        //     san.push('#');
+        // }
+
+        san
+    }    
+    
 }

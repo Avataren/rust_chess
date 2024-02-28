@@ -45,6 +45,34 @@ impl ChessPiece {
             _ => unreachable!(), // This should never happen since we mask with 0b0111
         }
     }
+
+    pub fn to_char(&self) -> char
+    {
+        let c = match self.piece_type() {
+            PieceType::None => '?',
+            PieceType::Pawn => 'P',
+            PieceType::Knight => 'N',
+            PieceType::Bishop => 'B',
+            PieceType::Rook => 'R',
+            PieceType::Queen => 'Q',
+            PieceType::King => 'K',
+        };
+        c        
+    }
+    
+    pub fn piecetype_to_char(piece_type:PieceType) -> char
+    {
+        let c = match piece_type {
+            PieceType::None => '?',
+            PieceType::Pawn => 'P',
+            PieceType::Knight => 'N',
+            PieceType::Bishop => 'B',
+            PieceType::Rook => 'R',
+            PieceType::Queen => 'Q',
+            PieceType::King => 'K',
+        };
+        c        
+    }    
 }
 
 use std::fmt;

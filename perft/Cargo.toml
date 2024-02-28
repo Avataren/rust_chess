@@ -1,0 +1,11 @@
+[package]
+name = "perft"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+chess_board = { path = "../chess_board" }
+move_generator = { path = "../move_generator" }
+chess_foundation = { path = "../chess_foundation" }

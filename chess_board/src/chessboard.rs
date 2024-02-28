@@ -30,7 +30,7 @@ pub struct ChessBoard {
     pub castling_rights: u8,
     move_history: Vec<(ChessMove, u8)>,
     game_state: GameState,
-    white_is_active: bool
+    white_is_active: bool,
 }
 
 impl ChessBoard {
@@ -47,7 +47,7 @@ impl ChessBoard {
             castling_rights: CastlingRights::AllCastlingRights as u8,
             move_history: Vec::with_capacity(100),
             game_state: GameState::InProgress,
-            white_is_active: true
+            white_is_active: true,
         }
     }
 
@@ -283,7 +283,7 @@ impl ChessBoard {
 
                 if let Some(captured_pawn) = self.get_piece_at_square(captured_pawn_square) {
                     chess_move.set_capture(captured_pawn); //hmm, this is not a capture?
-                    // Remove the captured pawn
+                                                           // Remove the captured pawn
                     let captured_pawn_bb = Bitboard::from_square_index(captured_pawn_square);
                     self.clear_piece_bitboard(PieceType::Pawn, captured_pawn_bb, !is_white);
                 } else {
@@ -332,21 +332,19 @@ impl ChessBoard {
                 } else {
                     !(CastlingRights::BlackKingSide as u8 | CastlingRights::BlackQueenSide as u8)
                 };
-            }
-            else if piece_type == PieceType::Rook {
+            } else if piece_type == PieceType::Rook {
                 if is_white {
                     if start_square == 0 {
                         self.castling_rights &= !(CastlingRights::WhiteQueenSide as u8)
-                    }
-                    else if start_square == 7 {
+                    } else if start_square == 7 {
                         self.castling_rights &= !(CastlingRights::WhiteKingSide as u8)
                     }
-                }
-                else{
+                } else {
                     if start_square == 56 {
-                        self.castling_rights &= !(CastlingRights::BlackQueenSide as u8)}
-                    else if start_square == 63{
-                        self.castling_rights &= !(CastlingRights::BlackKingSide as u8)}
+                        self.castling_rights &= !(CastlingRights::BlackQueenSide as u8)
+                    } else if start_square == 63 {
+                        self.castling_rights &= !(CastlingRights::BlackKingSide as u8)
+                    }
                 }
             }
 
