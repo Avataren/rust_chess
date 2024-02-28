@@ -20,7 +20,7 @@ use board::ResolutionInfo;
 use game_events::{
     ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent,
 };
-use move_generator::magic::Magic;
+use move_generator::piece_conductor::PieceConductor;
 
 #[derive(Resource)]
 struct ChessBoardRes {
@@ -29,7 +29,7 @@ struct ChessBoardRes {
 
 #[derive(Resource)]
 struct MagicRes {
-    magic: move_generator::magic::Magic,
+    magic: move_generator::piece_conductor::PieceConductor,
 }
 
 const AUDIO_SCALE: f32 = 1. / 100.0;
@@ -130,7 +130,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         //chess_board: chess_board::ChessBoard::new(),
     });
 
-    let magic = Magic::new();
+    let magic = PieceConductor::new();
     commands.insert_resource(MagicRes { magic });
     commands.insert_resource(Events::<RefreshPiecesFromBoardEvent>::default());
     commands.insert_resource(Events::<ChessEvent>::default());

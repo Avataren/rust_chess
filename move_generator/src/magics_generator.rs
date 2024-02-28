@@ -4,6 +4,7 @@ use rand::Rng;
 
 pub struct MagicGenerator {}
 
+// adapted from https://www.chessprogramming.org/Magic_Bitboards
 impl MagicGenerator {
     /// Transforms a 64-bit block using a magic number and the number of bits to use.
     fn transform(b: u64, magic: u64, bits: i32) -> i32 {

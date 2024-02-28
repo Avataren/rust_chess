@@ -123,4 +123,39 @@ impl ChessMove {
             _ => None, // Return None instead of ChessPiece::NONE
         }
     }
+
+    pub fn to_basic_algebraic_notation(&self) -> String {
+        let start_square = self.start_square() as u8;
+        let target_square = self.target_square() as u8;
+        let piece = self
+            .chess_piece
+            .unwrap_or_else(|| ChessPiece::new(PieceType::None, true)); // Default to a dummy piece if None
+
+        // Convert square indices to board coordinates
+        let start_file = (97 + (start_square % 8)) as char;
+        //let start_rank = 1 + start_square / 8; //ignore disambiguation for now
+        let target_pos = format!(
+            "{}{}",
+            (97 + (target_square % 8)) as char,
+            1 + target_square / 8
+        );
+
+        let piece_type = piece.piece_type();
+        match self.capture {
+            Some(_) => {
+                // For pawn captures, include the starting file in the notation
+                if piece_type == PieceType::Pawn {
+                    format!("{}x{}", start_file, target_pos)
+                } else {
+                    format!("{}x{}", piece_type, target_pos)
+                }
+            }
+            None => {
+                // For non-captures, just use the piece type and target position
+                // Include start position if necessary for disambiguation
+                format!("{}{}", piece_type, target_pos)
+            }
+        }
+        // Additional logic for special moves (castling, en passant, promotion) can be added here
+    }
 }

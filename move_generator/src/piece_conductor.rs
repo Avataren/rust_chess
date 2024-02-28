@@ -7,7 +7,7 @@ use crate::magic_constants::{BISHOP_MAGICS, ROOK_MAGICS};
 use crate::masks::{BISHOP_MASKS, ROOK_MASKS};
 use crate::{get_king_move_patterns, get_knight_move_patterns};
 
-pub struct Magic {
+pub struct PieceConductor {
     //pub pawn_lut: Vec<Bitboard>,
     pub knight_lut: Vec<Bitboard>,
     pub king_lut: Vec<Bitboard>,
@@ -17,7 +17,7 @@ pub struct Magic {
     black_pawn_attack_masks: [Bitboard; 64],
 }
 
-impl Magic {
+impl PieceConductor {
     const RBITS: [i32; 64] = [
         12, 11, 11, 11, 11, 11, 11, 12, 11, 10, 10, 10, 10, 10, 10, 11, 11, 10, 10, 10, 10, 10, 10,
         11, 11, 10, 10, 10, 10, 10, 10, 11, 11, 10, 10, 10, 10, 10, 10, 11, 11, 10, 10, 10, 10, 10,
@@ -47,7 +47,7 @@ impl Magic {
             black_pawn_attack_masks[square] = Self::get_pawn_attacks(square, false);
         }
 
-        Magic {
+        PieceConductor {
             knight_lut,
             king_lut,
             rook_table,
@@ -640,7 +640,7 @@ mod tests {
     pub fn perft(
         depth: i32,
         chess_board: &mut ChessBoard,
-        magic: &Magic,
+        magic: &PieceConductor,
     ) -> (u64, u64, u64, u64, u64) {
         if depth == 0 {
             return (1, 0, 0, 0, 0); // Leaf node, count as a single position
@@ -701,7 +701,7 @@ mod tests {
 
         #[test]
         fn perft_test() {
-            let mut magic = Magic::new();
+            let mut magic = PieceConductor::new();
             let mut output = Vec::new(); // Use a vector to collect output
             let headers = format!(
                 "| {:>5} | {:>12} | {:>10} | {:>8} | {:>7} | {:>10} | {:<12} |\n",
@@ -763,7 +763,7 @@ mod tests {
         fn test_threat_map_queen() {
             let mut chess_board = ChessBoard::new();
             chess_board.clear();
-            let magic = Magic::new();
+            let magic = PieceConductor::new();
             let is_white = false;
 
             // Generate the threat map for the square
@@ -805,7 +805,7 @@ mod tests {
         fn test_threat_map_bishop() {
             let mut chess_board = ChessBoard::new();
             chess_board.clear();
-            let magic = Magic::new();
+            let magic = PieceConductor::new();
             let is_white = false;
 
             // Generate the threat map for the square
@@ -856,7 +856,7 @@ mod tests {
         fn test_threat_map_rook() {
             let mut chess_board = ChessBoard::new();
             chess_board.clear();
-            let magic = Magic::new();
+            let magic = PieceConductor::new();
             let is_white = false;
 
             // Generate the threat map for the square
@@ -895,7 +895,7 @@ mod tests {
         fn test_threat_map_pawn() {
             let mut chess_board = ChessBoard::new();
             chess_board.clear();
-            let magic = Magic::new();
+            let magic = PieceConductor::new();
             let is_white = true;
             let square = 48;
             chess_board.set_piece_at_square(
@@ -938,7 +938,7 @@ mod tests {
         #[test]
         fn test_threat_from_fen() {
             let mut chess_board = ChessBoard::new();
-            let magic = Magic::new();
+            let magic = PieceConductor::new();
             let is_white = false;
 
             chess_board.set_from_fen("8/p2k4/1N6/8/8/8/8/4K3 w  - 0 1");

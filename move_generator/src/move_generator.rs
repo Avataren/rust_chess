@@ -1,11 +1,11 @@
-use crate::magic::Magic;
+use crate::piece_conductor::PieceConductor;
 use chess_board::{chessboard::GameState, ChessBoard};
 use chess_foundation::{Bitboard, ChessMove};
 
 pub fn get_legal_move_list_from_square(
     square: u16,
     chess_board: &mut ChessBoard,
-    magic: &Magic,
+    magic: &PieceConductor,
 ) -> Vec<ChessMove> {
     let mut move_list = Vec::new();
     let is_white = chess_board.get_white().contains_square(square as i32);
@@ -26,7 +26,7 @@ pub fn get_legal_move_list_from_square(
 
 pub fn get_all_legal_moves_for_color(
     chess_board: &mut ChessBoard,
-    magic: &Magic,
+    magic: &PieceConductor,
     is_white: bool,
 ) -> Vec<ChessMove> {
     let mut move_list = Vec::new();
@@ -59,7 +59,7 @@ use std::sync::Arc;
 
 pub fn get_all_legal_moves_for_color_threaded(
     chess_board: &ChessBoard, // Notice it's not mutable anymore
-    magic: &Magic,
+    magic: &PieceConductor,
     is_white: bool,
 ) -> Vec<ChessMove> {
     let mut move_list = Vec::new();
@@ -112,7 +112,7 @@ pub fn get_all_legal_moves_for_color_threaded(
 pub fn get_pseudo_legal_move_list_from_square(
     square: u16,
     chess_board: &ChessBoard,
-    magic: &Magic,
+    magic: &PieceConductor,
     is_white: bool,
 ) -> Vec<ChessMove> {
     let mut move_list = Vec::new();

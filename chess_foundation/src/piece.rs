@@ -46,3 +46,20 @@ impl ChessPiece {
         }
     }
 }
+
+use std::fmt;
+
+impl fmt::Display for PieceType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let piece = match self {
+            PieceType::None => "???",
+            PieceType::Pawn => "",
+            PieceType::Knight => "N",
+            PieceType::Bishop => "B",
+            PieceType::Rook => "R",
+            PieceType::Queen => "Q",
+            PieceType::King => "K",
+        };
+        write!(f, "{}", piece)
+    }
+}
