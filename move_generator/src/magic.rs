@@ -704,16 +704,19 @@ mod tests {
             let mut magic = Magic::new();
             let mut output = Vec::new(); // Use a vector to collect output
             let headers = format!(
-                "{:<5} | {:<12} | {:<10} | {:<8} | {:<7} | {:<10} | {}\n",
-                "Depth", "Nodes", "Captures", "EP", "Castles", "Promotions", "Time Taken (s)"
+                "| {:>5} | {:>12} | {:>10} | {:>8} | {:>7} | {:>10} | {:<12} |\n",
+                "Depth", "Nodes", "Captures", "EP", "Castles", "Promotions", "Time Taken"
             );
-            output.push(headers.clone());
+
             let mut seperator = String::new();
-            for _ in 0..headers.len() {
+            for _ in 0..headers.len() - 1 {
                 seperator.push('-');
             }
-            output.push(seperator + "\n");
-            for depth in 0..6 {
+            output.push(seperator.clone() + "\n");
+            output.push(headers.clone());
+            output.push(seperator.clone() + "\n");
+
+            for depth in 0..7 {
                 let mut chess_board = ChessBoard::new();
                 chess_board
                     .set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
@@ -722,7 +725,7 @@ mod tests {
                 let result = perft(depth, &mut chess_board, &mut magic);
                 let duration = start.elapsed(); // End timing
                 let line = format!(
-                    "{:<5} | {:<12} | {:<10} | {:<8} | {:<7} | {:<10} | {}\n",
+                    "| {:^5} | {:>12} | {:>10} | {:>8} | {:>7} | {:>10} | {:>11.7}s |\n",
                     depth,
                     result.0,
                     result.1,
@@ -733,7 +736,7 @@ mod tests {
                 );
                 output.push(line); // Collect each line of output
             }
-
+            output.push(seperator.clone() + "\n");
             if cfg!(debug_assertions) {
                 for line in &output {
                     println!("{}", line);
