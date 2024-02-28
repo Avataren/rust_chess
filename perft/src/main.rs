@@ -81,6 +81,11 @@ fn perft(depth: i32, chess_board: &mut ChessBoard, magic: &PieceConductor, is_ro
 // }
 
 fn main() {
+
+    // let m = ChessMove::from_san("a1a2");
+    // println!("a1a2 to chessmove: {:?} - {:?}", m.start_square(), m.target_square());
+
+
     let args: Vec<String> = env::args().skip(1).collect();
 
     if args.len() < 2 {
@@ -102,11 +107,11 @@ fn main() {
         chess_board.set_from_fen(fen);
     }
 
-    // Apply moves if any
-    // for mov in moves {
-    //     let chess_move = ChessMove::from_san(mov, &chess_board); // Assuming a function that converts SAN to ChessMove exists
-    //     chess_board.make_move(&mut chess_move);
-    // }
+    
+    for mov in moves {
+        let mut chess_move = ChessMove::from_san(mov); 
+        chess_board.make_move(&mut chess_move);
+    }
 
     // Perform perft and print results
     //let result = perft(depth, &mut chess_board, &mut magic);

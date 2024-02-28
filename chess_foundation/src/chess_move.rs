@@ -142,6 +142,21 @@ impl ChessMove {
         san
     }        
 
+    pub fn from_san(san: &str) -> Self {
+        let bytes = san.as_bytes(); 
+    
+        let from_col = (bytes[0] as u16 - b'a' as u16) % 8; 
+        let to_col = (bytes[2] as u16 - b'a' as u16) % 8;
+    
+        let from_row = bytes[1] as u16 - b'1' as u16; 
+        let to_row = bytes[3] as u16 - b'1' as u16;
+        
+        let from_square = from_col + from_row * 8;
+        let to_square = to_col + to_row * 8;
+    
+        ChessMove::new(from_square, to_square)
+    }
+    
     pub fn to_san(&self) -> String {
         let mut san = String::new();
 

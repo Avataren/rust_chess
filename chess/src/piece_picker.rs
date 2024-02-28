@@ -116,12 +116,12 @@ fn board_coords_to_chess_coords(board_coords: Vec2, square_size: f32) -> Option<
     let col_f = board_coords.x / square_size;
     let row_f = board_coords.y / square_size;
 
-    if col_f >= 8.0 || row_f >= 8.0  {
+    if col_f >= 8.0 || row_f >= 8.0 {
         return None; // Coordinates outside the chess board
     }
 
     let col = col_f.floor() as usize;
-    let row = (7.0 - row_f.floor()) as usize; 
+    let row = (7.0 - row_f.floor()) as usize;
 
     Some((col, row))
 }
