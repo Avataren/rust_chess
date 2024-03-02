@@ -172,7 +172,6 @@ impl ChessBoard {
             let target_square_bb = Bitboard::from_square_index(target_square);
             let start_square_bb = Bitboard::from_square_index(start_square);
             self.castling_rights = prev_castling_rights;
-
             // Undo pawn promotion first, if applicable
             if let Some(promotion_piece) = chess_move.promotion_piece_type() {
                 // Remove the promotion piece from the target square
@@ -265,7 +264,14 @@ impl ChessBoard {
         let start_square_bb = Bitboard::from_square_index(start_square);
         let target_square_bb = Bitboard::from_square_index(target_square);
 
-        let is_white = self.white.is_set(start_square as usize);
+        let is_white = self.is_white_active();
+        //self.white.is_set(start_square as usize);
+        if (is_white && !self.white.is_set(start_square as usize))
+            || (!is_white && !self.black.is_set(start_square as usize))
+        {
+            println!("Invalid move: no piece at start square");
+            return false;
+        }
 
         if let Some(piece_type) = self.get_piece_type(start_square) {
             chess_move.set_piece(ChessPiece::new(piece_type, is_white));
@@ -305,7 +311,6 @@ impl ChessBoard {
             // store history before altering castling rights!
             self.move_history
                 .push((chess_move.clone(), self.castling_rights));
-
             if chess_move.has_flag(ChessMove::CASTLE_FLAG) {
                 // Determine rook's initial and final positions based on the castling type
                 let (rook_start_square, rook_target_square) = match target_square {
@@ -345,6 +350,12 @@ impl ChessBoard {
                     } else if start_square == 63 {
                         self.castling_rights &= !(CastlingRights::BlackKingSide as u8)
                     }
+                }
+            } else if piece_type == PieceType::King {
+                if is_white {
+                    self.castling_rights &= !(CastlingRights::WhiteKingSide as u8 | CastlingRights::WhiteQueenSide as u8)
+                } else {
+                    self.castling_rights &= !(CastlingRights::BlackKingSide as u8 | CastlingRights::BlackQueenSide as u8)
                 }
             }
 

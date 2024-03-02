@@ -7,6 +7,16 @@ pub fn get_legal_move_list_from_square(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
 ) -> Vec<ChessMove> {
+    if chess_board.is_white_active() && !chess_board.get_white().contains_square(square as i32)
+    {
+        return Vec::new();
+    }
+
+    if !chess_board.is_white_active() && !chess_board.get_black().contains_square(square as i32)
+    {
+        return Vec::new();
+    }
+
     let mut move_list = Vec::new();
     let is_white = chess_board.get_white().contains_square(square as i32);
     let pseudo_legal_moves =
@@ -50,61 +60,6 @@ pub fn get_all_legal_moves_for_color(
             chess_board.undo_move();
         }
     }
-
-    move_list
-}
-
-use rayon::prelude::*;
-use std::sync::Arc;
-
-pub fn get_all_legal_moves_for_color_threaded(
-    chess_board: &ChessBoard, // Notice it's not mutable anymore
-    conductor: &PieceConductor,
-    is_white: bool,
-) -> Vec<ChessMove> {
-    let mut move_list = Vec::new();
-    let friendly_pieces_bitboard = if is_white {
-        chess_board.get_white()
-    } else {
-        chess_board.get_black()
-    };
-
-    // Collect all squares into a Vec because rayon works on iterators
-    let mut squares = Vec::new();
-    let mut temp_bitboard = friendly_pieces_bitboard;
-    while temp_bitboard != Bitboard::default() {
-        squares.push(temp_bitboard.pop_lsb() as u16);
-    }
-
-    // Use an atomic reference counter to safely share 'magic' across threads
-    // let magic = Arc::new(*magic);
-
-    // Parallelize the processing of each square
-    let moves: Vec<ChessMove> = squares
-        .into_par_iter()
-        .flat_map(|square| {
-            let mut local_board = chess_board.clone(); // Clone the board for thread safety
-
-            let pseudo_legal_moves =
-                get_pseudo_legal_move_list_from_square(square, &mut local_board, &conductor, is_white);
-
-            pseudo_legal_moves
-                .into_iter()
-                .filter_map(move |mut chess_move| {
-                    local_board.make_move(&mut chess_move);
-                    let in_check = conductor.is_king_in_check(&local_board, is_white);
-                    local_board.undo_move();
-                    if !in_check {
-                        Some(chess_move)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<ChessMove>>()
-        })
-        .collect();
-
-    move_list.extend(moves);
 
     move_list
 }

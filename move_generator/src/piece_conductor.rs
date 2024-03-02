@@ -429,6 +429,7 @@ impl PieceConductor {
         move_list.extend(self.get_castling_moves(chess_board, square, is_white));
         move_list
     }
+    
     pub fn get_castling_moves(
         &self,
         chess_board: &ChessBoard,
@@ -719,7 +720,7 @@ mod tests {
             for depth in 0..7 {
                 let mut chess_board = ChessBoard::new();
                 chess_board
-                    .set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+                    .set_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -");
 
                 let start = Instant::now(); // Start timing
                 let result = perft(depth, &mut chess_board, &mut magic);
