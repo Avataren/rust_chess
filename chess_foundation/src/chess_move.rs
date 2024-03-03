@@ -137,7 +137,8 @@ impl ChessMove {
         // Add promotion notation
         if let Some(promotion_piece_type) = self.promotion_piece_type() {
             //san.push('=');
-            san.push(ChessPiece::piecetype_to_char(promotion_piece_type).to_ascii_uppercase()); // Assuming `to_char()` method exists for PieceType
+            let piece_type_char = ChessPiece::piecetype_to_char(promotion_piece_type);
+            san.push(ChessPiece::piecetype_to_char(promotion_piece_type).to_ascii_lowercase()); // Assuming `to_char()` method exists for PieceType
         }
         san
     }        

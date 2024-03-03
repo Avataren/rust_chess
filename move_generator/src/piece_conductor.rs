@@ -429,7 +429,7 @@ impl PieceConductor {
         move_list.extend(self.get_castling_moves(chess_board, square, is_white));
         move_list
     }
-    
+
     pub fn get_castling_moves(
         &self,
         chess_board: &ChessBoard,
@@ -457,16 +457,16 @@ impl PieceConductor {
         } as u8;
 
         // King's potential castling squares
-        let king_side_square = if is_white { 7 } else { 63 };
-        let queen_side_square = if is_white { 0 } else { 56 };
+        let king_side_rook_square = if is_white { 7 } else { 63 };
+        let queen_side_rook_square = if is_white { 0 } else { 56 };
 
         // Check if castling rights are available for each side
-        let can_castle_king_side = chess_board.castling_rights & king_side_rights != 0;
-        let can_castle_queen_side = chess_board.castling_rights & queen_side_rights != 0;
+        let mut can_castle_king_side = chess_board.castling_rights & king_side_rights != 0;
+        let mut can_castle_queen_side = chess_board.castling_rights & queen_side_rights != 0;
 
         // Check if the path is clear for castling
-        let king_side_path_clear = chess_board.is_path_clear(square, king_side_square);
-        let queen_side_path_clear = chess_board.is_path_clear(square, queen_side_square);
+        let king_side_path_clear = chess_board.is_path_clear(square, king_side_rook_square);
+        let queen_side_path_clear = chess_board.is_path_clear(square, queen_side_rook_square);
 
         // Check if the king is in check or the squares it passes through are under attack
         let king_not_in_check = !self.is_king_in_check(chess_board, is_white);
@@ -475,6 +475,23 @@ impl PieceConductor {
             self.are_squares_safe([square + 1, square + 2], is_white, threat_map);
         let queen_side_squares_safe =
             self.are_squares_safe([square - 1, square - 2], is_white, threat_map);
+
+        //check that rook actually exists!
+        let rooks_bb = chess_board.get_rooks();
+        let color_bb = if is_white {
+            chess_board.get_white()
+        } else {
+            chess_board.get_black()
+        };
+
+        let colored_rooks_bb = rooks_bb & color_bb;
+
+        if !(colored_rooks_bb.contains_square(king_side_rook_square as i32)){
+            can_castle_king_side = false;
+        }
+        if !(colored_rooks_bb.contains_square(queen_side_rook_square as i32)){
+            can_castle_queen_side = false;
+        }
 
         // Add kingside castling move if applicable
         if can_castle_king_side
@@ -717,10 +734,10 @@ mod tests {
             output.push(headers.clone());
             output.push(seperator.clone() + "\n");
 
-            for depth in 0..7 {
+            for depth in 0..6 {
                 let mut chess_board = ChessBoard::new();
                 chess_board
-                    .set_from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -");
+                    .set_from_fen("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8");
 
                 let start = Instant::now(); // Start timing
                 let result = perft(depth, &mut chess_board, &mut magic);

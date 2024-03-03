@@ -1,5 +1,5 @@
 [package]
-name = "move_generator"
+name = "chess_evaluation"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,4 +8,4 @@ edition = "2021"
 [dependencies]
 chess_foundation = { path = "../chess_foundation" }
 chess_board = { path = "../chess_board" }
-rand = "0.8.4"
+move_generator = { path = "../move_generator" }
