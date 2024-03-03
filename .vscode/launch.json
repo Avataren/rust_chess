@@ -28,6 +28,15 @@
             "args": ["web/wasm"],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "wasm-bindgen"
-        }
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug Perft",
+            "program": "${workspaceFolder}/target/debug/perft.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build"
+        },        
     ]
 }

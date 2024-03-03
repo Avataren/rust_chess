@@ -51,6 +51,10 @@ impl ChessBoard {
         }
     }
 
+    pub fn toggle_turn(&mut self) {
+        self.white_is_active = !self.white_is_active;
+    }
+    
     pub fn clear(&mut self) {
         self.white = Bitboard(0);
         self.black = Bitboard(0);

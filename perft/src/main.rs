@@ -2,7 +2,6 @@ use chess_board::ChessBoard;
 use chess_foundation::ChessMove;
 use move_generator::move_generator::get_all_legal_moves_for_color;
 use move_generator::piece_conductor::PieceConductor;
-use std::collections::HashMap;
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -80,17 +79,24 @@ fn main() {
 
     let fen = &args[1];
     let moves = if args.len() > 2 { &args[2..] } else { &[] };
-
+    //let depth = 3;
+    //let moves = ["e1f2", "a7a6"];
     let mut conductor = PieceConductor::new();
     let mut chess_board = ChessBoard::new();
-    if (fen.len() > 1) {
+    //let fen = "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8";
+    //depth 3
+    //e1f2 a7a6
+    if fen.len() > 1 {
         chess_board.set_from_fen(fen);
-    }
+        
+    } else {println!("Invalid FEN.");}
+    writeln!(log_file, "fen:{}: depth:{}, moves:{:?}",fen, depth, moves ).expect("Failed to write to log file");
 
     for mov in moves.iter() {
         let mut chess_move = ChessMove::from_san(mov);
         chess_board.make_move(&mut chess_move);
     }
+    //chess_board.toggle_turn();
 
     // Perform perft and print results
     perft(depth, &mut chess_board, &mut conductor, true);
