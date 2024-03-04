@@ -102,13 +102,13 @@ pub fn get_king_move_patterns() -> Vec<Bitboard> {
         for &move_offset in &king_moves {
             let to_square = square as i32 + move_offset;
             if to_square >= 0 && to_square < 64 {
-                let to_row = to_square >> 3;
-                let to_col = to_square & 7;
-                let row_diff = (to_row - (square >> 3) as i32).abs();
-                let col_diff = (to_col - (square & 7) as i32).abs();
+                let from_row = square / 8; // Original row
+                let to_row = to_square / 8; // Destination row
+                let from_col = square % 8; // Original column
+                let to_col = to_square % 8; // Destination column
 
-                // Ensure the move is within one square of the original position
-                if row_diff <= 1 && col_diff <= 1 {
+                // Ensure the move does not wrap around the board
+                if (from_row as i32 - to_row as i32).abs() <= 1 && (from_col as i32 - to_col as i32).abs() <= 1 {
                     move_pattern.set_bit(to_square as usize);
                 }
             }
@@ -118,6 +118,34 @@ pub fn get_king_move_patterns() -> Vec<Bitboard> {
 
     move_patterns
 }
+
+
+// pub fn get_king_move_patterns() -> Vec<Bitboard> {
+//     let king_moves = [-9, -8, -7, -1, 1, 7, 8, 9];
+
+//     let mut move_patterns = Vec::<Bitboard>::new();
+
+//     for square in 0..64 {
+//         let mut move_pattern = Bitboard(0);
+//         for &move_offset in &king_moves {
+//             let to_square = square as i32 + move_offset;
+//             if to_square >= 0 && to_square < 64 {
+//                 let to_row = to_square >> 3;
+//                 let to_col = to_square & 7;
+//                 let row_diff = (to_row - (square >> 3) as i32).abs();
+//                 let col_diff = (to_col - (square & 7) as i32).abs();
+
+//                 // Ensure the move is within one square of the original position
+//                 if row_diff <= 1 && col_diff <= 1 {
+//                     move_pattern.set_bit(to_square as usize);
+//                 }
+//             }
+//         }
+//         move_patterns.push(move_pattern);
+//     }
+
+//     move_patterns
+// }
 
 pub fn get_pawn_move_patterns() -> Vec<((Bitboard, Bitboard), (Bitboard, Bitboard))> {
     let mut move_patterns = Vec::<((Bitboard, Bitboard), (Bitboard, Bitboard))>::new();

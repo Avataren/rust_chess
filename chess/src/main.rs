@@ -124,7 +124,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     // chessboard.set_piece_at_square(4, chess_foundation::piece::PieceType::King, true);
     // chessboard.set_piece_at_square(19, chess_foundation::piece::PieceType::Pawn, false);
     // chessboard.set_piece_at_square(20, chess_foundation::piece::PieceType::Queen, false);
-    chessboard.set_from_fen("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8");
+    //chessboard.set_from_fen("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8");
     commands.insert_resource(ChessBoardRes {
         chess_board: chessboard,
         //chess_board: chess_board::ChessBoard::new(),

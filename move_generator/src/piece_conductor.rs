@@ -343,31 +343,28 @@ impl PieceConductor {
     fn get_pawn_attacks(square: usize, is_white: bool) -> Bitboard {
         let mut attacks = Bitboard::default();
 
-        if !is_white {
-            // Ensure pawn is not on 8th rank (no attacks from there)
-            if square < 56 {
-                // 56 to 63 is the 8th rank
-                let smod = square & 7;
-                if smod != 0 {
-                    // Pawn is not on A-file, can attack left
-                    attacks.set_bit(square + 7);
-                }
-                if smod != 7 {
-                    // Pawn is not on H-file, can attack right
-                    attacks.set_bit(square + 9);
-                }
-            }
-        } else {
+        if is_white {
             // Ensure pawn is not on 1st rank (no attacks from there)
             if square > 7 {
-                // 0 to 7 is the 1st rank
-                if (square >> 3) != 0 && square > 9 {
-                    // Pawn is not on A-file, can attack right
+                if (square & 7) != 0 {
+                    // Pawn is not on A-file, can attack left
                     attacks.set_bit(square - 9);
                 }
                 if (square & 7) != 7 {
-                    // Pawn is not on H-file, can attack left
+                    // Pawn is not on H-file, can attack right
                     attacks.set_bit(square - 7);
+                }
+            }
+        } else {
+            // Ensure pawn is not on 8th rank (no attacks from there)
+            if square < 56 {
+                if (square & 7) != 0 {
+                    // Pawn is not on A-file, can attack left
+                    attacks.set_bit(square + 7);
+                }
+                if (square & 7) != 7 {
+                    // Pawn is not on H-file, can attack right
+                    attacks.set_bit(square + 9);
                 }
             }
         }
@@ -486,10 +483,10 @@ impl PieceConductor {
 
         let colored_rooks_bb = rooks_bb & color_bb;
 
-        if !(colored_rooks_bb.contains_square(king_side_rook_square as i32)){
+        if !(colored_rooks_bb.contains_square(king_side_rook_square as i32)) {
             can_castle_king_side = false;
         }
-        if !(colored_rooks_bb.contains_square(queen_side_rook_square as i32)){
+        if !(colored_rooks_bb.contains_square(queen_side_rook_square as i32)) {
             can_castle_queen_side = false;
         }
 
@@ -557,10 +554,10 @@ impl PieceConductor {
                             self.get_bishop_attacks(square, relevant_blockers, all_pieces);
                     }
                     chess_foundation::piece::PieceType::King => {
-                        threats_bb |= self.king_lut[square] & !relevant_blockers;
+                        threats_bb |= self.king_lut[square];
                     }
                     chess_foundation::piece::PieceType::Knight => {
-                        threats_bb |= self.knight_lut[square] & !relevant_blockers;
+                        threats_bb |= self.knight_lut[square];
                     }
                     chess_foundation::piece::PieceType::Pawn => {
                         threats_bb |= if is_white {
