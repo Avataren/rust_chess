@@ -11,10 +11,6 @@ impl ValidMoves {
         ValidMoves { moves: Vec::new() }
     }
 
-    pub fn clear(&mut self) {
-        self.moves.clear();
-    }
-
     pub fn set_moves(&mut self, moves: Vec<ChessMove>) {
         self.moves = moves;
     }

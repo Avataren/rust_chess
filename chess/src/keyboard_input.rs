@@ -1,12 +1,6 @@
 use bevy::{
-    ecs::{
-        event::{EventReader, EventWriter},
-        system::Res,
-    },
-    input::{
-        keyboard::{KeyCode, KeyboardInput},
-        ButtonInput, ButtonState,
-    },
+    ecs::{event::EventWriter, system::Res},
+    input::{keyboard::KeyCode, ButtonInput},
 };
 use chess_board::FENParser;
 

@@ -26,9 +26,9 @@ impl FENParser {
         let board_layout = parts[0];
         let active_color = parts[1];
         let castling_rights = parts[2];
-        let en_passant = parts[3];
-        let halfmove_clock = parts[4].parse::<u32>().unwrap_or(0);
-        let fullmove_number = parts[5].parse::<u32>().unwrap_or(1);
+        // let en_passant = parts[3];
+        // let halfmove_clock = parts[4].parse::<u32>().unwrap_or(0);
+        // let fullmove_number = parts[5].parse::<u32>().unwrap_or(1);
 
         // Set pieces on the board
         Self::set_pieces_from_fen(board, board_layout);

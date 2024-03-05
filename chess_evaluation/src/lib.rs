@@ -2,7 +2,7 @@ use chess_board::ChessBoard;
 use move_generator::piece_conductor::PieceConductor;
 
 
-pub fn evaluate_position(chess_board: &mut ChessBoard, conductor: &PieceConductor) -> i32 {
+pub fn evaluate_position(_chess_board: &mut ChessBoard, _conductor: &PieceConductor) -> i32 {
     0
 }
 

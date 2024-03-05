@@ -287,7 +287,7 @@ impl PieceConductor {
             .cloned()
             .collect::<Vec<ChessMove>>();
 
-        if (promotion_moves.len() > 0) {
+        if promotion_moves.len() > 0 {
             move_list.clear();
         }
 
@@ -323,7 +323,7 @@ impl PieceConductor {
     pub fn get_rook_attacks(
         &self,
         square: usize,
-        relevant_blockers: Bitboard,
+        _relevant_blockers: Bitboard,
         all_pieces: Bitboard,
     ) -> Bitboard {
         let magic_index = Self::rook_magic_index(square, all_pieces);
@@ -469,9 +469,9 @@ impl PieceConductor {
         let king_not_in_check = !self.is_king_in_check(chess_board, is_white);
         let threat_map = self.generate_threat_map(chess_board, is_white);
         let king_side_squares_safe =
-            self.are_squares_safe([square + 1, square + 2], is_white, threat_map);
+            self.are_squares_safe([square + 1, square + 2], threat_map);
         let queen_side_squares_safe =
-            self.are_squares_safe([square - 1, square - 2], is_white, threat_map);
+            self.are_squares_safe([square - 1, square - 2], threat_map);
 
         //check that rook actually exists!
         let rooks_bb = chess_board.get_rooks();
@@ -577,7 +577,6 @@ impl PieceConductor {
     pub fn are_squares_safe(
         &self,
         squares: [u16; 2],
-        is_white: bool,
         threat_map: Bitboard,
     ) -> bool {
         for &square in squares.iter() {

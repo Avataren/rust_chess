@@ -1,18 +1,15 @@
 use bevy::{
     input::{mouse::MouseButton, touch::TouchPhase},
     prelude::*,
-    window::PrimaryWindow,
 };
-use move_generator::move_generator::{
-    get_legal_move_list_from_square, get_pseudo_legal_move_list_from_square,
-};
+use move_generator::move_generator::get_legal_move_list_from_square;
 
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
     board_accessories::{DebugSquare, EnableDebugMarkers},
     game_events::{DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent},
     game_resources::ValidMoves,
-    pieces::{chess_coord_to_board, get_board_coords_from_cursor, ChessPieceComponent},
+    pieces::{get_board_coords_from_cursor, ChessPieceComponent},
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, MagicRes,
 };
@@ -269,7 +266,7 @@ pub fn drop_piece(
         }
 
         if let Some(piece_entity) = piece_is_picked_up.piece_entity {
-            if let Ok((_, mut transform, mut chess_piece)) = piece_query.get_mut(piece_entity) {
+            if let Ok((_, _transform, mut chess_piece)) = piece_query.get_mut(piece_entity) {
                 let board_coords = get_board_coords_from_cursor(
                     position.unwrap(),
                     camera,

@@ -1,9 +1,8 @@
-use std::env;
+
 
 use bevy::{
-    audio::{AudioPlugin, SpatialScale},
     prelude::*,
-    window::{WindowMode, WindowResolution},
+    window::{WindowResolution},
 };
 
 mod board;
@@ -32,8 +31,6 @@ struct MagicRes {
     magic: move_generator::piece_conductor::PieceConductor,
 }
 
-const AUDIO_SCALE: f32 = 1. / 100.0;
-
 fn main() {
     if cfg!(debug_assertions) {
         std::env::set_var("RUST_BACKTRACE", "1");
@@ -54,12 +51,8 @@ fn main() {
                     ..default()
                 }),
                 ..default()
-            }), // .set(AudioPlugin {
-                //     default_spatial_scale: SpatialScale::new_2d(AUDIO_SCALE),
-                //     ..default()
-                // }),
+            }), 
         )
-        // .add_plugins(WindowResizePlugin)
         .add_systems(
             Startup,
             (
@@ -112,7 +105,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         height: 1080.0,
     });
 
-    let mut chessboard = chess_board::ChessBoard::new();
+    let chessboard = chess_board::ChessBoard::new();
     //let fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq";
     //let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
     // chessboard.set_from_fen("8/8/8/8/7q/8/6k1/4K3 w  - 0 1");

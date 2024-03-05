@@ -1,5 +1,5 @@
 use crate::piece_conductor::PieceConductor;
-use chess_board::{chessboard::GameState, ChessBoard};
+use chess_board::{ChessBoard};
 use chess_foundation::{Bitboard, ChessMove};
 
 pub fn get_legal_move_list_from_square(
@@ -46,7 +46,7 @@ pub fn get_all_legal_moves_for_color(
         chess_board.get_black()
     };
 
-    while (friendly_pieces_bitboard != Bitboard::default()) {
+    while friendly_pieces_bitboard != Bitboard::default() {
         let square = friendly_pieces_bitboard.pop_lsb() as u16;
         let pseudo_legal_moves =
             get_pseudo_legal_move_list_from_square(square, chess_board, conductor, is_white);

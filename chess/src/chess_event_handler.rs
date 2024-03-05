@@ -20,7 +20,6 @@ pub fn handle_chess_events(
                 chess_board.chess_board.undo_move();
                 refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
             }
-            _ => {}
         }
     }
 }
