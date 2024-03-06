@@ -468,10 +468,8 @@ impl PieceConductor {
         // Check if the king is in check or the squares it passes through are under attack
         let king_not_in_check = !self.is_king_in_check(chess_board, is_white);
         let threat_map = self.generate_threat_map(chess_board, is_white);
-        let king_side_squares_safe =
-            self.are_squares_safe([square + 1, square + 2], threat_map);
-        let queen_side_squares_safe =
-            self.are_squares_safe([square - 1, square - 2], threat_map);
+        let king_side_squares_safe = self.are_squares_safe([square + 1, square + 2], threat_map);
+        let queen_side_squares_safe = self.are_squares_safe([square - 1, square - 2], threat_map);
 
         //check that rook actually exists!
         let rooks_bb = chess_board.get_rooks();
@@ -574,11 +572,7 @@ impl PieceConductor {
         threats_bb
     }
 
-    pub fn are_squares_safe(
-        &self,
-        squares: [u16; 2],
-        threat_map: Bitboard,
-    ) -> bool {
+    pub fn are_squares_safe(&self, squares: [u16; 2], threat_map: Bitboard) -> bool {
         for &square in squares.iter() {
             let square_bb = Bitboard::from_square_index(square);
             // Check if the square is under attack by seeing if it intersects with the threat map

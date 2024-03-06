@@ -1,4 +1,5 @@
 use bevy::{math::vec3, prelude::*, utils::HashMap};
+use bevy_svg::prelude::*;
 
 use crate::{
     board::{BoardDimensions, BoardTag, ChessBoardTransform},
@@ -6,7 +7,8 @@ use crate::{
     ChessBoardRes,
 };
 
-const CHESSPIECE_SCALE: f32 = 0.8;
+const CHESSPIECE_SCALE: f32 = 1.6;
+//const CHESSPIECE_SCALE: f32 = 0.8;
 
 #[derive(Resource)]
 pub struct PieceTextures {
@@ -42,6 +44,29 @@ pub fn preload_piece_sprites(
     }
 }
 
+#[derive(Resource)]
+pub struct PieceSVGs {
+    pub svgs: HashMap<String, Handle<Svg>>,
+}
+
+impl Default for PieceSVGs {
+    fn default() -> Self {
+        PieceSVGs {
+            svgs: HashMap::default(),
+        }
+    }
+}
+
+pub fn preload_piece_svgs(asset_server: Res<AssetServer>, mut piece_svgs: ResMut<PieceSVGs>) {
+    let pieces = [
+        "bB", "bK", "bN", "bP", "bQ", "bR", "wB", "wK", "wN", "wP", "wQ", "wR",
+    ];
+    for &piece in pieces.iter() {
+        let svg = asset_server.load(format!("kosal/{}.svg", piece));
+        piece_svgs.svgs.insert(piece.to_string(), svg);
+    }
+}
+
 // Helper function to get board coordinates from window cursor position
 pub fn get_board_coords_from_cursor(
     cursor_position: Vec2,
@@ -70,7 +95,7 @@ pub fn get_board_coords_from_cursor(
 pub fn spawn_chess_pieces(
     mut commands: Commands,
     chess_board_res: Res<ChessBoardRes>,
-    piece_textures: Res<PieceTextures>,
+    piece_textures: Res<PieceSVGs>,
     board_dimensions: Res<BoardDimensions>,
     query: Query<Entity, With<BoardTag>>,
     query_existing: Query<Entity, With<ChessPieceComponent>>,
@@ -99,28 +124,50 @@ pub fn spawn_chess_pieces(
                 let col = i % 8;
                 let mut world_position = chess_coord_to_board(row, col, square_size, board_offset);
                 world_position.z = 0.5;
+                world_position.x -= square_size / 2.0;
+                world_position.y += square_size / 2.0;
                 let piece_texture_key = match piece_char {
-                    'P' => "wp",
-                    'R' => "wr",
-                    'N' => "wn",
-                    'B' => "wb",
-                    'Q' => "wq",
-                    'K' => "wk",
-                    'p' => "bp",
-                    'r' => "br",
-                    'n' => "bn",
-                    'b' => "bb",
-                    'q' => "bq",
-                    'k' => "bk",
+                    'P' => "wP",
+                    'R' => "wR",
+                    'N' => "wN",
+                    'B' => "wB",
+                    'Q' => "wQ",
+                    'K' => "wK",
+                    'p' => "bP",
+                    'r' => "bR",
+                    'n' => "bN",
+                    'b' => "bB",
+                    'q' => "bQ",
+                    'k' => "bK",
                     _ => continue,
                 };
-                if let Some(texture_handle) = piece_textures.textures.get(piece_texture_key) {
+                if let Some(texture_handle) = piece_textures.svgs.get(piece_texture_key) {
+                    // let child_sprite = commands
+                    //     .spawn(SpriteBundle {
+                    //         texture: texture_handle.clone(),
+                    //         transform: Transform {
+                    //             translation: world_position,
+                    //             scale: vec3(CHESSPIECE_SCALE, CHESSPIECE_SCALE, 1.0),
+                    //             ..Default::default()
+                    //         },
+                    //         ..Default::default()
+                    //     })
+                    //     .insert(ChessPieceComponent {
+                    //         piece_type: piece_char,
+                    //         row: row,
+                    //         col: col,
+                    //     })
+                    //     .id();
+
                     let child_sprite = commands
-                        .spawn(SpriteBundle {
-                            texture: texture_handle.clone(),
+                        .spawn(Svg2dBundle {
+                            svg: texture_handle.clone(),
+                            origin: Origin::Center, // Origin::TopLeft is the default
                             transform: Transform {
                                 translation: world_position,
+                                // The scale you need depends a lot on your SVG and camera distance
                                 scale: vec3(CHESSPIECE_SCALE, CHESSPIECE_SCALE, 1.0),
+                                // rotation: Quat::from_rotation_x(-std::f32::consts::PI / 5.0),
                                 ..Default::default()
                             },
                             ..Default::default()

@@ -1,9 +1,4 @@
-
-
-use bevy::{
-    prelude::*,
-    window::{WindowResolution},
-};
+use bevy::{prelude::*, window::WindowResolution};
 
 mod board;
 mod board_accessories;
@@ -38,26 +33,26 @@ fn main() {
     //env::set_var("WGPU_BACKEND", "dx12");
 
     App::new()
-        .add_plugins(
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    canvas: Some("#game-canvas".to_string()),
-                    title: "XavChess".to_string(),
-                    resizable: true,
-                    //mode: WindowMode::BorderlessFullscreen,
-                    resolution: WindowResolution::new(1280., 1024.),
-                    prevent_default_event_handling: false,
-                    present_mode: bevy::window::PresentMode::AutoNoVsync,
-                    ..default()
-                }),
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                canvas: Some("#game-canvas".to_string()),
+                title: "XavChess".to_string(),
+                resizable: true,
+                //mode: WindowMode::BorderlessFullscreen,
+                resolution: WindowResolution::new(1280., 1024.),
+                prevent_default_event_handling: false,
+                present_mode: bevy::window::PresentMode::AutoNoVsync,
                 ..default()
-            }), 
-        )
+            }),
+            ..default()
+        }))
+        .add_plugins(bevy_svg::prelude::SvgPlugin)
         .add_systems(
             Startup,
             (
                 setup,
                 pieces::preload_piece_sprites,
+                pieces::preload_piece_svgs,
                 sound::preload_sounds,
                 initialize_game,
                 board_accessories::spawn_board_accessories,
@@ -98,6 +93,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(piece_picker::PieceIsPickedUp::default());
     commands.insert_resource(board::BoardDimensions::default());
     commands.insert_resource(pieces::PieceTextures::default());
+    commands.insert_resource(pieces::PieceSVGs::default());
     commands.insert_resource(sound::SoundEffects::default());
     commands.insert_resource(game_resources::ValidMoves::new());
     commands.insert_resource(ResolutionInfo {

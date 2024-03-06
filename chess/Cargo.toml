@@ -10,3 +10,4 @@ chess_board = { path = "../chess_board" }
 move_generator = { path = "../move_generator" }
 chess_foundation = { path = "../chess_foundation" }
 bevy = "0.13.0"
+bevy_svg = { git = "https://github.com/arnfaldur/bevy_svg", branch = "main" }
