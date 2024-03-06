@@ -210,6 +210,7 @@ pub fn drag_piece(
     if let Ok((camera, camera_transform)) = q_camera.get_single() {
         if let Some(piece_entity) = piece_is_picked_up.piece_entity {
             if let Ok((_, mut transform, _)) = piece_query.get_mut(piece_entity) {
+                let square_size = board_dimensions.square_size;
                 let board_coords = get_board_coords_from_cursor(
                     position.unwrap(),
                     camera,
@@ -220,8 +221,8 @@ pub fn drag_piece(
                 .expect("Failed to get board coordinates"); // Consider handling this more gracefully
 
                 transform.translation = Vec3::new(
-                    board_coords.x - board_dimensions.board_size.x / 2.0,
-                    board_coords.y - board_dimensions.board_size.y / 2.0,
+                    board_coords.x - board_dimensions.board_size.x / 2.0 - (square_size / 2.0),
+                    board_coords.y - board_dimensions.board_size.y / 2.0 + (square_size / 2.0),
                     1.0,
                 );
             }

@@ -162,10 +162,9 @@ pub fn spawn_chess_pieces(
                     let child_sprite = commands
                         .spawn(Svg2dBundle {
                             svg: texture_handle.clone(),
-                            origin: Origin::Center, // Origin::TopLeft is the default
+                            //origin: Origin::Center, // Origin::TopLeft is the default
                             transform: Transform {
                                 translation: world_position,
-                                // The scale you need depends a lot on your SVG and camera distance
                                 scale: vec3(CHESSPIECE_SCALE, CHESSPIECE_SCALE, 1.0),
                                 // rotation: Quat::from_rotation_x(-std::f32::consts::PI / 5.0),
                                 ..Default::default()
