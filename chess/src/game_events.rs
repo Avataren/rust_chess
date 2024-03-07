@@ -1,6 +1,7 @@
 use bevy::ecs::event::Event;
 
 pub enum ChessAction {
+    MakeMove,
     Undo,
 }
 

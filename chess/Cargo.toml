@@ -5,8 +5,16 @@ edition = "2021"
 # build = "build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[profile.release]
+strip = true
+strip-debug = true
+lto = true
+opt-level = 's'
+
 [dependencies]
 chess_board = { path = "../chess_board" }
 move_generator = { path = "../move_generator" }
 chess_foundation = { path = "../chess_foundation" }
 bevy = "0.13.0"
+rand = "0.8.4"
+

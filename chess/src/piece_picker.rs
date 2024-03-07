@@ -7,11 +7,11 @@ use move_generator::move_generator::get_legal_move_list_from_square;
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
     board_accessories::{DebugSquare, EnableDebugMarkers},
-    game_events::{DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent},
+    game_events::{ChessAction, ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent},
     game_resources::ValidMoves,
     pieces::{get_board_coords_from_cursor, ChessPieceComponent},
     sound::{spawn_sound, SoundEffects},
-    ChessBoardRes, MagicRes,
+    ChessBoardRes, PieceConductorRes,
 };
 use chess_foundation::{board_helper::board_row_col_to_square_index, Bitboard, ChessMove};
 
@@ -130,7 +130,7 @@ pub fn pick_up_piece(
     mut chess_board: ResMut<ChessBoardRes>,
     mut piece_is_picked_up: ResMut<PieceIsPickedUp>,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
-    magic_res: Res<MagicRes>,
+    magic_res: Res<PieceConductorRes>,
     mut commands: Commands,
     mut chess_input_er: EventReader<PickUpPieceEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
@@ -242,6 +242,7 @@ pub fn drop_piece(
     mut chess_board: ResMut<ChessBoardRes>,
     mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
+    mut game_event_ew: EventWriter<ChessEvent>
 ) {
     let mut position = Option::None;
     for inp in chess_input_er.read() {
@@ -312,11 +313,6 @@ pub fn drop_piece(
                     // println!("Making move from {} to {}", valid_move.unwrap().start_square(), valid_move.unwrap().target_square());
                     // println!("************************************");
 
-                    println!(
-                        "Doublemove: {}",
-                        valid_move.unwrap().has_flag(ChessMove::PAWN_TWO_UP_FLAG)
-                    );
-
                     if chess_board
                         .chess_board
                         .make_move(&mut valid_move.unwrap().clone())
@@ -331,6 +327,7 @@ pub fn drop_piece(
                         println!("Released piece at row: {}, col: {}", row, col);
                     }
                     refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
+                    game_event_ew.send(ChessEvent::new(ChessAction::MakeMove));
                 } else {
                     *piece_is_picked_up = PieceIsPickedUp::default();
                     refresh_pieces_events.send(RefreshPiecesFromBoardEvent);

@@ -27,7 +27,7 @@ struct ChessBoardRes {
 }
 
 #[derive(Resource)]
-struct MagicRes {
+struct PieceConductorRes {
     magic: move_generator::piece_conductor::PieceConductor,
 }
 
@@ -124,7 +124,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 
     let magic = PieceConductor::new();
-    commands.insert_resource(MagicRes { magic });
+    commands.insert_resource(PieceConductorRes { magic });
     commands.insert_resource(Events::<RefreshPiecesFromBoardEvent>::default());
     commands.insert_resource(Events::<ChessEvent>::default());
     commands.insert_resource(Events::<PickUpPieceEvent>::default());
