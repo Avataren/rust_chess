@@ -1,4 +1,5 @@
 use bevy::{prelude::*, window::WindowResized};
+use bevy_svg::prelude::*;
 
 #[derive(Component)]
 pub struct ResolutionText;
@@ -35,7 +36,6 @@ impl Default for BoardDimensions {
 }
 
 pub fn spawn_board(commands: &mut Commands, asset_server: Res<AssetServer>) {
-    let board_texture_handle = asset_server.load("board.png");
     let board_transform = Transform::from_scale(Vec3::ONE);
     let board_transform_resource = ChessBoardTransform {
         transform: board_transform.compute_matrix(),
@@ -44,13 +44,32 @@ pub fn spawn_board(commands: &mut Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(board_transform_resource);
 
     commands
-        .spawn(SpriteBundle {
-            texture: board_texture_handle,
+        .spawn(Svg2dBundle {
+            svg: asset_server.load("chessboard.svg"),
             transform: board_transform,
+            //origin:Origin::Center,
             ..Default::default()
         })
         .insert(BoardTag);
 }
+
+// pub fn spawn_board(commands: &mut Commands, asset_server: Res<AssetServer>) {
+//     let board_texture_handle = asset_server.load("board.png");
+//     let board_transform = Transform::from_scale(Vec3::ONE);
+//     let board_transform_resource = ChessBoardTransform {
+//         transform: board_transform.compute_matrix(),
+//     };
+
+//     commands.insert_resource(board_transform_resource);
+
+//     commands
+//         .spawn(SpriteBundle {
+//             texture: board_texture_handle,
+//             transform: board_transform,
+//             ..Default::default()
+//         })
+//         .insert(BoardTag);
+// }
 
 pub fn handle_resize_event(
     mut resolution: ResMut<ResolutionInfo>,

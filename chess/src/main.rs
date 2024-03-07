@@ -39,7 +39,7 @@ fn main() {
                 title: "XavChess".to_string(),
                 resizable: true,
                 //mode: WindowMode::BorderlessFullscreen,
-                resolution: WindowResolution::new(1280., 1024.),
+                resolution: WindowResolution::new(1200., 1200.),
                 prevent_default_event_handling: false,
                 present_mode: bevy::window::PresentMode::AutoNoVsync,
                 ..default()
@@ -51,7 +51,7 @@ fn main() {
             Startup,
             (
                 setup,
-                pieces::preload_piece_sprites,
+                //pieces::preload_piece_sprites,
                 pieces::preload_piece_svgs,
                 sound::preload_sounds,
                 initialize_game,
@@ -76,8 +76,7 @@ fn main() {
                 board_accessories::update_debug_squares,
                 sound::manage_sounds,
                 pieces::spawn_chess_pieces,
-            )
-                .chain(),
+            ).chain(),
         )
         .run();
 }
@@ -131,25 +130,25 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 fn setup_ui(commands: &mut Commands) {
     // Node that fills entire background
-    commands
-        .spawn(NodeBundle {
-            style: Style {
-                width: Val::Percent(100.),
-                ..default()
-            },
-            ..default()
-        })
-        .with_children(|root| {
-            // Text where we display current resolution
-            root.spawn((
-                TextBundle::from_section(
-                    "Resolution",
-                    TextStyle {
-                        font_size: 20.0,
-                        ..default()
-                    },
-                ),
-                board::ResolutionText,
-            ));
-        });
+    // commands
+    //     .spawn(NodeBundle {
+    //         style: Style {
+    //             width: Val::Percent(100.),
+    //             ..default()
+    //         },
+    //         ..default()
+    //     })
+    //     .with_children(|root| {
+    //         // Text where we display current resolution
+    //         root.spawn((
+    //             TextBundle::from_section(
+    //                 "Resolution",
+    //                 TextStyle {
+    //                     font_size: 20.0,
+    //                     ..default()
+    //                 },
+    //             ),
+    //             board::ResolutionText,
+    //         ));
+    //     });
 }
