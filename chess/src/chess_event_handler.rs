@@ -1,8 +1,8 @@
-use std::time::Duration;
 use bevy::prelude::*;
 use bevy_tweening::{lens::TransformPositionLens, *};
 use move_generator::move_generator::get_all_legal_moves_for_color;
 use rand::seq::SliceRandom;
+use std::time::Duration;
 
 use crate::{
     board::BoardDimensions,
@@ -10,7 +10,6 @@ use crate::{
     pieces::ChessPieceComponent,
     ChessBoardRes, PieceConductorRes,
 };
-
 
 // Function to get local position from board coordinates (col, row)
 fn get_local_position_from_board_coords(
@@ -88,14 +87,15 @@ pub fn handle_chess_events(
                             })
                         {
                             let tween = Tween::new(
-                                EaseFunction::QuadraticInOut,
+                                EaseFunction::CubicOut,
                                 Duration::from_millis(250),
                                 TransformPositionLens {
                                     start: start_local_position,
                                     end: end_local_position,
                                 },
                             )
-                            .with_repeat_count(RepeatCount::Finite(1)).with_completed_event(engine_move.target_square() as u64);
+                            .with_repeat_count(RepeatCount::Finite(1))
+                            .with_completed_event(engine_move.target_square() as u64);
 
                             commands.entity(entity).insert(Animator::new(tween));
                         } else {
@@ -108,6 +108,4 @@ pub fn handle_chess_events(
             }
         }
     }
-
-    
 }

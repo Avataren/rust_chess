@@ -68,7 +68,7 @@ pub fn resize_board(
     mut board_query: Query<(&mut Transform, &Handle<Image>), With<BoardTag>>,
     images: Res<Assets<Image>>,
     mut board_transform: ResMut<ChessBoardTransform>,
-    mut q: Query<&mut Text, With<ResolutionText>>,
+    //mut q: Query<&mut Text, With<ResolutionText>>,
     _time: Res<Time>,
 ) {
     for (mut transform, texture_handle) in board_query.iter_mut() {
@@ -94,8 +94,8 @@ pub fn resize_board(
                 Vec2::new(texture.size().x as f32, texture.size().y as f32);
             board_dimensions.square_size = board_dimensions.board_size.x / 8.0;
 
-            let mut text = q.single_mut();
-            text.sections[0].value = format!("{:.1} x {:.1}", resolution.width, resolution.height);
+            // let mut text = q.single_mut();
+            // text.sections[0].value = format!("{:.1} x {:.1}", resolution.width, resolution.height);
         }
     }
 }

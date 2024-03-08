@@ -6,6 +6,7 @@
   <style>
     html, body {
       height: 100%;
+      width:100%;
       margin: 0;
       overflow: hidden;
       background: #333;
@@ -36,6 +37,8 @@
       -ms-user-select: none; /* Internet Explorer/Edge */
       user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
       visibility: hidden;
+      width:100% !important;
+      height: 100% !important;
     }
     #info{
       color: white;
@@ -47,11 +50,11 @@
   </style>
 </head>
 <body>
+  <div id="info">
+    <p>Loading...</p>
+  </div>
   <div id="app">
     <canvas id="game-canvas" tabindex="0"></canvas>
-    <div id="info">
-      <p>Loading...</p>
-    </div>
   </div>
   <script type="module">
     import init from './target/chess.js';
