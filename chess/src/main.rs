@@ -14,6 +14,7 @@ mod keyboard_input;
 mod piece_picker;
 mod pieces;
 mod sound;
+use bevy_tweening::{asset_animator_system, AnimationSystem, TweenCompleted, TweeningPlugin};
 use board::ResolutionInfo;
 
 use game_events::{
@@ -53,6 +54,7 @@ fn main() {
                 ..default()
             }), 
         )
+        .add_plugins(TweeningPlugin)        
         .add_systems(
             Startup,
             (
@@ -81,9 +83,11 @@ fn main() {
                 board_accessories::update_debug_squares,
                 sound::manage_sounds,
                 pieces::spawn_chess_pieces,
+                chess_event_handler::on_tween_completed
             )
                 .chain(),
         )
+        //.add_systems(Update,chess_event_handler::on_tween_completed)
         .run();
 }
 
@@ -95,6 +99,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn(Camera2dBundle::default());
     setup_ui(&mut commands);
     // Resources
+    
     commands.insert_resource(piece_picker::PieceIsPickedUp::default());
     commands.insert_resource(board::BoardDimensions::default());
     commands.insert_resource(pieces::PieceTextures::default());

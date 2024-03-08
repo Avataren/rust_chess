@@ -7,7 +7,10 @@ use move_generator::move_generator::get_legal_move_list_from_square;
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
     board_accessories::{DebugSquare, EnableDebugMarkers},
-    game_events::{ChessAction, ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent},
+    game_events::{
+        ChessAction, ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent,
+        RefreshPiecesFromBoardEvent,
+    },
     game_resources::ValidMoves,
     pieces::{get_board_coords_from_cursor, ChessPieceComponent},
     sound::{spawn_sound, SoundEffects},
@@ -242,7 +245,7 @@ pub fn drop_piece(
     mut chess_board: ResMut<ChessBoardRes>,
     mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
-    mut game_event_ew: EventWriter<ChessEvent>
+    mut game_event_ew: EventWriter<ChessEvent>,
 ) {
     let mut position = Option::None;
     for inp in chess_input_er.read() {
