@@ -263,12 +263,11 @@ impl ChessBoard {
         }
     }
 
-    pub fn make_move(&mut self, chess_move: &ChessMove) -> bool {
+    pub fn make_move(&mut self, chess_move: &mut ChessMove) -> bool {
         let start_square = chess_move.start_square();
         let target_square = chess_move.target_square();
         let start_square_bb = Bitboard::from_square_index(start_square);
         let target_square_bb = Bitboard::from_square_index(target_square);
-        let mut new_chess_move = chess_move.clone();
 
         let is_white = self.is_white_active();
         //self.white.is_set(start_square as usize);
@@ -280,11 +279,11 @@ impl ChessBoard {
         }
 
         if let Some(piece_type) = self.get_piece_type(start_square) {
-            new_chess_move.set_piece(ChessPiece::new(piece_type, is_white));
+            chess_move.set_piece(ChessPiece::new(piece_type, is_white));
 
             // Check for en passant
             if piece_type == PieceType::Pawn
-                && new_chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG)
+                && chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG)
             {
                 // Calculate the position of the captured pawn
                 let captured_pawn_square = if is_white {
@@ -294,12 +293,12 @@ impl ChessBoard {
                 };
 
                 if let Some(captured_pawn) = self.get_piece_at_square(captured_pawn_square) {
-                    new_chess_move.set_capture(captured_pawn); //hmm, this is not a capture?
+                    chess_move.set_capture(captured_pawn); //hmm, this is not a capture?
                                                            // Remove the captured pawn
                     let captured_pawn_bb = Bitboard::from_square_index(captured_pawn_square);
                     self.clear_piece_bitboard(PieceType::Pawn, captured_pawn_bb, !is_white);
                 } else {
-                    new_chess_move.clear_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG);
+                    chess_move.clear_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG);
                 }
             } else if let Some(captured_piece) = self.get_piece_at_square(target_square) {
                 if captured_piece.is_white() == is_white {
@@ -308,7 +307,7 @@ impl ChessBoard {
                     );
                     return false;
                 }
-                new_chess_move.set_capture(captured_piece);
+                chess_move.set_capture(captured_piece);
                 self.clear_piece_bitboard(captured_piece.piece_type(), target_square_bb, !is_white);
             } else {
                 // println!("No piece captured");
@@ -316,8 +315,8 @@ impl ChessBoard {
 
             // store history before altering castling rights!
             self.move_history
-                .push((new_chess_move, self.castling_rights));
-            if new_chess_move.has_flag(ChessMove::CASTLE_FLAG) {
+                .push((*chess_move, self.castling_rights));
+            if chess_move.has_flag(ChessMove::CASTLE_FLAG) {
                 // Determine rook's initial and final positions based on the castling type
                 let (rook_start_square, rook_target_square) = match target_square {
                     6 => (7, 5),    // White kingside castling
@@ -369,7 +368,7 @@ impl ChessBoard {
             self.update_piece_bitboard(piece_type, start_square_bb, target_square_bb);
             self.update_color_bitboard(is_white, start_square_bb, target_square_bb);
             // Handle pawn promotion
-            if let Some(promotion_piece) = new_chess_move.promotion_piece_type() {
+            if let Some(promotion_piece) = chess_move.promotion_piece_type() {
                 // Clear the pawn from the target square and replace it with the promotion piece
                 self.clear_piece_bitboard(PieceType::Pawn, target_square_bb, is_white);
                 self.set_piece_bitboard(promotion_piece, target_square_bb, is_white);

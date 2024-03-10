@@ -6,7 +6,6 @@ resolver = "2"
 
 [profile.release]
 strip = true
-strip-debug = true
 lto = true
 opt-level = 3
 
@@ -18,7 +17,7 @@ inherits = "release"
 opt-level = "z"
 # Do a second optimization pass removing duplicate or unused code from dependencies.
 # Slows compile times, marginal improvements
-lto = "fat"
+# lto = "fat"
 # When building crates, optimize larger chunks at a time
 # Slows compile times, marginal improvements
-codegen-units = 1
+# codegen-units = 1

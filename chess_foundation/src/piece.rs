@@ -10,7 +10,7 @@ pub enum PieceType {
     King = 6,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ChessPiece(u8);
 
 impl ChessPiece {
@@ -21,6 +21,18 @@ impl ChessPiece {
     pub fn new(piece_type: PieceType, is_white: bool) -> Self {
         let color_bit = if is_white { 0 } else { Self::MASK_COLOR };
         ChessPiece((piece_type as u8 & Self::MASK_TYPE) | color_bit)
+    }
+
+    pub fn value(&self) -> i32 {
+        match self.piece_type() {
+            PieceType::None => 0,
+            PieceType::Pawn => 1,
+            PieceType::Knight => 3,
+            PieceType::Bishop => 3,
+            PieceType::Rook => 5,
+            PieceType::Queen => 9,
+            PieceType::King => 20000, // Assigning a high value to the king as it cannot be captured.
+        }
     }
 
     // Check if the piece is black
@@ -46,8 +58,7 @@ impl ChessPiece {
         }
     }
 
-    pub fn to_char(&self) -> char
-    {
+    pub fn to_char(&self) -> char {
         let c = match self.piece_type() {
             PieceType::None => '?',
             PieceType::Pawn => 'P',
@@ -57,11 +68,10 @@ impl ChessPiece {
             PieceType::Queen => 'Q',
             PieceType::King => 'K',
         };
-        c        
+        c
     }
-    
-    pub fn piecetype_to_char(piece_type:PieceType) -> char
-    {
+
+    pub fn piecetype_to_char(piece_type: PieceType) -> char {
         let c = match piece_type {
             PieceType::None => '?',
             PieceType::Pawn => 'P',
@@ -71,8 +81,8 @@ impl ChessPiece {
             PieceType::Queen => 'Q',
             PieceType::King => 'K',
         };
-        c        
-    }    
+        c
+    }
 }
 
 use std::fmt;

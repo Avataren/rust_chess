@@ -252,7 +252,6 @@ impl PieceConductor {
         }
 
         // En Passant
-        //todo: optimze this!
         let last_move = chess_board.get_last_move();
         if let Some(last_move) = last_move {
             if last_move.has_flag(ChessMove::PAWN_TWO_UP_FLAG) {
@@ -468,10 +467,8 @@ impl PieceConductor {
         // Check if the king is in check or the squares it passes through are under attack
         let king_not_in_check = !self.is_king_in_check(chess_board, is_white);
         let threat_map = self.generate_threat_map(chess_board, is_white);
-        let king_side_squares_safe =
-            self.are_squares_safe([square + 1, square + 2], threat_map);
-        let queen_side_squares_safe =
-            self.are_squares_safe([square - 1, square - 2], threat_map);
+        let king_side_squares_safe = self.are_squares_safe([square + 1, square + 2], threat_map);
+        let queen_side_squares_safe = self.are_squares_safe([square - 1, square - 2], threat_map);
 
         //check that rook actually exists!
         let rooks_bb = chess_board.get_rooks();
@@ -574,11 +571,7 @@ impl PieceConductor {
         threats_bb
     }
 
-    pub fn are_squares_safe(
-        &self,
-        squares: [u16; 2],
-        threat_map: Bitboard,
-    ) -> bool {
+    pub fn are_squares_safe(&self, squares: [u16; 2], threat_map: Bitboard) -> bool {
         for &square in squares.iter() {
             let square_bb = Bitboard::from_square_index(square);
             // Check if the square is under attack by seeing if it intersects with the threat map
@@ -669,7 +662,7 @@ mod tests {
 
         for mut m in legal_moves {
             // Make the move on the chess board
-            let move_was_made = chess_board.make_move(&m); // Ensure make_move returns a bool indicating success
+            let move_was_made = chess_board.make_move(&mut m); // Ensure make_move returns a bool indicating success
 
             if move_was_made {
                 if depth == 1 {
@@ -921,7 +914,7 @@ mod tests {
             // chess_board.set_piece_at_square(9, chess_foundation::piece::PieceType::Pawn, is_white);
             // chess_board.set_piece_at_square(10, chess_foundation::piece::PieceType::Pawn, is_white);
             // chess_board.set_piece_at_square(11, chess_foundation::piece::PieceType::Pawn, is_white);
-            let mut threat_map = magic.generate_threat_map(&mut chess_board, is_white);
+            let threat_map = magic.generate_threat_map(&mut chess_board, is_white);
             println!("pawn map:");
             Bitboard::from_square_index(square).print_bitboard();
             println!("Threat map:");

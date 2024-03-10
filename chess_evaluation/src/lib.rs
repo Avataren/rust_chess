@@ -1,19 +1,8 @@
-use chess_board::ChessBoard;
-use move_generator::piece_conductor::PieceConductor;
+pub mod board_evaluation;
+pub mod alpha_beta;
+pub mod pawn_table;
 
-
-pub fn evaluate_position(_chess_board: &mut ChessBoard, _conductor: &PieceConductor) -> i32 {
-    0
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // #[test]
-    // fn it_works() {
-    //     let result = add(2, 2);
-    //     assert_eq!(result, 4);
-    // }
-}
+pub use board_evaluation::evaluate_board;
+pub use board_evaluation::evaluate_board_for_color;
+pub use alpha_beta::alpha_beta;
+pub use pawn_table::evaluate_pawn_position;

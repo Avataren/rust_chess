@@ -21,9 +21,9 @@ fn perft(
     let legal_moves =
         get_all_legal_moves_for_color(chess_board, conductor, chess_board.is_white_active());
 
-    for m in legal_moves {
+    for mut m in legal_moves {
         // Make the move on the chess board
-        let move_was_made = chess_board.make_move(&m); // Ensure make_move returns a bool indicating success
+        let move_was_made = chess_board.make_move(&mut m); // Ensure make_move returns a bool indicating success
 
         if move_was_made {
             let nodes = perft(depth - 1, chess_board, conductor, false);
@@ -93,8 +93,8 @@ fn main() {
     writeln!(log_file, "fen:{}: depth:{}, moves:{:?}",fen, depth, moves ).expect("Failed to write to log file");
 
     for mov in moves.iter() {
-        let chess_move = ChessMove::from_san(mov);
-        chess_board.make_move(&chess_move);
+        let mut chess_move = ChessMove::from_san(mov);
+        chess_board.make_move(&mut chess_move);
     }
     //chess_board.toggle_turn();
 

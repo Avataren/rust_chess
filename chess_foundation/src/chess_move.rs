@@ -1,8 +1,8 @@
 use std::default;
-
+use std::cmp::Ordering;
 use crate::{piece::PieceType, ChessPiece};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChessMove {
     move_value: u16, // Compact representation of the move
     pub chess_piece: Option<ChessPiece>,
@@ -16,6 +16,31 @@ impl default::Default for ChessMove {
             chess_piece: None,
             capture: None,
         }
+    }
+}
+
+impl PartialOrd for ChessMove {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ChessMove {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Prioritize captures by piece value
+        let self_capture_value = self.capture.map_or(0, |p| p.value());
+        let other_capture_value = other.capture.map_or(0, |p| p.value());
+
+        self_capture_value.cmp(&other_capture_value)
+            .reverse() // Higher values first
+            .then_with(|| {
+                // Prioritize promotions, queen promotions first
+                let self_promotion_value = if self.is_promotion() { 1 } else { 0 };
+                let other_promotion_value = if other.is_promotion() { 1 } else { 0 };
+                
+                other_promotion_value.cmp(&self_promotion_value)
+            })
+            // Add more criteria as needed
     }
 }
 

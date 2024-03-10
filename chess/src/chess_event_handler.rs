@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use bevy_tweening::{lens::TransformPositionLens, *};
-use move_generator::move_generator::get_all_legal_moves_for_color;
-use rand::seq::SliceRandom;
+use chess_evaluation::alpha_beta;
 use std::time::Duration;
 
 use crate::{
@@ -41,7 +40,7 @@ pub fn handle_chess_events(
     mut chess_ew: EventReader<ChessEvent>,
     mut chess_board: ResMut<ChessBoardRes>,
     board_dimensions: Res<BoardDimensions>,
-    mut move_generator: ResMut<PieceConductorRes>,
+    move_generator: ResMut<PieceConductorRes>,
     mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
     mut commands: Commands,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
@@ -55,56 +54,58 @@ pub fn handle_chess_events(
             }
             ChessAction::MakeMove => {
                 println!("Making black move");
-                let moves = get_all_legal_moves_for_color(
+
+                let (_score, best_move) = alpha_beta(
                     &mut chess_board.chess_board,
-                    &mut move_generator.magic,
+                    &move_generator.magic,
+                    4,
+                    i32::MIN,
+                    i32::MAX,
                     false,
                 );
-                if moves.len() == 0 {
-                    println!("Checkmate or Stalemate! Game over!");
-                    continue;
+                if best_move.is_none() {
+                    return;
                 }
+                let mut engine_move = best_move.unwrap();
 
-                if let Some(engine_move) = moves.choose(&mut rand::thread_rng()) {
-                    if chess_board.chess_board.make_move(engine_move) {
-                        // Inside the 'if let Some(engine_move) = moves.choose(&mut rand::thread_rng())' block
-                        let start_local_position = get_local_position_from_board_coords(
-                            engine_move.start_square() % 8,
-                            engine_move.start_square() / 8, // Adjusted calculation
-                            &board_dimensions,
-                        );
-                        let end_local_position = get_local_position_from_board_coords(
-                            engine_move.target_square() % 8,
-                            engine_move.target_square() / 8, // Adjusted calculation
-                            &board_dimensions,
-                        );
+                // if let Some(engine_move) = moves.choose(&mut rand::thread_rng()) {
+                if chess_board.chess_board.make_move(&mut engine_move) {
+                    // Inside the 'if let Some(engine_move) = moves.choose(&mut rand::thread_rng())' block
+                    let start_local_position = get_local_position_from_board_coords(
+                        engine_move.start_square() % 8,
+                        engine_move.start_square() / 8, // Adjusted calculation
+                        &board_dimensions,
+                    );
+                    let end_local_position = get_local_position_from_board_coords(
+                        engine_move.target_square() % 8,
+                        engine_move.target_square() / 8, // Adjusted calculation
+                        &board_dimensions,
+                    );
 
-                        if let Some((entity, _, _)) =
-                            piece_query.iter_mut().find(|(_, _, chess_piece)| {
-                                chess_piece.col == (engine_move.start_square() % 8) as usize
-                                    && chess_piece.row
-                                        == 7 - (engine_move.start_square() / 8) as usize
-                            })
-                        {
-                            let tween = Tween::new(
-                                EaseFunction::CubicOut,
-                                Duration::from_millis(250),
-                                TransformPositionLens {
-                                    start: start_local_position,
-                                    end: end_local_position,
-                                },
-                            )
-                            .with_repeat_count(RepeatCount::Finite(1))
-                            .with_completed_event(engine_move.target_square() as u64);
+                    if let Some((entity, _, _)) =
+                        piece_query.iter_mut().find(|(_, _, chess_piece)| {
+                            chess_piece.col == (engine_move.start_square() % 8) as usize
+                                && chess_piece.row == 7 - (engine_move.start_square() / 8) as usize
+                        })
+                    {
+                        let tween = Tween::new(
+                            EaseFunction::CubicOut,
+                            Duration::from_millis(250),
+                            TransformPositionLens {
+                                start: start_local_position,
+                                end: end_local_position,
+                            },
+                        )
+                        .with_repeat_count(RepeatCount::Finite(1))
+                        .with_completed_event(engine_move.target_square() as u64);
 
-                            commands.entity(entity).insert(Animator::new(tween));
-                        } else {
-                            println!("No piece found at start square");
-                        }
+                        commands.entity(entity).insert(Animator::new(tween));
+                    } else {
+                        println!("No piece found at start square");
                     }
-
-                    //refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
+                    // }
                 }
+                //refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
             }
         }
     }

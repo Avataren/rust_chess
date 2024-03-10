@@ -108,7 +108,9 @@ pub fn get_king_move_patterns() -> Vec<Bitboard> {
                 let to_col = to_square % 8; // Destination column
 
                 // Ensure the move does not wrap around the board
-                if (from_row as i32 - to_row as i32).abs() <= 1 && (from_col as i32 - to_col as i32).abs() <= 1 {
+                if (from_row as i32 - to_row as i32).abs() <= 1
+                    && (from_col as i32 - to_col as i32).abs() <= 1
+                {
                     move_pattern.set_bit(to_square as usize);
                 }
             }
@@ -118,7 +120,6 @@ pub fn get_king_move_patterns() -> Vec<Bitboard> {
 
     move_patterns
 }
-
 
 // pub fn get_king_move_patterns() -> Vec<Bitboard> {
 //     let king_moves = [-9, -8, -7, -1, 1, 7, 8, 9];

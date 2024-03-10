@@ -54,7 +54,7 @@
             "label": "Build wasm",
             "type": "shell",
             "dependsOn": ["copy assets (wasm)"],
-            "command": "cargo build --target wasm32-unknown-unknown --profile wasm-release",
+            "command": "cargo build --target wasm32-unknown-unknown --release",
             "problemMatcher": [
                 "$rustc"
             ],

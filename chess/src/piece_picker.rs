@@ -318,7 +318,7 @@ pub fn drop_piece(
 
                     if chess_board
                         .chess_board
-                        .make_move(valid_move.unwrap())
+                        .make_move(&mut valid_move.unwrap().clone())
                     {
                         valid_moves_res.moves.clear();
                         //if chess_board.chess_board.get_piece_at(col)
