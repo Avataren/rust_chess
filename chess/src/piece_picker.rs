@@ -16,7 +16,7 @@ use crate::{
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, PieceConductorRes,
 };
-use chess_foundation::{board_helper::board_row_col_to_square_index, Bitboard, ChessMove};
+use chess_foundation::{board_helper::board_row_col_to_square_index, Bitboard};
 
 #[derive(Resource)]
 pub struct PieceIsPickedUp {

@@ -1,5 +1,5 @@
 use bevy::{prelude::*, window::WindowResolution};
-use bevy_fps_counter::{FpsCounter, FpsCounterPlugin};
+use bevy_fps_counter::FpsCounterPlugin;
 mod board;
 mod board_accessories;
 mod chess_event_handler;
@@ -9,7 +9,7 @@ mod keyboard_input;
 mod piece_picker;
 mod pieces;
 mod sound;
-use bevy_tweening::{asset_animator_system, AnimationSystem, TweenCompleted, TweeningPlugin};
+use bevy_tweening::TweeningPlugin;
 use board::ResolutionInfo;
 
 use game_events::{
@@ -39,7 +39,7 @@ fn main() {
                 title: "XavChess".to_string(),
                 resizable: true,
                 //mode: WindowMode::BorderlessFullscreen,
-                //resolution: WindowResolution::new(1280., 1024.),
+                resolution: WindowResolution::new(1280., 1280.),
                 prevent_default_event_handling: false,
                 present_mode: bevy::window::PresentMode::AutoNoVsync,
                 ..default()
