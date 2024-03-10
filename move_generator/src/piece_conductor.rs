@@ -669,7 +669,7 @@ mod tests {
 
         for mut m in legal_moves {
             // Make the move on the chess board
-            let move_was_made = chess_board.make_move(&mut m); // Ensure make_move returns a bool indicating success
+            let move_was_made = chess_board.make_move(&m); // Ensure make_move returns a bool indicating success
 
             if move_was_made {
                 if depth == 1 {

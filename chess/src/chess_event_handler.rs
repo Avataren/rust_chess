@@ -66,7 +66,7 @@ pub fn handle_chess_events(
                 }
 
                 if let Some(engine_move) = moves.choose(&mut rand::thread_rng()) {
-                    if chess_board.chess_board.make_move(&mut engine_move.clone()) {
+                    if chess_board.chess_board.make_move(engine_move) {
                         // Inside the 'if let Some(engine_move) = moves.choose(&mut rand::thread_rng())' block
                         let start_local_position = get_local_position_from_board_coords(
                             engine_move.start_square() % 8,
