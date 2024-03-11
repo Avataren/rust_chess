@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy_tweening::{lens::TransformPositionLens, *};
 use chess_evaluation::alpha_beta;
+use move_generator::move_generator::get_all_legal_moves_for_color;
 use std::time::Duration;
 
 use crate::{
@@ -55,16 +56,28 @@ pub fn handle_chess_events(
             ChessAction::MakeMove => {
                 println!("Making black move");
 
-                let (_score, best_move) = alpha_beta(
+                let (_score, mut best_move) = alpha_beta(
                     &mut chess_board.chess_board,
                     &move_generator.magic,
-                    6,
+                    5,
                     i32::MIN,
                     i32::MAX,
                     false,
                 );
                 if best_move.is_none() {
-                    return;
+                    println!("No move found");
+                    let all_moves = get_all_legal_moves_for_color(
+                        &mut chess_board.chess_board,
+                        &move_generator.magic,
+                        false,
+                    );
+                    if all_moves.is_empty() {
+                        println!("Checkmate");
+                        return;
+                    } else {
+                        best_move = Some(all_moves[0]);
+                        println!("Random move");
+                    }
                 }
                 let mut engine_move = best_move.unwrap();
 
