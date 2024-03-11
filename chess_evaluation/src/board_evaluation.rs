@@ -1,7 +1,7 @@
 use chess_board::ChessBoard;
 use chess_foundation::{piece::PieceType, Bitboard};
 
-use crate::evaluate_pawn_position;
+use crate::{evaluate_knight_position, evaluate_pawn_position};
 
 const PAWN_VALUE: i32 = 100;
 const KNIGHT_VALUE: i32 = 320;
@@ -57,6 +57,12 @@ pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
     while pawns != Bitboard::default() {
         let square = pawns.pop_lsb() as usize;
         score += evaluate_pawn_position(square, chess_board.is_white_active());
+    }
+
+    let mut knights = active_color_board & chess_board.get_knights();
+    while knights != Bitboard::default() {
+        let square = knights.pop_lsb() as usize;
+        score += evaluate_knight_position(square, chess_board.is_white_active());
     }
 
     score

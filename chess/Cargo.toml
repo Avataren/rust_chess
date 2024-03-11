@@ -11,7 +11,7 @@ chess_board = { path = "../chess_board" }
 move_generator = { path = "../move_generator" }
 chess_foundation = { path = "../chess_foundation" }
 chess_evaluation = { path = "../chess_evaluation" }
-bevy = { version = "0.13", features = ["webgpu"] }
+bevy = "0.13"
 bevy_tweening = "0.10.0"
 bevy-fps-counter = "0.4.0"
 rand = "0.8.4"
