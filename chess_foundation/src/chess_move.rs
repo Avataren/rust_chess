@@ -1,6 +1,6 @@
-use std::default;
-use std::cmp::Ordering;
 use crate::{piece::PieceType, ChessPiece};
+use std::cmp::Ordering;
+use std::default;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChessMove {
@@ -31,16 +31,27 @@ impl Ord for ChessMove {
         let self_capture_value = self.capture.map_or(0, |p| p.value());
         let other_capture_value = other.capture.map_or(0, |p| p.value());
 
-        self_capture_value.cmp(&other_capture_value)
+        self_capture_value
+            .cmp(&other_capture_value)
             .reverse() // Higher values first
             .then_with(|| {
                 // Prioritize promotions, queen promotions first
                 let self_promotion_value = if self.is_promotion() { 1 } else { 0 };
                 let other_promotion_value = if other.is_promotion() { 1 } else { 0 };
-                
+
                 other_promotion_value.cmp(&self_promotion_value)
             })
-            // Add more criteria as needed
+            .then_with(|| {
+                // Prioritize captures
+                self.capture.is_some().cmp(&other.capture.is_some())
+            })
+            .then_with(|| {
+                // Prioritize non-captures by piece value
+                let self_piece_value = self.chess_piece.map_or(0, |p| p.value());
+                let other_piece_value = other.chess_piece.map_or(0, |p| p.value());
+
+                self_piece_value.cmp(&other_piece_value).reverse() // Higher values first
+            })
     }
 }
 
@@ -161,26 +172,27 @@ impl ChessMove {
 
         // Add promotion notation
         if let Some(promotion_piece_type) = self.promotion_piece_type() {
-            san.push(ChessPiece::piecetype_to_char(promotion_piece_type).to_ascii_lowercase()); // Assuming `to_char()` method exists for PieceType
+            san.push(ChessPiece::piecetype_to_char(promotion_piece_type).to_ascii_lowercase());
+            // Assuming `to_char()` method exists for PieceType
         }
         san
-    }        
+    }
 
     pub fn from_san(san: &str) -> Self {
-        let bytes = san.as_bytes(); 
-    
-        let from_col = (bytes[0] as u16 - b'a' as u16) % 8; 
+        let bytes = san.as_bytes();
+
+        let from_col = (bytes[0] as u16 - b'a' as u16) % 8;
         let to_col = (bytes[2] as u16 - b'a' as u16) % 8;
-    
-        let from_row = bytes[1] as u16 - b'1' as u16; 
+
+        let from_row = bytes[1] as u16 - b'1' as u16;
         let to_row = bytes[3] as u16 - b'1' as u16;
-        
+
         let from_square = from_col + from_row * 8;
         let to_square = to_col + to_row * 8;
-    
+
         ChessMove::new(from_square, to_square)
     }
-    
+
     pub fn to_san(&self) -> String {
         let mut san = String::new();
 
@@ -190,9 +202,11 @@ impl ChessMove {
                 PieceType::Pawn => {
                     if self.capture.is_some() {
                         // Pawn captures include the file of the departing pawn
-                        san.push(char::from_u32('a' as u32 + (self.start_square() % 8) as u32).unwrap());
+                        san.push(
+                            char::from_u32('a' as u32 + (self.start_square() % 8) as u32).unwrap(),
+                        );
                     }
-                },
+                }
                 _ => san.push(piece.to_char()), // Non-pawn pieces use their single uppercase letter
             }
         }
@@ -220,6 +234,5 @@ impl ChessMove {
         // }
 
         san
-    }    
-    
+    }
 }

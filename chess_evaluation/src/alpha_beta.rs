@@ -11,7 +11,7 @@ pub fn alpha_beta(
     conductor: &PieceConductor,
     depth: i32,
     mut alpha: i32,
-    beta: i32,
+    mut beta: i32,
     is_white: bool, // Use is_white instead of is_maximizing_player
 ) -> (i32, Option<ChessMove>) {
     if depth == 0 {
@@ -54,9 +54,10 @@ pub fn alpha_beta(
                 best_move = Some(*chess_move);
             }
 
-            alpha = alpha.min(eval);
+            // Correctly update beta here, instead of alpha
+            beta = beta.min(eval);
             if beta <= alpha {
-                break; // Alpha cutoff
+                break; // Alpha cutoff, correctly maintaining the pruning logic
             }
         }
         (min_eval, best_move)
