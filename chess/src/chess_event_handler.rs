@@ -58,7 +58,7 @@ pub fn handle_chess_events(
                 let (_score, best_move) = alpha_beta(
                     &mut chess_board.chess_board,
                     &move_generator.magic,
-                    4,
+                    6,
                     i32::MIN,
                     i32::MAX,
                     false,

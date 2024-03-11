@@ -25,14 +25,14 @@ pub fn alpha_beta(
     if is_white {
         // Assuming white is maximizing
         let mut max_eval = i32::MIN;
-        for chess_move in &legal_moves {
-            chess_board.make_move(&mut chess_move.clone());
+        for mut chess_move in legal_moves {
+            chess_board.make_move(&mut chess_move);
             let (eval, _) = alpha_beta(chess_board, conductor, depth - 1, alpha, beta, false); // Next call with black's turn
             chess_board.undo_move();
 
             if eval > max_eval {
                 max_eval = eval;
-                best_move = Some(*chess_move);
+                best_move = Some(chess_move);
             }
 
             alpha = alpha.max(eval);
@@ -44,20 +44,19 @@ pub fn alpha_beta(
     } else {
         // Assuming black is minimizing
         let mut min_eval = i32::MAX;
-        for chess_move in &legal_moves {
-            chess_board.make_move(&mut chess_move.clone());
+        for mut chess_move in legal_moves {
+            chess_board.make_move(&mut chess_move);
             let (eval, _) = alpha_beta(chess_board, conductor, depth - 1, alpha, beta, true); // Next call with white's turn
             chess_board.undo_move();
 
             if eval < min_eval {
                 min_eval = eval;
-                best_move = Some(*chess_move);
+                best_move = Some(chess_move);
             }
 
-            // Correctly update beta here, instead of alpha
             beta = beta.min(eval);
             if beta <= alpha {
-                break; // Alpha cutoff, correctly maintaining the pruning logic
+                break; // Alpha cutoff
             }
         }
         (min_eval, best_move)
