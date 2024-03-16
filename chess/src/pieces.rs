@@ -35,7 +35,8 @@ pub fn preload_piece_sprites(
         "bb", "bk", "bn", "bp", "bq", "br", "wb", "wk", "wn", "wp", "wq", "wr",
     ];
     for &piece in pieces.iter() {
-        let texture_handle = asset_server.load(format!("{}.png", piece));
+        let asset_path = format!("embedded://chess/assets/{}.png", piece);
+        let texture_handle = asset_server.load(asset_path);
         piece_textures
             .textures
             .insert(piece.to_string(), texture_handle);

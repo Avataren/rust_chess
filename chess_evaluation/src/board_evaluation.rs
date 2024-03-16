@@ -1,5 +1,5 @@
 use chess_board::ChessBoard;
-use chess_foundation::{piece::PieceType, Bitboard};
+use chess_foundation::Bitboard;
 
 use crate::{evaluate_knight_position, evaluate_pawn_position};
 

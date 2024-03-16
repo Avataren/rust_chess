@@ -1,4 +1,4 @@
-use bevy::{prelude::*, window::WindowResolution};
+use bevy::{audio::AudioPlugin, prelude::*, window::WindowResolution};
 use bevy_fps_counter::FpsCounterPlugin;
 mod board;
 mod board_accessories;
@@ -9,13 +9,18 @@ mod keyboard_input;
 mod piece_picker;
 mod pieces;
 mod sound;
+mod embed_plugin;
+mod preload_assets_plugin;
 use bevy_tweening::TweeningPlugin;
 use board::ResolutionInfo;
 
+use embed_plugin::EmbeddedAssetPlugin;
 use game_events::{
     ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent,
 };
 use move_generator::piece_conductor::PieceConductor;
+use preload_assets_plugin::PreloadAssetsPlugin;
+
 
 #[derive(Resource)]
 struct ChessBoardRes {
@@ -26,6 +31,8 @@ struct ChessBoardRes {
 struct PieceConductorRes {
     magic: move_generator::piece_conductor::PieceConductor,
 }
+
+
 
 fn main() {
     if cfg!(debug_assertions) {
@@ -46,19 +53,21 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins(EmbeddedAssetPlugin)
         .add_plugins(TweeningPlugin)
         .add_plugins(FpsCounterPlugin)
+        .add_plugins(PreloadAssetsPlugin)
+        // 
+        .add_systems(PreStartup, setup)
         .add_systems(
             Startup,
             (
-                setup,
-                pieces::preload_piece_sprites,
-                sound::preload_sounds,
+                //pieces::preload_piece_sprites,
+                //sound::preload_sounds,
                 initialize_game,
                 board_accessories::spawn_board_accessories,
                 board_accessories::spawn_debug_markers,
             )
-                .chain(),
         )
         .add_systems(
             Update,
@@ -73,12 +82,11 @@ fn main() {
                 piece_picker::drag_piece,
                 piece_picker::drop_piece,
                 pieces::spawn_chess_pieces,
-                sound::manage_sounds,
+                // sound::manage_sounds,
                 board_accessories::update_marker_square,
                 board_accessories::update_debug_squares,
                 chess_event_handler::on_tween_completed,
-            )
-                .chain(),
+            ).chain(),
         )
         .run();
 }
@@ -95,7 +103,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(piece_picker::PieceIsPickedUp::default());
     commands.insert_resource(board::BoardDimensions::default());
     commands.insert_resource(pieces::PieceTextures::default());
-    commands.insert_resource(sound::SoundEffects::default());
     commands.insert_resource(game_resources::ValidMoves::new());
     commands.insert_resource(ResolutionInfo {
         width: 1280.0,

@@ -32,7 +32,7 @@
         },            
         {
             "label": "cargo build",
-            "dependsOn": ["copy assets"],
+            // "dependsOn": ["copy assets"],
             "type": "shell",
             "command": "cargo build",
             "problemMatcher": [
@@ -42,7 +42,7 @@
         },        
         {
             "label": "cargo build (release)",
-            "dependsOn": ["copy assets (release)"],
+            // "dependsOn": ["copy assets (release)"],
             "type": "shell",
             "command": "cargo build --release",
             "problemMatcher": [
@@ -53,7 +53,7 @@
         {
             "label": "Build wasm",
             "type": "shell",
-            "dependsOn": ["copy assets (wasm)"],
+            // "dependsOn": ["copy assets (wasm)"],
             "command": "cargo build --target wasm32-unknown-unknown --release",
             "problemMatcher": [
                 "$rustc"

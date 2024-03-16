@@ -2,7 +2,6 @@
 name = "chess"
 version = "0.1.0"
 edition = "2021"
-# build = "build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 
@@ -11,8 +10,23 @@ chess_board = { path = "../chess_board" }
 move_generator = { path = "../move_generator" }
 chess_foundation = { path = "../chess_foundation" }
 chess_evaluation = { path = "../chess_evaluation" }
-bevy = "0.13"
 bevy_tweening = "0.10.0"
 bevy-fps-counter = "0.4.0"
 rand = "0.8.4"
+web-sys = { version = "0.3.67", default-features = false, features = ["Window"] }
+bevy = { version = "0.13", default-features = false, features = [
+  "bevy_render",
+  "bevy_core_pipeline",
+  "bevy_winit",
+  "bevy_asset",
+  "bevy_sprite",
+  "bevy_pbr",
+  "bevy_audio",
+  "bevy_winit"
+] }
 
+
+# [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+# version = "0.3"
+# default-features = false
+# features = ["Window"]

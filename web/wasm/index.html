@@ -1,84 +1,117 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>WASM Chess</title>
-  <style>
-    html, body {
-      height: 100%;
-      width:100%;
-      margin: 0;
-      overflow: hidden;
-      background: #333;
-      display: flex; 
-      justify-content: center;
-      align-items: center;
-      -webkit-user-select: none; /* Safari */
-      -moz-user-select: none; /* Firefox */
-      -ms-user-select: none; /* Internet Explorer/Edge */
-      user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
-    }
-    #app {
-      width: 100%;
-      height: 100%;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      -webkit-user-select: none; /* Safari */
-      -moz-user-select: none; /* Firefox */
-      -ms-user-select: none; /* Internet Explorer/Edge */
-      user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
-    }
-    #game-canvas {
-      display: block; 
-      background-color: #000;
-      -webkit-user-select: none; /* Safari */
-      -moz-user-select: none; /* Firefox */
-      -ms-user-select: none; /* Internet Explorer/Edge */
-      user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
-      visibility: hidden;
-      width:100% !important;
-      height: 100% !important;
-    }
-    #info{
-      color: white;
-      font-size: 40px;
-      text-align: center;
-      width: 100%; /* Ensure it takes the full width */
-      height: 100%; /* Ensure it takes the full height */
-    }
-  </style>
-</head>
-<body>
-  <div id="info">
-    <p>Loading...</p>
-  </div>
-  <div id="app">
-    <canvas id="game-canvas" tabindex="0"></canvas>
-  </div>
-  <script type="module">
-    import init from './target/chess.js';
-    const canvas = document.getElementById('game-canvas');
-    const info = document.getElementById('info');
-    init().then(()=>{
-      canvas.blur();
-      canvas.style.visibility = 'visible';
-      info.style.display = 'none';
-    }).catch((err)=>{
-      console.error(err);
-      canvas.blur();
-      canvas.style.visibility = 'visible';
-      info.style.display = 'none';
-    });
-
-    document.addEventListener('mousedown', function(event) {
-      if (event.target !== canvas) {
-        event.preventDefault();
-        event.stopPropagation();
+  <head>
+    <meta charset="UTF-8" />
+    <title>WASM Chess</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #333;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        -webkit-user-select: none; /* Safari */
+        -moz-user-select: none; /* Firefox */
+        -ms-user-select: none; /* Internet Explorer/Edge */
+        user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
       }
-    });
+      #app {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        -webkit-user-select: none; /* Safari */
+        -moz-user-select: none; /* Firefox */
+        -ms-user-select: none; /* Internet Explorer/Edge */
+        user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
+      }
+      #game-canvas {
+        display: block;
+        background-color: #000;
+        -webkit-user-select: none; /* Safari */
+        -moz-user-select: none; /* Firefox */
+        -ms-user-select: none; /* Internet Explorer/Edge */
+        user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
+        visibility: hidden;
+        width: 100% !important;
+        height: 100% !important;
+      }
+      #info {
+        color: white;
+        font-size: 40px;
+        text-align: center;
+        width: 100%; /* Ensure it takes the full width */
+        height: 100%; /* Ensure it takes the full height */
+      }
+    </style>
+  </head>
+  <body>
+    <div id="info">
+      <p>Loading...</p>
+    </div>
+    <div id="app">
+      <canvas id="game-canvas" tabindex="0"></canvas>
+    </div>
+    <script type="module">
+      import init from './target/chess.js';
 
-    canvas.setAttribute('tabindex', '0');
-  </script>
-</body>
+      function resumeAudioContext() {
+        if (!window.myAudioContext) {
+          // Check if it's not already created
+          console.log ('creating a new audio context');
+          window.myAudioContext = new AudioContext();
+        }
+
+        let audioContext = window.myAudioContext;
+        console.log('audioContext:', audioContext);
+        // Check if the AudioContext exists and if it's in a suspended state
+        if (audioContext && audioContext.state !== 'running') {
+          // Attempt to resume the AudioContext
+          audioContext
+            .resume()
+            .then(() => {
+              console.log('AudioContext resumed successfully');
+              // Optional: Remove the event listener if you only want to resume the AudioContext once
+              // This can be useful to avoid unnecessary operations after the first user interaction
+              canvas.removeEventListener('click', resumeAudioContext);
+            })
+            .catch((error) => {
+              // Log any errors that occur during the resume attempt
+              console.error('Error resuming AudioContext:', error);
+            });
+        }
+      }
+
+      const canvas = document.getElementById('game-canvas');
+      const info = document.getElementById('info');
+      init()
+        .then(() => {
+          canvas.blur();
+          canvas.style.visibility = 'visible';
+          info.style.display = 'none';
+        })
+        .catch((err) => {
+          console.error(err);
+          canvas.blur();
+          canvas.style.visibility = 'visible';
+          info.style.display = 'none';
+        });
+
+      canvas.addEventListener('click', resumeAudioContext);
+
+      document.addEventListener('mousedown', function (event) {
+        if (event.target !== canvas) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      });
+
+      canvas.setAttribute('tabindex', '0');
+    </script>
+  </body>
 </html>

@@ -35,7 +35,7 @@ impl Default for BoardDimensions {
 }
 
 pub fn spawn_board(commands: &mut Commands, asset_server: Res<AssetServer>) {
-    let board_texture_handle = asset_server.load("board.png");
+    let board_texture_handle = asset_server.load("embedded://chess/assets/board.png");
     let board_transform = Transform::from_scale(Vec3::ONE);
     let board_transform_resource = ChessBoardTransform {
         transform: board_transform.compute_matrix(),
