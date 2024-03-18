@@ -11,13 +11,15 @@ mod pieces;
 mod sound;
 mod embed_plugin;
 mod preload_assets_plugin;
+mod input_plugin;
 use bevy_tweening::TweeningPlugin;
 use board::ResolutionInfo;
 
 use embed_plugin::EmbeddedAssetPlugin;
 use game_events::{
-    ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent,
+   RefreshPiecesFromBoardEvent,
 };
+use input_plugin::ChessInputPlugin;
 use move_generator::piece_conductor::PieceConductor;
 use preload_assets_plugin::PreloadAssetsPlugin;
 
@@ -57,13 +59,11 @@ fn main() {
         .add_plugins(TweeningPlugin)
         .add_plugins(FpsCounterPlugin)
         .add_plugins(PreloadAssetsPlugin)
-        // 
+        .add_plugins(ChessInputPlugin)
         .add_systems(PreStartup, setup)
         .add_systems(
             Startup,
             (
-                //pieces::preload_piece_sprites,
-                //sound::preload_sounds,
                 initialize_game,
                 board_accessories::spawn_board_accessories,
                 board_accessories::spawn_debug_markers,
@@ -74,20 +74,13 @@ fn main() {
             (
                 board::handle_resize_event,
                 board::resize_board,
-                piece_picker::handle_mouse_input,
-                piece_picker::handle_touch_input,
-                keyboard_input::handle_keyboard_input,
-                chess_event_handler::handle_chess_events,
-                piece_picker::pick_up_piece,
-                piece_picker::drag_piece,
-                piece_picker::drop_piece,
-                pieces::spawn_chess_pieces,
-                // sound::manage_sounds,
+                
                 board_accessories::update_marker_square,
                 board_accessories::update_debug_squares,
                 chess_event_handler::on_tween_completed,
             ).chain(),
         )
+        //.add_systems(PreUpdate, ())
         .run();
 }
 
@@ -129,11 +122,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     let magic = PieceConductor::new();
     commands.insert_resource(PieceConductorRes { magic });
-    commands.insert_resource(Events::<RefreshPiecesFromBoardEvent>::default());
-    commands.insert_resource(Events::<ChessEvent>::default());
-    commands.insert_resource(Events::<PickUpPieceEvent>::default());
-    commands.insert_resource(Events::<DragPieceEvent>::default());
-    commands.insert_resource(Events::<DropPieceEvent>::default());
+
     board::spawn_board(&mut commands, asset_server);
 }
 

@@ -7,6 +7,7 @@ use crate::magic_constants::{BISHOP_MAGICS, ROOK_MAGICS};
 use crate::masks::{BISHOP_MASKS, ROOK_MASKS};
 use crate::{get_king_move_patterns, get_knight_move_patterns};
 
+#[derive (Clone)]
 pub struct PieceConductor {
     //pub pawn_lut: Vec<Bitboard>,
     pub knight_lut: Vec<Bitboard>,

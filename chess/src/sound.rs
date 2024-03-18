@@ -1,7 +1,5 @@
 //use web_sys; // Add this line to import the web_sys crate
-use bevy::{
-    asset::Handle, audio::PlaybackMode,  prelude::*, utils::HashMap,
-};
+use bevy::{asset::Handle, audio::PlaybackMode, prelude::*, utils::HashMap};
 
 #[derive(Resource)]
 pub struct SoundEffects {
