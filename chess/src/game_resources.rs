@@ -30,6 +30,7 @@ pub enum GameOverState {
     PlayerWins,
     OpponentWins,
     Stalemate,
+    Draw,
 }
 
 /// Holds a game-over outcome that should be applied after the current tween finishes.
@@ -58,3 +59,7 @@ pub struct OpeningBookRes {
 /// Tracks the last detected opening name, persisted until a new one is found.
 #[derive(Resource, Default)]
 pub struct CurrentOpening(pub String);
+
+/// True while the AI search task is running.
+#[derive(Resource, Default)]
+pub struct IsAiThinking(pub bool);

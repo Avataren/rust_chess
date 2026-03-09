@@ -12,7 +12,7 @@ use crate::{
         ChessAction, ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent,
         RefreshPiecesFromBoardEvent,
     },
-    game_resources::{GameOverState, GamePhase, PlayerColor, ValidMoves},
+    game_resources::{GameOverState, GamePhase, PendingGameOver, PlayerColor, ValidMoves},
     pieces::{get_board_coords_from_cursor, ChessPieceComponent},
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, PieceConductorRes,
@@ -264,7 +264,8 @@ pub fn drop_piece(
     mut refresh_pieces_events: MessageWriter<RefreshPiecesFromBoardEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
     mut game_event_ew: MessageWriter<ChessEvent>,
-    game_over_state: Res<GameOverState>,
+    mut game_over_state: ResMut<GameOverState>,
+    mut pending_game_over: ResMut<PendingGameOver>,
     game_phase: Res<GamePhase>,
 ) {
     let mut position = Option::None;
@@ -345,13 +346,15 @@ pub fn drop_piece(
                         .make_move(&mut valid_move.unwrap().clone())
                     {
                         valid_moves_res.moves.clear();
-                        //if chess_board.chess_board.get_piece_at(col)
                         if is_capture {
                             spawn_sound(&mut commands, &sound_effects, "capture.ogg");
                         } else {
                             spawn_sound(&mut commands, &sound_effects, "move-self.ogg");
                         }
                         println!("Released piece at row: {}, col: {}", row, col);
+                        if chess_board.chess_board.is_repetition(3) {
+                            pending_game_over.0 = Some(GameOverState::Draw);
+                        }
                     }
                     refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
                     game_event_ew.write(ChessEvent::new(ChessAction::MakeMove));

@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::{
     board::BoardDimensions,
     game_events::{ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
-    game_resources::{CurrentOpening, GameOverState, GamePhase, LastMove, OpeningBookRes, PendingGameOver, PlayerColor},
+    game_resources::{CurrentOpening, GameOverState, GamePhase, IsAiThinking, LastMove, OpeningBookRes, PendingGameOver, PlayerColor},
     pieces::ChessPieceComponent,
     ChessBoardRes, PieceConductorRes,
 };
@@ -74,6 +74,7 @@ pub fn handle_async_moves(
     player_color: Res<PlayerColor>,
     game_phase: Res<GamePhase>,
     opening_book: Res<OpeningBookRes>,
+    mut is_ai_thinking: ResMut<IsAiThinking>,
 ) {
     if task_executor.is_idle() {
         // Task is idle — check for new chess events to start a task
@@ -96,7 +97,7 @@ pub fn handle_async_moves(
                     )
                     .await
                 });
-                println!("Alpha-beta task started!");
+                is_ai_thinking.0 = true;
                 break;
             }
         }
@@ -111,6 +112,7 @@ pub fn handle_async_moves(
             // println!("Alpha-beta computation in progress...");
         }
         Poll::Ready((score, mut best_move)) => {
+            is_ai_thinking.0 = false;
             println!("Received score {score}");
             let ai_is_white = *player_color == PlayerColor::Black;
             let player_is_white = !ai_is_white;
@@ -149,7 +151,10 @@ pub fn handle_async_moves(
                     &move_generator.magic,
                     player_is_white,
                 );
-                if player_moves.is_empty() {
+                if chess_board.chess_board.is_repetition(3) {
+                    println!("Draw by repetition!");
+                    pending_game_over.0 = Some(GameOverState::Draw);
+                } else if player_moves.is_empty() {
                     let outcome = if move_generator.magic.is_king_in_check(&chess_board.chess_board, player_is_white) {
                         println!("Checkmate — opponent wins!");
                         GameOverState::OpponentWins

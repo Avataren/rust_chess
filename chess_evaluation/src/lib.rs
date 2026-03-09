@@ -7,5 +7,9 @@ pub use board_evaluation::evaluate_board;
 pub use alpha_beta::alpha_beta;
 pub use alpha_beta::alpha_beta_root;
 pub use opening_book::OpeningBook;
-pub use piece_tables::evaluate_pawn_position;
-pub use piece_tables::evaluate_knight_position;
+pub use piece_tables::{
+    evaluate_pawn_position, evaluate_knight_position,
+    pawn_table_value, knight_table_value, bishop_table_value,
+    rook_table_value, queen_table_value, king_table_value,
+    is_passed_pawn, passed_pawn_bonus,
+};

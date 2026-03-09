@@ -22,7 +22,7 @@ use embed_plugin::EmbeddedAssetPlugin;
 use game_events::{
    RefreshPiecesFromBoardEvent,
 };
-use game_resources::{CurrentOpening, GameOverState, GamePhase, OpeningBookRes, PendingGameOver, PlayerColor};
+use game_resources::{CurrentOpening, GameOverState, GamePhase, IsAiThinking, OpeningBookRes, PendingGameOver, PlayerColor};
 use input_plugin::ChessInputPlugin;
 use move_generator::piece_conductor::PieceConductor;
 use preload_assets_plugin::PreloadAssetsPlugin;
@@ -70,11 +70,12 @@ fn main() {
             (
                 initialize_game,
                 board_accessories::spawn_board_accessories,
-                board_accessories::spawn_debug_markers,
                 board_accessories::spawn_last_move_highlights,
+                board_accessories::spawn_debug_markers,
                 game_over_ui::spawn_game_over_ui,
                 start_screen_ui::spawn_start_screen,
                 opening_name_ui::spawn_opening_name_ui,
+                opening_name_ui::spawn_thinking_indicator,
             )
         )
         .add_systems(
@@ -83,14 +84,15 @@ fn main() {
                 board::handle_resize_event,
                 board::resize_board,
 
-                board_accessories::update_last_move_highlights,
                 board_accessories::update_marker_square,
+                board_accessories::update_last_move_highlights,
                 board_accessories::update_debug_squares,
                 chess_event_handler::on_tween_completed,
                 game_over_ui::update_game_over_ui,
                 start_screen_ui::update_start_screen_visibility,
                 opening_name_ui::detect_opening,
                 opening_name_ui::update_opening_name_ui,
+                opening_name_ui::update_thinking_ui,
             ).chain(),
         )
         .add_systems(
@@ -123,6 +125,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(PlayerColor::default());
     commands.insert_resource(GamePhase::default());
     commands.insert_resource(CurrentOpening::default());
+    commands.insert_resource(IsAiThinking::default());
     commands.insert_resource(ResolutionInfo {
         width: 1280.0,
         height: 1080.0,

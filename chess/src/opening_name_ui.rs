@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::{
-    game_resources::{CurrentOpening, OpeningBookRes},
+    game_resources::{CurrentOpening, IsAiThinking, OpeningBookRes},
     ChessBoardRes,
 };
 
@@ -37,6 +37,41 @@ pub fn detect_opening(
         if current_opening.0 != name {
             current_opening.0 = name.to_string();
         }
+    }
+}
+
+#[derive(Component)]
+pub struct ThinkingIndicator;
+
+pub fn spawn_thinking_indicator(mut commands: Commands) {
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(12.0),
+            left: Val::Percent(50.0),
+            ..default()
+        },
+        Text::new("Thinking..."),
+        TextFont {
+            font_size: 24.0,
+            ..default()
+        },
+        TextColor(Color::srgba(1.0, 0.85, 0.2, 0.95)),
+        Visibility::Hidden,
+        ThinkingIndicator,
+    ));
+}
+
+pub fn update_thinking_ui(
+    is_ai_thinking: Res<IsAiThinking>,
+    mut query: Query<&mut Visibility, With<ThinkingIndicator>>,
+) {
+    if !is_ai_thinking.is_changed() {
+        return;
+    }
+    let vis = if is_ai_thinking.0 { Visibility::Visible } else { Visibility::Hidden };
+    for mut v in query.iter_mut() {
+        *v = vis;
     }
 }
 

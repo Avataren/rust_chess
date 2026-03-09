@@ -1,4 +1,4 @@
-use crate::FENParser;
+use crate::{zobrist::ZobristTable, FENParser};
 use chess_foundation::{bitboard::Bitboard, piece::PieceType, ChessMove, ChessPiece};
 
 #[repr(u8)]
@@ -29,13 +29,16 @@ pub struct ChessBoard {
     kings: Bitboard,
     pub castling_rights: u8,
     move_history: Vec<(ChessMove, u8)>,
+    /// Zobrist hash after every position, including the starting position.
+    /// Used for threefold-repetition detection.
+    position_history: Vec<u64>,
     game_state: GameState,
     white_is_active: bool,
 }
 
 impl ChessBoard {
     pub fn new() -> Self {
-        ChessBoard {
+        let mut board = ChessBoard {
             white: Bitboard(0xFFFF),                  // First two ranks
             black: Bitboard(0xFFFF_0000_0000_0000),   // Last two ranks
             pawns: Bitboard(0x00FF_0000_0000_FF00),   // Second and seventh ranks
@@ -46,9 +49,13 @@ impl ChessBoard {
             kings: Bitboard(0x1000_0000_0000_0010),   // e1, e8
             castling_rights: CastlingRights::AllCastlingRights as u8,
             move_history: Vec::with_capacity(100),
+            position_history: Vec::with_capacity(100),
             game_state: GameState::InProgress,
             white_is_active: true,
-        }
+        };
+        let h = board.compute_hash();
+        board.position_history.push(h);
+        board
     }
 
     pub fn toggle_turn(&mut self) {
@@ -66,7 +73,51 @@ impl ChessBoard {
         self.kings = Bitboard(0);
         self.castling_rights = CastlingRights::AllCastlingRights as u8;
         self.move_history.clear();
+        self.position_history.clear();
         self.game_state = GameState::InProgress;
+    }
+
+    /// Compute the Zobrist hash of the current position.
+    pub fn compute_hash(&self) -> u64 {
+        let t = ZobristTable::get();
+        let mut h = 0u64;
+
+        let hash_bb = |mut bb: Bitboard, pt: PieceType, is_white: bool, h: &mut u64| {
+            let idx = ZobristTable::piece_idx(pt, is_white);
+            while bb != Bitboard::default() {
+                *h ^= t.pieces[idx][bb.pop_lsb()];
+            }
+        };
+
+        hash_bb(self.white & self.pawns,   PieceType::Pawn,   true,  &mut h);
+        hash_bb(self.white & self.knights, PieceType::Knight, true,  &mut h);
+        hash_bb(self.white & self.bishops, PieceType::Bishop, true,  &mut h);
+        hash_bb(self.white & self.rooks,   PieceType::Rook,   true,  &mut h);
+        hash_bb(self.white & self.queens,  PieceType::Queen,  true,  &mut h);
+        hash_bb(self.white & self.kings,   PieceType::King,   true,  &mut h);
+
+        hash_bb(self.black & self.pawns,   PieceType::Pawn,   false, &mut h);
+        hash_bb(self.black & self.knights, PieceType::Knight, false, &mut h);
+        hash_bb(self.black & self.bishops, PieceType::Bishop, false, &mut h);
+        hash_bb(self.black & self.rooks,   PieceType::Rook,   false, &mut h);
+        hash_bb(self.black & self.queens,  PieceType::Queen,  false, &mut h);
+        hash_bb(self.black & self.kings,   PieceType::King,   false, &mut h);
+
+        h ^= t.castling[(self.castling_rights & 0xF) as usize];
+        if self.white_is_active {
+            h ^= t.side_to_move;
+        }
+        h
+    }
+
+    /// Returns true if the current position has appeared `threshold` or more
+    /// times in the game + search history (including the current position).
+    pub fn is_repetition(&self, threshold: usize) -> bool {
+        let current = match self.position_history.last() {
+            Some(&h) => h,
+            None => return false,
+        };
+        self.position_history.iter().filter(|&&h| h == current).count() >= threshold
     }
 
     pub fn set_active_color(&mut self, is_white: bool) {
@@ -148,6 +199,9 @@ impl ChessBoard {
 
     pub fn set_from_fen(&mut self, fen: &str) {
         FENParser::set_board_from_fen(self, fen);
+        // clear() was called inside FENParser, so push the FEN starting hash now.
+        let h = self.compute_hash();
+        self.position_history.push(h);
     }
 
     pub fn set_piece_at_square(&mut self, square: u16, piece_type: PieceType, is_white: bool) {
@@ -249,6 +303,7 @@ impl ChessBoard {
                     );
                 }
             }
+            self.position_history.pop();
             self.white_is_active = !self.white_is_active;
         } else {
             println!("No move to undo");
@@ -375,6 +430,8 @@ impl ChessBoard {
             }
         }
         self.white_is_active = !self.white_is_active;
+        let h = self.compute_hash();
+        self.position_history.push(h);
         true
     }
 

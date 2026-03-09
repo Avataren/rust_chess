@@ -103,7 +103,11 @@ pub fn alpha_beta(
         let mut max_eval = i32::MIN;
         for mut chess_move in legal_moves {
             chess_board.make_move(&mut chess_move);
-            let (eval, _) = alpha_beta(chess_board, conductor, depth - 1, alpha, beta, false);
+            let eval = if chess_board.is_repetition(2) {
+                0 // draw by repetition
+            } else {
+                alpha_beta(chess_board, conductor, depth - 1, alpha, beta, false).0
+            };
             chess_board.undo_move();
 
             if eval > max_eval {
@@ -120,7 +124,11 @@ pub fn alpha_beta(
         let mut min_eval = i32::MAX;
         for mut chess_move in legal_moves {
             chess_board.make_move(&mut chess_move);
-            let (eval, _) = alpha_beta(chess_board, conductor, depth - 1, alpha, beta, true);
+            let eval = if chess_board.is_repetition(2) {
+                0 // draw by repetition
+            } else {
+                alpha_beta(chess_board, conductor, depth - 1, alpha, beta, true).0
+            };
             chess_board.undo_move();
 
             if eval < min_eval {

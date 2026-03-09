@@ -56,9 +56,10 @@ pub fn update_game_over_ui(
     }
     let (visible, message) = match *game_over_state {
         GameOverState::Playing => (Visibility::Hidden, ""),
-        GameOverState::PlayerWins => (Visibility::Visible, "You Win!"),
-        GameOverState::OpponentWins => (Visibility::Visible, "You Lose!"),
-        GameOverState::Stalemate => (Visibility::Visible, "Stalemate!"),
+        GameOverState::PlayerWins => (Visibility::Visible, "Checkmate! You win!"),
+        GameOverState::OpponentWins => (Visibility::Visible, "Checkmate! You lost!"),
+        GameOverState::Stalemate => (Visibility::Visible, "Draw! Stalemate."),
+        GameOverState::Draw => (Visibility::Visible, "Draw! Repetition."),
     };
     for mut vis in overlay_query.iter_mut() {
         *vis = visible;
