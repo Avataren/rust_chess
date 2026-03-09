@@ -3,6 +3,7 @@ use bevy::ecs::message::Message;
 pub enum ChessAction {
     MakeMove,
     Undo,
+    Restart,
 }
 
 #[derive(Message)]

@@ -4,6 +4,7 @@ mod board;
 mod board_accessories;
 mod chess_event_handler;
 mod game_events;
+mod game_over_ui;
 mod game_resources;
 mod keyboard_input;
 mod piece_picker;
@@ -19,6 +20,7 @@ use embed_plugin::EmbeddedAssetPlugin;
 use game_events::{
    RefreshPiecesFromBoardEvent,
 };
+use game_resources::{GameOverState, PendingGameOver};
 use input_plugin::ChessInputPlugin;
 use move_generator::piece_conductor::PieceConductor;
 use preload_assets_plugin::PreloadAssetsPlugin;
@@ -68,6 +70,7 @@ fn main() {
                 board_accessories::spawn_board_accessories,
                 board_accessories::spawn_debug_markers,
                 board_accessories::spawn_last_move_highlights,
+                game_over_ui::spawn_game_over_ui,
             )
         )
         .add_systems(
@@ -80,6 +83,7 @@ fn main() {
                 board_accessories::update_marker_square,
                 board_accessories::update_debug_squares,
                 chess_event_handler::on_tween_completed,
+                game_over_ui::update_game_over_ui,
             ).chain(),
         )
         //.add_systems(PreUpdate, ())
@@ -100,6 +104,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(pieces::PieceTextures::default());
     commands.insert_resource(game_resources::ValidMoves::new());
     commands.insert_resource(game_resources::LastMove::default());
+    commands.insert_resource(GameOverState::default());
+    commands.insert_resource(PendingGameOver::default());
     commands.insert_resource(ResolutionInfo {
         width: 1280.0,
         height: 1080.0,

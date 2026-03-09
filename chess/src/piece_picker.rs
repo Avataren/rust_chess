@@ -12,7 +12,7 @@ use crate::{
         ChessAction, ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent,
         RefreshPiecesFromBoardEvent,
     },
-    game_resources::ValidMoves,
+    game_resources::{GameOverState, ValidMoves},
     pieces::{get_board_coords_from_cursor, ChessPieceComponent},
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, PieceConductorRes,
@@ -138,12 +138,16 @@ pub fn pick_up_piece(
     mut commands: Commands,
     mut chess_input_er: MessageReader<PickUpPieceEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
+    game_over_state: Res<GameOverState>,
 ) {
     let mut position = Option::None;
     for inp in chess_input_er.read() {
         position = Some(inp.position);
     }
     if position.is_none() {
+        return;
+    }
+    if *game_over_state != GameOverState::Playing {
         return;
     }
 
@@ -247,6 +251,7 @@ pub fn drop_piece(
     mut refresh_pieces_events: MessageWriter<RefreshPiecesFromBoardEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
     mut game_event_ew: MessageWriter<ChessEvent>,
+    game_over_state: Res<GameOverState>,
 ) {
     let mut position = Option::None;
     for inp in chess_input_er.read() {
@@ -254,6 +259,10 @@ pub fn drop_piece(
     }
 
     if position.is_none() {
+        return;
+    }
+    if *game_over_state != GameOverState::Playing {
+        *piece_is_picked_up = PieceIsPickedUp::default();
         return;
     }
 

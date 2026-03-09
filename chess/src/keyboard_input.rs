@@ -18,4 +18,7 @@ pub fn handle_keyboard_input(
     if keyboard_input.just_pressed(KeyCode::KeyP) {
         println!("{}", FENParser::board_to_fen(&chess_board.chess_board))
     }
+    if keyboard_input.just_pressed(KeyCode::KeyR) {
+        chess_ew.write(ChessEvent::new(ChessAction::Restart));
+    }
 }

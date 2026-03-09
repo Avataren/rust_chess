@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::{
     board::BoardDimensions,
     game_events::{ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
-    game_resources::LastMove,
+    game_resources::{GameOverState, LastMove, PendingGameOver},
     pieces::ChessPieceComponent,
     ChessBoardRes, PieceConductorRes,
 };
@@ -37,10 +37,15 @@ fn get_local_position_from_board_coords(
 pub fn on_tween_completed(
     mut tween_completed_events: MessageReader<AnimCompletedEvent>,
     mut refresh_pieces_events: MessageWriter<RefreshPiecesFromBoardEvent>,
+    mut pending_game_over: ResMut<PendingGameOver>,
+    mut game_over_state: ResMut<GameOverState>,
 ) {
     for _ in tween_completed_events.read() {
         println!("Tween completed");
         refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
+        if let Some(state) = pending_game_over.0.take() {
+            *game_over_state = state;
+        }
         break;
     }
 }
@@ -65,11 +70,16 @@ pub fn handle_async_moves(
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     mut chess_ew: MessageReader<ChessEvent>,
     mut last_move: ResMut<LastMove>,
+    mut game_over_state: ResMut<GameOverState>,
+    mut pending_game_over: ResMut<PendingGameOver>,
 ) {
     if task_executor.is_idle() {
         // Task is idle — check for new chess events to start a task
         for event in chess_ew.read() {
             if let ChessAction::MakeMove = event.action {
+                if *game_over_state != GameOverState::Playing {
+                    break;
+                }
                 let mut chess_board_clone = chess_board.chess_board.clone();
                 let move_generator_clone = move_generator.magic.clone();
                 task_executor.start(async move {
@@ -100,14 +110,20 @@ pub fn handle_async_moves(
         Poll::Ready((score, mut best_move)) => {
             println!("Received score {score}");
             if best_move.is_none() {
-                println!("No move found");
                 let all_moves = get_all_legal_moves_for_color(
                     &mut chess_board.chess_board,
                     &move_generator.magic,
                     false,
                 );
                 if all_moves.is_empty() {
-                    println!("Checkmate");
+                    // Black has no moves: checkmate or stalemate (no piece animation needed)
+                    if move_generator.magic.is_king_in_check(&chess_board.chess_board, false) {
+                        println!("Checkmate — player wins!");
+                        *game_over_state = GameOverState::PlayerWins;
+                    } else {
+                        println!("Stalemate!");
+                        *game_over_state = GameOverState::Stalemate;
+                    }
                     return;
                 } else {
                     best_move = Some(all_moves[0]);
@@ -116,19 +132,36 @@ pub fn handle_async_moves(
             }
             let mut engine_move = best_move.unwrap();
 
-            // if let Some(engine_move) = moves.choose(&mut rand::thread_rng()) {
             if chess_board.chess_board.make_move(&mut engine_move) {
                 last_move.start_square = Some(engine_move.start_square());
                 last_move.target_square = Some(engine_move.target_square());
-                // Inside the 'if let Some(engine_move) = moves.choose(&mut rand::thread_rng())' block
+
+                // Check if white (player) has any legal moves after AI's move.
+                // Store result as pending — the overlay will appear after the tween finishes.
+                let white_moves = get_all_legal_moves_for_color(
+                    &mut chess_board.chess_board,
+                    &move_generator.magic,
+                    true,
+                );
+                if white_moves.is_empty() {
+                    let outcome = if move_generator.magic.is_king_in_check(&chess_board.chess_board, true) {
+                        println!("Checkmate — opponent wins!");
+                        GameOverState::OpponentWins
+                    } else {
+                        println!("Stalemate!");
+                        GameOverState::Stalemate
+                    };
+                    pending_game_over.0 = Some(outcome);
+                }
+
                 let start_local_position = get_local_position_from_board_coords(
                     engine_move.start_square() % 8,
-                    engine_move.start_square() / 8, // Adjusted calculation
+                    engine_move.start_square() / 8,
                     &board_dimensions,
                 );
                 let end_local_position = get_local_position_from_board_coords(
                     engine_move.target_square() % 8,
-                    engine_move.target_square() / 8, // Adjusted calculation
+                    engine_move.target_square() / 8,
                     &board_dimensions,
                 );
 
@@ -158,6 +191,9 @@ pub fn handle_chess_events(
     mut chess_ew: MessageReader<ChessEvent>,
     mut chess_board: ResMut<ChessBoardRes>,
     mut refresh_pieces_events: MessageWriter<RefreshPiecesFromBoardEvent>,
+    mut game_over_state: ResMut<GameOverState>,
+    mut last_move: ResMut<LastMove>,
+    mut pending_game_over: ResMut<PendingGameOver>,
 ) {
     for event in chess_ew.read() {
         match event.action {
@@ -166,7 +202,14 @@ pub fn handle_chess_events(
                 chess_board.chess_board.undo_move();
                 refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
             }
-            //refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
+            ChessAction::Restart => {
+                println!("Restarting game");
+                chess_board.chess_board = chess_board::ChessBoard::new();
+                *game_over_state = GameOverState::Playing;
+                pending_game_over.0 = None;
+                *last_move = LastMove::default();
+                refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
+            }
             _ => {}
         }
     }
