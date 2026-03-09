@@ -1,4 +1,5 @@
 use bevy::{prelude::*, window::WindowResized};
+use bevy::ecs::message::MessageReader;
 
 #[derive(Component)]
 pub struct ResolutionText;
@@ -38,23 +39,25 @@ pub fn spawn_board(commands: &mut Commands, asset_server: Res<AssetServer>) {
     let board_texture_handle = asset_server.load("embedded://chess/assets/board.png");
     let board_transform = Transform::from_scale(Vec3::ONE);
     let board_transform_resource = ChessBoardTransform {
-        transform: board_transform.compute_matrix(),
+        transform: board_transform.to_matrix(),
     };
 
     commands.insert_resource(board_transform_resource);
 
     commands
-        .spawn(SpriteBundle {
-            texture: board_texture_handle,
-            transform: board_transform,
-            ..Default::default()
-        })
+        .spawn((
+            Sprite {
+                image: board_texture_handle,
+                ..Default::default()
+            },
+            board_transform,
+        ))
         .insert(BoardTag);
 }
 
 pub fn handle_resize_event(
     mut resolution: ResMut<ResolutionInfo>,
-    mut events_reader: EventReader<WindowResized>,
+    mut events_reader: MessageReader<WindowResized>,
 ) {
     for event in events_reader.read() {
         resolution.width = event.width as f32;
@@ -65,14 +68,14 @@ pub fn handle_resize_event(
 pub fn resize_board(
     resolution: ResMut<ResolutionInfo>,
     mut board_dimensions: ResMut<BoardDimensions>,
-    mut board_query: Query<(&mut Transform, &Handle<Image>), With<BoardTag>>,
+    mut board_query: Query<(&mut Transform, &Sprite), With<BoardTag>>,
     images: Res<Assets<Image>>,
     mut board_transform: ResMut<ChessBoardTransform>,
     //mut q: Query<&mut Text, With<ResolutionText>>,
     _time: Res<Time>,
 ) {
-    for (mut transform, texture_handle) in board_query.iter_mut() {
-        if let Some(texture) = images.get(texture_handle) {
+    for (mut transform, sprite) in board_query.iter_mut() {
+        if let Some(texture) = images.get(&sprite.image) {
             let texture_aspect_ratio = texture.size().x as f32 / texture.size().y as f32;
             let window_aspect_ratio = resolution.width / resolution.height;
 
@@ -89,7 +92,7 @@ pub fn resize_board(
             // let angle_radians = (seconds * 6.0).to_radians();
 
             // transform.rotation = Quat::from_rotation_z(angle_radians);
-            board_transform.transform = transform.compute_matrix();
+            board_transform.transform = transform.to_matrix();
             board_dimensions.board_size =
                 Vec2::new(texture.size().x as f32, texture.size().y as f32);
             board_dimensions.square_size = board_dimensions.board_size.x / 8.0;

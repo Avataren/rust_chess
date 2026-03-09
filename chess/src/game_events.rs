@@ -1,11 +1,11 @@
-use bevy::ecs::event::Event;
+use bevy::ecs::message::Message;
 
 pub enum ChessAction {
     MakeMove,
     Undo,
 }
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct ChessEvent {
     pub action: ChessAction,
 }
@@ -16,18 +16,18 @@ impl ChessEvent {
     }
 }
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct RefreshPiecesFromBoardEvent;
 
-#[derive(Event)]
+#[derive(Message)]
 pub struct PickUpPieceEvent {
     pub position: bevy::math::Vec2,
 }
-#[derive(Event)]
+#[derive(Message)]
 pub struct DragPieceEvent {
     pub position: bevy::math::Vec2,
 }
-#[derive(Event)]
+#[derive(Message)]
 pub struct DropPieceEvent {
     pub position: bevy::math::Vec2,
 }

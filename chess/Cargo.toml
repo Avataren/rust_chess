@@ -10,11 +10,11 @@ chess_board = { path = "../chess_board" }
 move_generator = { path = "../move_generator" }
 chess_foundation = { path = "../chess_foundation" }
 chess_evaluation = { path = "../chess_evaluation" }
-bevy_tweening = "0.10.0"
-bevy-fps-counter = "0.4.0"
+bevy_tweening = "0.15"
+bevy-fps-counter = "0.9.0"
 rand = "0.8.4"
 web-sys = { version = "0.3.67", default-features = false, features = ["Window"] }
-bevy = { version = "0.13", default-features = false, features = [
+bevy = { version = "0.18", default-features = false, features = [
   "bevy_render",
   "bevy_core_pipeline",
   "bevy_winit",
@@ -24,7 +24,7 @@ bevy = { version = "0.13", default-features = false, features = [
   "bevy_audio",
   "bevy_winit"
 ] }
-bevy-async-task = "1.4.0"
+bevy_async_task = "0.12"
 
 
 # [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]

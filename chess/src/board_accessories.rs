@@ -1,6 +1,5 @@
 use bevy::{
     prelude::*,
-    sprite::{MaterialMesh2dBundle, Mesh2dHandle},
     window::PrimaryWindow,
 };
 
@@ -51,18 +50,17 @@ pub fn spawn_board_accessories(
     let rect = meshes.add(Rectangle::new(square_size, square_size));
 
     let child_mesh = commands
-        .spawn(MaterialMesh2dBundle {
-            mesh: Mesh2dHandle(rect),
-            material: materials.add(Color::rgba(0.0, 1.0, 0.0, 0.15)),
-            transform: Transform {
+        .spawn((
+            Mesh2d(rect),
+            MeshMaterial2d(materials.add(Color::srgba(0.0, 1.0, 0.0, 0.15))),
+            Transform {
                 translation: world_position,
                 ..Default::default()
             },
-            ..Default::default()
-        })
-        .insert(MarkerSquare)
+            MarkerSquare,
+        ))
         .id();
-    commands.entity(parent).push_children(&[child_mesh]);
+    commands.entity(parent).add_children(&[child_mesh]);
 }
 
 pub fn spawn_debug_markers(
@@ -88,19 +86,18 @@ pub fn spawn_debug_markers(
             world_position.z = 0.25;
 
             let child_mesh = commands
-                .spawn(MaterialMesh2dBundle {
-                    mesh: Mesh2dHandle(rect.clone()),
-                    material: materials.add(Color::rgba(0.0, 0.4, 0.8, 0.5)),
-                    transform: Transform {
+                .spawn((
+                    Mesh2d(rect.clone()),
+                    MeshMaterial2d(materials.add(Color::srgba(0.0, 0.4, 0.8, 0.5))),
+                    Transform {
                         translation: world_position,
                         ..Default::default()
                     },
-                    visibility: Visibility::Hidden,
-                    ..Default::default()
-                })
-                .insert(DebugSquare { row, col })
+                    Visibility::Hidden,
+                    DebugSquare { row, col },
+                ))
                 .id();
-            commands.entity(parent).push_children(&[child_mesh]);
+            commands.entity(parent).add_children(&[child_mesh]);
         }
     }
 }
@@ -125,7 +122,7 @@ pub fn update_debug_squares(
 
     //despawn entities used to find which squares to mark
     for (_, entity) in edm_query.iter_mut() {
-        commands.entity(entity).despawn_recursive();
+        commands.entity(entity).despawn();
     }
 }
 
@@ -138,7 +135,7 @@ pub fn update_marker_square(
 ) {
     if let Some(window) = q_windows.iter().next() {
         if let Some(cursor_position) = window.cursor_position() {
-            if let Ok((camera, camera_transform)) = q_camera.get_single() {
+            if let Ok((camera, camera_transform)) = q_camera.single() {
                 update_marker_position(
                     cursor_position,
                     &board_transform,

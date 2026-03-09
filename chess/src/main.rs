@@ -1,4 +1,4 @@
-use bevy::{audio::AudioPlugin, prelude::*, window::WindowResolution};
+use bevy::{audio::AudioPlugin, ecs::message::MessageWriter, prelude::*, window::WindowResolution};
 use bevy_fps_counter::FpsCounterPlugin;
 mod board;
 mod board_accessories;
@@ -48,7 +48,7 @@ fn main() {
                 title: "XavChess".to_string(),
                 resizable: true,
                 //mode: WindowMode::BorderlessFullscreen,
-                resolution: WindowResolution::new(1280., 1280.),
+                resolution: WindowResolution::new(1280, 1280),
                 prevent_default_event_handling: false,
                 present_mode: bevy::window::PresentMode::AutoNoVsync,
                 ..default()
@@ -84,12 +84,12 @@ fn main() {
         .run();
 }
 
-fn initialize_game(mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>) {
-    refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
+fn initialize_game(mut refresh_pieces_events: MessageWriter<RefreshPiecesFromBoardEvent>) {
+    refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.spawn(Camera2dBundle::default());
+    commands.spawn(Camera2d);
     //setup_ui(&mut commands);
     // Resources
 

@@ -1,7 +1,5 @@
-use bevy::{
-    ecs::{event::EventWriter, system::Res},
-    input::{keyboard::KeyCode, ButtonInput},
-};
+use bevy::prelude::*;
+use bevy::ecs::message::MessageWriter;
 use chess_board::FENParser;
 
 use crate::{
@@ -11,11 +9,11 @@ use crate::{
 
 pub fn handle_keyboard_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut chess_ew: EventWriter<ChessEvent>,
+    mut chess_ew: MessageWriter<ChessEvent>,
     chess_board: Res<ChessBoardRes>,
 ) {
     if keyboard_input.just_pressed(KeyCode::KeyU) {
-        chess_ew.send(ChessEvent::new(ChessAction::Undo));
+        chess_ew.write(ChessEvent::new(ChessAction::Undo));
     }
     if keyboard_input.just_pressed(KeyCode::KeyP) {
         println!("{}", FENParser::board_to_fen(&chess_board.chess_board))

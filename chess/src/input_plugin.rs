@@ -1,6 +1,4 @@
 use bevy::prelude::*;
-use bevy_async_task::AsyncTaskRunner;
-use chess_foundation::ChessMove;
 
 use crate::{
     chess_event_handler,
@@ -14,12 +12,12 @@ pub struct ChessInputPlugin;
 
 impl Plugin for ChessInputPlugin {
     fn build(&self, app: &mut App) {
-        app.add_event::<ChessEvent>()
-            .add_event::<ChessEvent>()
-            .add_event::<PickUpPieceEvent>()
-            .add_event::<DragPieceEvent>()
-            .add_event::<DropPieceEvent>()
-            .add_event::<RefreshPiecesFromBoardEvent>()
+        app.add_message::<ChessEvent>()
+            .add_message::<ChessEvent>()
+            .add_message::<PickUpPieceEvent>()
+            .add_message::<DragPieceEvent>()
+            .add_message::<DropPieceEvent>()
+            .add_message::<RefreshPiecesFromBoardEvent>()
             //.insert_resource(AsyncTaskRunner::<(i32, Option<ChessMove>)>::default) 
             .add_systems(
                 PreUpdate,

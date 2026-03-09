@@ -2,6 +2,7 @@ use bevy::{
     input::{mouse::MouseButton, touch::TouchPhase},
     prelude::*,
 };
+use bevy::ecs::message::{MessageReader, MessageWriter};
 use move_generator::move_generator::get_legal_move_list_from_square;
 
 use crate::{
@@ -42,36 +43,36 @@ impl Default for PieceIsPickedUp {
 }
 
 pub fn handle_touch_input(
-    mut chess_pickup_ew: EventWriter<PickUpPieceEvent>,
-    mut chess_drag_ew: EventWriter<DragPieceEvent>,
-    mut chess_drop_ew: EventWriter<DropPieceEvent>,
+    mut chess_pickup_ew: MessageWriter<PickUpPieceEvent>,
+    mut chess_drag_ew: MessageWriter<DragPieceEvent>,
+    mut chess_drop_ew: MessageWriter<DropPieceEvent>,
     piece_is_picked_up: Res<PieceIsPickedUp>,
-    mut touch_er: EventReader<TouchInput>,
+    mut touch_er: MessageReader<TouchInput>,
 ) {
     for ev in touch_er.read() {
         match ev.phase {
             TouchPhase::Started => {
                 if !piece_is_picked_up.is_dragging {
-                    chess_pickup_ew.send(PickUpPieceEvent {
+                    chess_pickup_ew.write(PickUpPieceEvent {
                         position: ev.position,
                     });
                 }
             }
             TouchPhase::Moved => {
-                chess_drag_ew.send(DragPieceEvent {
+                chess_drag_ew.write(DragPieceEvent {
                     position: ev.position,
                 });
             }
             TouchPhase::Ended => {
                 if piece_is_picked_up.is_dragging {
-                    chess_drop_ew.send(DropPieceEvent {
+                    chess_drop_ew.write(DropPieceEvent {
                         position: ev.position,
                     });
                 }
             }
             TouchPhase::Canceled => {
                 if piece_is_picked_up.is_dragging {
-                    chess_drop_ew.send(DropPieceEvent {
+                    chess_drop_ew.write(DropPieceEvent {
                         position: ev.position,
                     });
                 }
@@ -83,24 +84,24 @@ pub fn handle_touch_input(
 pub fn handle_mouse_input(
     q_windows: Query<&Window>,
     mouse_button_input: ResMut<'_, ButtonInput<MouseButton>>,
-    mut chess_pickup_ew: EventWriter<PickUpPieceEvent>,
-    mut chess_drag_ew: EventWriter<DragPieceEvent>,
-    mut chess_drop_ew: EventWriter<DropPieceEvent>,
+    mut chess_pickup_ew: MessageWriter<PickUpPieceEvent>,
+    mut chess_drag_ew: MessageWriter<DragPieceEvent>,
+    mut chess_drop_ew: MessageWriter<DropPieceEvent>,
 ) {
     if let Some(window) = q_windows.iter().next() {
         if let Some(cursor_position) = window.cursor_position() {
             if mouse_button_input.just_pressed(MouseButton::Left) {
-                chess_pickup_ew.send(PickUpPieceEvent {
+                chess_pickup_ew.write(PickUpPieceEvent {
                     position: cursor_position,
                 });
             } else if mouse_button_input.pressed(MouseButton::Left) {
-                chess_drag_ew.send(DragPieceEvent {
+                chess_drag_ew.write(DragPieceEvent {
                     position: cursor_position,
                 });
             }
 
             if mouse_button_input.just_released(MouseButton::Left) {
-                chess_drop_ew.send(DropPieceEvent {
+                chess_drop_ew.write(DropPieceEvent {
                     position: cursor_position,
                 });
             }
@@ -135,7 +136,7 @@ pub fn pick_up_piece(
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     magic_res: Res<PieceConductorRes>,
     mut commands: Commands,
-    mut chess_input_er: EventReader<PickUpPieceEvent>,
+    mut chess_input_er: MessageReader<PickUpPieceEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
 ) {
     let mut position = Option::None;
@@ -146,7 +147,7 @@ pub fn pick_up_piece(
         return;
     }
 
-    if let Ok((camera, camera_transform)) = q_camera.get_single() {
+    if let Ok((camera, camera_transform)) = q_camera.single() {
         let board_coords = get_board_coords_from_cursor(
             position.unwrap(),
             camera,
@@ -196,7 +197,7 @@ pub fn drag_piece(
     board_dimensions: Res<BoardDimensions>,
     piece_is_picked_up: ResMut<PieceIsPickedUp>,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
-    mut chess_input_er: EventReader<DragPieceEvent>,
+    mut chess_input_er: MessageReader<DragPieceEvent>,
 ) {
     let mut position = Option::None;
     for inp in chess_input_er.read() {
@@ -210,7 +211,7 @@ pub fn drag_piece(
         return;
     }
 
-    if let Ok((camera, camera_transform)) = q_camera.get_single() {
+    if let Ok((camera, camera_transform)) = q_camera.single() {
         if let Some(piece_entity) = piece_is_picked_up.piece_entity {
             if let Ok((_, mut transform, _)) = piece_query.get_mut(piece_entity) {
                 let board_coords = get_board_coords_from_cursor(
@@ -238,14 +239,14 @@ pub fn drop_piece(
     board_dimensions: Res<BoardDimensions>,
     mut piece_is_picked_up: ResMut<PieceIsPickedUp>,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
-    mut chess_input_er: EventReader<DropPieceEvent>,
+    mut chess_input_er: MessageReader<DropPieceEvent>,
     mut debug_squares_query: Query<(Entity, &DebugSquare)>,
     mut commands: Commands,
     sound_effects: Res<SoundEffects>,
     mut chess_board: ResMut<ChessBoardRes>,
-    mut refresh_pieces_events: EventWriter<RefreshPiecesFromBoardEvent>,
+    mut refresh_pieces_events: MessageWriter<RefreshPiecesFromBoardEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
-    mut game_event_ew: EventWriter<ChessEvent>,
+    mut game_event_ew: MessageWriter<ChessEvent>,
 ) {
     let mut position = Option::None;
     for inp in chess_input_er.read() {
@@ -258,12 +259,12 @@ pub fn drop_piece(
 
     if !piece_is_picked_up.is_dragging || piece_is_picked_up.piece_entity.is_none() {
         *piece_is_picked_up = PieceIsPickedUp::default();
-        refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
+        refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
         println!("Not dragging piece");
         return;
     }
 
-    if let Ok((camera, camera_transform)) = q_camera.get_single() {
+    if let Ok((camera, camera_transform)) = q_camera.single() {
         //hide debug squares
         for (entity, _) in debug_squares_query.iter_mut() {
             commands.entity(entity).insert(Visibility::Hidden);
@@ -302,7 +303,7 @@ pub fn drop_piece(
                         //trying to drop piece outside board, or same position as picked up
                         println!("invalid move!");
                         *piece_is_picked_up = PieceIsPickedUp::default();
-                        refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
+                        refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
                         return;
                     }
 
@@ -329,11 +330,11 @@ pub fn drop_piece(
                         }
                         println!("Released piece at row: {}, col: {}", row, col);
                     }
-                    refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
-                    game_event_ew.send(ChessEvent::new(ChessAction::MakeMove));
+                    refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
+                    game_event_ew.write(ChessEvent::new(ChessAction::MakeMove));
                 } else {
                     *piece_is_picked_up = PieceIsPickedUp::default();
-                    refresh_pieces_events.send(RefreshPiecesFromBoardEvent);
+                    refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
                 }
             }
         }

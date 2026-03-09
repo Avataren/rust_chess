@@ -1,4 +1,6 @@
-use bevy::{math::vec3, prelude::*, utils::HashMap};
+use bevy::{math::vec3, prelude::*};
+use bevy::ecs::message::MessageReader;
+use std::collections::HashMap;
 
 use crate::{
     board::{BoardDimensions, BoardTag, ChessBoardTransform},
@@ -53,6 +55,7 @@ pub fn get_board_coords_from_cursor(
 ) -> Option<Vec2> {
     camera
         .viewport_to_world(camera_transform, cursor_position)
+        .ok()
         .map(|ray| ray.origin.truncate())
         .map(|world_position| {
             let matrix = board_transform.transform.inverse();
@@ -75,13 +78,13 @@ pub fn spawn_chess_pieces(
     board_dimensions: Res<BoardDimensions>,
     query: Query<Entity, With<BoardTag>>,
     query_existing: Query<Entity, With<ChessPieceComponent>>,
-    mut refresh_pieces_events: EventReader<RefreshPiecesFromBoardEvent>,
+    mut refresh_pieces_events: MessageReader<RefreshPiecesFromBoardEvent>,
 ) {
     for _ev in refresh_pieces_events.read() {
         // //first clear all existing pieces
         let entities_to_despawn = query_existing.iter().collect::<Vec<Entity>>();
         for entity in entities_to_despawn {
-            commands.entity(entity).despawn_recursive();
+            commands.entity(entity).despawn();
         }
 
         let square_size = board_dimensions.square_size;
@@ -117,23 +120,25 @@ pub fn spawn_chess_pieces(
                 };
                 if let Some(texture_handle) = piece_textures.textures.get(piece_texture_key) {
                     let child_sprite = commands
-                        .spawn(SpriteBundle {
-                            texture: texture_handle.clone(),
-                            transform: Transform {
+                        .spawn((
+                            Sprite {
+                                image: texture_handle.clone(),
+                                ..Default::default()
+                            },
+                            Transform {
                                 translation: world_position,
                                 scale: vec3(CHESSPIECE_SCALE, CHESSPIECE_SCALE, 1.0),
                                 ..Default::default()
                             },
-                            ..Default::default()
-                        })
-                        .insert(ChessPieceComponent {
-                            piece_type: piece_char,
-                            row: row,
-                            col: col,
-                        })
+                            ChessPieceComponent {
+                                piece_type: piece_char,
+                                row: row,
+                                col: col,
+                            },
+                        ))
                         .id();
 
-                    commands.entity(parent).push_children(&[child_sprite]);
+                    commands.entity(parent).add_children(&[child_sprite]);
                 }
             }
         }

@@ -1,5 +1,6 @@
 //use web_sys; // Add this line to import the web_sys crate
-use bevy::{asset::Handle, audio::PlaybackMode, prelude::*, utils::HashMap};
+use bevy::{audio::PlaybackMode, prelude::*};
+use std::collections::HashMap;
 
 #[derive(Resource)]
 pub struct SoundEffects {
@@ -58,15 +59,14 @@ pub fn preload_sounds(
 pub fn spawn_sound(commands: &mut Commands, sound_effects: &SoundEffects, sound_name: &str) {
     if let Some(sound_handle) = sound_effects.sounds.get(sound_name) {
         commands
-            .spawn(AudioBundle {
-                source: sound_handle.clone(),
-                settings: PlaybackSettings {
+            .spawn((
+                AudioPlayer(sound_handle.clone()),
+                PlaybackSettings {
                     mode: PlaybackMode::Despawn,
                     ..Default::default()
                 },
-                ..Default::default()
-            })
-            .insert(SoundEffect);
+                SoundEffect,
+            ));
     }
 }
 

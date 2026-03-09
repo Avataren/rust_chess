@@ -1,4 +1,4 @@
-use bevy_tweening::{lens::TransformPositionLens, Animator, Tween, EaseFunction};
+use bevy_tweening::{lens::TransformPositionLens, TweenAnim, Tween};
 use bevy::prelude::*;
 use std::time::Duration;
 
@@ -12,5 +12,5 @@ fn animate_piece_move(commands: &mut Commands, entity: Entity, start_pos: Vec3, 
         },
     );
 
-    commands.entity(entity).insert(Animator::new(tween));
+    commands.entity(entity).insert(TweenAnim::new(tween));
 }
