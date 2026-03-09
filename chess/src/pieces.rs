@@ -11,6 +11,26 @@ use crate::{
 
 const CHESSPIECE_SCALE: f32 = 0.8;
 
+/// Keeps existing piece rotations in sync with the board rotation whenever
+/// `PlayerColor` changes.  Runs in the same chain as `resize_board` so both
+/// the board sprite and all piece sprites are updated in the same frame.
+pub fn sync_piece_rotations(
+    player_color: Res<PlayerColor>,
+    mut piece_query: Query<&mut Transform, With<ChessPieceComponent>>,
+) {
+    if !player_color.is_changed() {
+        return;
+    }
+    let rotation = if *player_color == PlayerColor::Black {
+        Quat::from_rotation_z(std::f32::consts::PI)
+    } else {
+        Quat::IDENTITY
+    };
+    for mut transform in piece_query.iter_mut() {
+        transform.rotation = rotation;
+    }
+}
+
 #[derive(Resource)]
 pub struct PieceTextures {
     pub textures: HashMap<String, Handle<Image>>,

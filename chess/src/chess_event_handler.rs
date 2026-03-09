@@ -14,8 +14,9 @@ use std::time::Duration;
 use crate::{
     board::BoardDimensions,
     game_events::{ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
-    game_resources::{CurrentOpening, GameOverState, GamePhase, IsAiThinking, LastMove, OpeningBookRes, PendingGameOver, PlayerColor},
+    game_resources::{CurrentOpening, Difficulty, GameOverState, GamePhase, IsAiThinking, LastMove, OpeningBookRes, PendingGameOver, PlayerColor},
     pieces::ChessPieceComponent,
+    sound::{spawn_sound, SoundEffects},
     ChessBoardRes, PieceConductorRes,
 };
 
@@ -75,6 +76,8 @@ pub fn handle_async_moves(
     game_phase: Res<GamePhase>,
     opening_book: Res<OpeningBookRes>,
     mut is_ai_thinking: ResMut<IsAiThinking>,
+    sound_effects: Res<SoundEffects>,
+    difficulty: Res<Difficulty>,
 ) {
     if task_executor.is_idle() {
         // Task is idle — check for new chess events to start a task
@@ -87,12 +90,13 @@ pub fn handle_async_moves(
                 let mut chess_board_clone = chess_board.chess_board.clone();
                 let move_generator_clone = move_generator.magic.clone();
                 let book_clone = opening_book.book.clone();
+                let depth = difficulty.search_depth();
                 task_executor.start(async move {
                     alpha_beta_task(
                         &mut chess_board_clone,
                         &move_generator_clone,
                         &book_clone,
-                        6,           // depth
+                        depth,
                         ai_is_white,
                     )
                     .await
@@ -143,6 +147,17 @@ pub fn handle_async_moves(
             if chess_board.chess_board.make_move(&mut engine_move) {
                 last_move.start_square = Some(engine_move.start_square());
                 last_move.target_square = Some(engine_move.target_square());
+
+                let sound = if engine_move.has_flag(ChessMove::CASTLE_FLAG) {
+                    "castle.ogg"
+                } else if engine_move.capture.is_some() {
+                    "capture.ogg"
+                } else if move_generator.magic.is_king_in_check(&chess_board.chess_board, player_is_white) {
+                    "move-check.ogg"
+                } else {
+                    "notify.ogg"
+                };
+                spawn_sound(&mut commands, &sound_effects, sound);
 
                 // Check if the player has any legal moves after AI's move.
                 // Store result as pending — the overlay will appear after the tween finishes.

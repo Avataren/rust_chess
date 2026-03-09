@@ -63,3 +63,21 @@ pub struct CurrentOpening(pub String);
 /// True while the AI search task is running.
 #[derive(Resource, Default)]
 pub struct IsAiThinking(pub bool);
+
+#[derive(Resource, Default, PartialEq, Debug, Clone, Copy)]
+pub enum Difficulty {
+    Easy,
+    #[default]
+    Medium,
+    Hard,
+}
+
+impl Difficulty {
+    pub fn search_depth(self) -> i32 {
+        match self {
+            Difficulty::Easy   => 2,
+            Difficulty::Medium => 4,
+            Difficulty::Hard   => 6,
+        }
+    }
+}
