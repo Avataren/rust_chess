@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use crate::{
     board::{BoardDimensions, BoardTag, ChessBoardTransform},
     game_events::RefreshPiecesFromBoardEvent,
+    game_resources::PlayerColor,
     ChessBoardRes,
 };
 
@@ -79,6 +80,7 @@ pub fn spawn_chess_pieces(
     query: Query<Entity, With<BoardTag>>,
     query_existing: Query<Entity, With<ChessPieceComponent>>,
     mut refresh_pieces_events: MessageReader<RefreshPiecesFromBoardEvent>,
+    player_color: Res<PlayerColor>,
 ) {
     for _ev in refresh_pieces_events.read() {
         // //first clear all existing pieces
@@ -119,6 +121,11 @@ pub fn spawn_chess_pieces(
                     _ => continue,
                 };
                 if let Some(texture_handle) = piece_textures.textures.get(piece_texture_key) {
+                    let piece_rotation = if *player_color == PlayerColor::Black {
+                        Quat::from_rotation_z(std::f32::consts::PI)
+                    } else {
+                        Quat::IDENTITY
+                    };
                     let child_sprite = commands
                         .spawn((
                             Sprite {
@@ -128,7 +135,7 @@ pub fn spawn_chess_pieces(
                             Transform {
                                 translation: world_position,
                                 scale: vec3(CHESSPIECE_SCALE, CHESSPIECE_SCALE, 1.0),
-                                ..Default::default()
+                                rotation: piece_rotation,
                             },
                             ChessPieceComponent {
                                 piece_type: piece_char,

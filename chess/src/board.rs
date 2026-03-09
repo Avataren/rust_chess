@@ -1,5 +1,6 @@
 use bevy::{prelude::*, window::WindowResized};
 use bevy::ecs::message::MessageReader;
+use crate::game_resources::PlayerColor;
 
 #[derive(Component)]
 pub struct ResolutionText;
@@ -71,6 +72,7 @@ pub fn resize_board(
     mut board_query: Query<(&mut Transform, &Sprite), With<BoardTag>>,
     images: Res<Assets<Image>>,
     mut board_transform: ResMut<ChessBoardTransform>,
+    player_color: Res<PlayerColor>,
     //mut q: Query<&mut Text, With<ResolutionText>>,
     _time: Res<Time>,
 ) {
@@ -87,6 +89,11 @@ pub fn resize_board(
 
             board_dimensions.scale_factor = scale;
             transform.scale = Vec3::new(scale, scale, 1.0);
+            transform.rotation = if *player_color == PlayerColor::Black {
+                Quat::from_rotation_z(std::f32::consts::PI)
+            } else {
+                Quat::IDENTITY
+            };
 
             // let seconds = time.elapsed_seconds() as f32;
             // let angle_radians = (seconds * 6.0).to_radians();
