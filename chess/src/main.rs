@@ -6,6 +6,7 @@ mod chess_event_handler;
 mod game_events;
 mod game_over_ui;
 mod game_resources;
+mod opening_name_ui;
 mod start_screen_ui;
 mod keyboard_input;
 mod piece_picker;
@@ -21,7 +22,7 @@ use embed_plugin::EmbeddedAssetPlugin;
 use game_events::{
    RefreshPiecesFromBoardEvent,
 };
-use game_resources::{GameOverState, GamePhase, OpeningBookRes, PendingGameOver, PlayerColor};
+use game_resources::{CurrentOpening, GameOverState, GamePhase, OpeningBookRes, PendingGameOver, PlayerColor};
 use input_plugin::ChessInputPlugin;
 use move_generator::piece_conductor::PieceConductor;
 use preload_assets_plugin::PreloadAssetsPlugin;
@@ -73,6 +74,7 @@ fn main() {
                 board_accessories::spawn_last_move_highlights,
                 game_over_ui::spawn_game_over_ui,
                 start_screen_ui::spawn_start_screen,
+                opening_name_ui::spawn_opening_name_ui,
             )
         )
         .add_systems(
@@ -87,6 +89,8 @@ fn main() {
                 chess_event_handler::on_tween_completed,
                 game_over_ui::update_game_over_ui,
                 start_screen_ui::update_start_screen_visibility,
+                opening_name_ui::detect_opening,
+                opening_name_ui::update_opening_name_ui,
             ).chain(),
         )
         .add_systems(
@@ -118,6 +122,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(PendingGameOver::default());
     commands.insert_resource(PlayerColor::default());
     commands.insert_resource(GamePhase::default());
+    commands.insert_resource(CurrentOpening::default());
     commands.insert_resource(ResolutionInfo {
         width: 1280.0,
         height: 1080.0,

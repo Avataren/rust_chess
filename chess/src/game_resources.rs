@@ -54,3 +54,7 @@ pub enum GamePhase {
 pub struct OpeningBookRes {
     pub book: OpeningBook,
 }
+
+/// Tracks the last detected opening name, persisted until a new one is found.
+#[derive(Resource, Default)]
+pub struct CurrentOpening(pub String);

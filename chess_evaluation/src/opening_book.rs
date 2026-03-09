@@ -175,6 +175,59 @@ const OPENING_LINES: &[&[&str]] = &[
     &["d2d4", "g8f6", "g1f3", "d7d5", "c1f4", "e7e6"],
 ];
 
+/// Named openings: (display_name, characteristic_line).
+/// The hash of the position AFTER playing the full line is stored so that
+/// `probe_name` can identify the opening by board state.
+const NAMED_OPENINGS: &[(&str, &[&str])] = &[
+    // First moves
+    ("King's Pawn Opening",   &["e2e4"]),
+    ("Queen's Pawn Opening",  &["d2d4"]),
+    // 1.e4 e5
+    ("Open Game",             &["e2e4", "e7e5"]),
+    ("King's Knight Opening", &["e2e4", "e7e5", "g1f3"]),
+    ("Ruy Lopez",             &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"]),
+    ("Ruy Lopez, Morphy",     &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6"]),
+    ("Italian Game",          &["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"]),
+    ("Giuoco Piano",          &["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "f8c5"]),
+    ("Two Knights Defense",   &["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6"]),
+    ("Petrov Defense",        &["e2e4", "e7e5", "g1f3", "g8f6"]),
+    ("Vienna Game",           &["e2e4", "e7e5", "b1c3"]),
+    // 1.e4 c5
+    ("Sicilian Defense",      &["e2e4", "c7c5"]),
+    ("Sicilian, Open",        &["e2e4", "c7c5", "g1f3", "d7d6", "d2d4", "c5d4", "f3d4"]),
+    ("Sicilian, Najdorf",     &["e2e4", "c7c5", "g1f3", "d7d6", "d2d4", "c5d4", "f3d4", "g8f6", "b1c3"]),
+    ("Sicilian, Classical",   &["e2e4", "c7c5", "g1f3", "b8c6", "d2d4", "c5d4", "f3d4"]),
+    ("Sicilian, Scheveningen", &["e2e4", "c7c5", "g1f3", "e7e6", "d2d4", "c5d4", "f3d4"]),
+    ("Sicilian, Closed",      &["e2e4", "c7c5", "b1c3"]),
+    // 1.e4 e6
+    ("French Defense",        &["e2e4", "e7e6"]),
+    ("French, Classical",     &["e2e4", "e7e6", "d2d4", "d7d5", "b1c3"]),
+    ("French, Winawer",       &["e2e4", "e7e6", "d2d4", "d7d5", "b1c3", "f8b4"]),
+    ("French, Advance",       &["e2e4", "e7e6", "d2d4", "d7d5", "e4e5"]),
+    ("French, Tarrasch",      &["e2e4", "e7e6", "d2d4", "d7d5", "b1d2"]),
+    // 1.e4 d5/c6/Nf6/g6
+    ("Scandinavian Defense",      &["e2e4", "d7d5"]),
+    ("Scandinavian, Main Line",   &["e2e4", "d7d5", "e4d5", "d8d5", "b1c3"]),
+    ("Caro-Kann Defense",         &["e2e4", "c7c6"]),
+    ("Caro-Kann, Classical",      &["e2e4", "c7c6", "d2d4", "d7d5", "b1c3", "d5e4"]),
+    ("Caro-Kann, Advance",        &["e2e4", "c7c6", "d2d4", "d7d5", "e4e5"]),
+    ("Alekhine Defense",          &["e2e4", "g8f6"]),
+    ("Pirc Defense",              &["e2e4", "g7g6", "d2d4"]),
+    // 1.d4
+    ("Queen's Gambit",            &["d2d4", "d7d5", "c2c4"]),
+    ("Queen's Gambit Declined",   &["d2d4", "d7d5", "c2c4", "e7e6"]),
+    ("QGD, Orthodox",             &["d2d4", "d7d5", "c2c4", "e7e6", "b1c3", "g8f6", "g1f3"]),
+    ("Slav Defense",              &["d2d4", "d7d5", "c2c4", "c7c6"]),
+    ("Queen's Gambit Accepted",   &["d2d4", "d7d5", "c2c4", "d5c4"]),
+    ("London System",             &["d2d4", "d7d5", "g1f3", "g8f6", "c1f4"]),
+    ("King's Indian Defense",     &["d2d4", "g8f6", "c2c4", "g7g6"]),
+    ("King's Indian, Classical",  &["d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "f8g7", "e2e4"]),
+    ("Nimzo-Indian Defense",      &["d2d4", "g8f6", "c2c4", "e7e6", "b1c3", "f8b4"]),
+    ("Queen's Indian Defense",    &["d2d4", "g8f6", "c2c4", "e7e6", "g1f3", "b7b6"]),
+    ("Grünfeld Defense",          &["d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "d7d5"]),
+    ("Dutch Defense",             &["d2d4", "f7f5"]),
+];
+
 /// A compact opening book built from hard-coded GM-repertoire lines.
 /// The book maps each encountered position (by Zobrist hash) to a list of
 /// known responses. On a cache hit, one response is chosen uniformly at random.
@@ -183,6 +236,8 @@ pub struct OpeningBook {
     table: [u64; ZOBRIST_SIZE],
     /// Zobrist hash → [(from_square, to_square)]
     positions: HashMap<u64, Vec<(u16, u16)>>,
+    /// Zobrist hash → opening name for named landmark positions
+    names: HashMap<u64, &'static str>,
 }
 
 impl OpeningBook {
@@ -222,9 +277,33 @@ impl OpeningBook {
             }
         }
 
+        // Build named-position map: replay each named line, store the final hash.
+        let mut names: HashMap<u64, &'static str> = HashMap::new();
+        for &(name, line) in NAMED_OPENINGS {
+            let mut board = ChessBoard::new();
+            for &uci in line {
+                let is_white = board.is_white_active();
+                let parsed = ChessMove::from_san(uci);
+                let from = parsed.start_square();
+                let to = parsed.target_square();
+                let legal = get_all_legal_moves_for_color(&mut board, conductor, is_white);
+                if let Some(mut m) = legal
+                    .into_iter()
+                    .find(|m| m.start_square() == from && m.target_square() == to)
+                {
+                    board.make_move(&mut m);
+                } else {
+                    eprintln!("Named opening '{name}': move {uci} not legal");
+                    break;
+                }
+            }
+            names.insert(zobrist_hash(&board, &table), name);
+        }
+
         let n_positions = positions.len();
-        println!("Opening book built: {n_positions} positions");
-        OpeningBook { table, positions }
+        let n_names = names.len();
+        println!("Opening book: {n_positions} book positions, {n_names} named openings");
+        OpeningBook { table, positions, names }
     }
 
     /// Probe the book for the current position.
@@ -233,5 +312,12 @@ impl OpeningBook {
         let hash = zobrist_hash(board, &self.table);
         let moves = self.positions.get(&hash)?;
         moves.choose(&mut rand::thread_rng()).copied()
+    }
+
+    /// Return the opening name if the current position is a named landmark.
+    /// Returns `None` between landmarks — callers should keep the last name.
+    pub fn probe_name(&self, board: &ChessBoard) -> Option<&'static str> {
+        let hash = zobrist_hash(board, &self.table);
+        self.names.get(&hash).copied()
     }
 }

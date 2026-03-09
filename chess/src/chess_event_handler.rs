@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::{
     board::BoardDimensions,
     game_events::{ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
-    game_resources::{GameOverState, GamePhase, LastMove, OpeningBookRes, PendingGameOver, PlayerColor},
+    game_resources::{CurrentOpening, GameOverState, GamePhase, LastMove, OpeningBookRes, PendingGameOver, PlayerColor},
     pieces::ChessPieceComponent,
     ChessBoardRes, PieceConductorRes,
 };
@@ -91,7 +91,7 @@ pub fn handle_async_moves(
                         &mut chess_board_clone,
                         &move_generator_clone,
                         &book_clone,
-                        5,           // depth
+                        6,           // depth
                         ai_is_white,
                     )
                     .await
@@ -201,6 +201,7 @@ pub fn handle_chess_events(
     mut last_move: ResMut<LastMove>,
     mut pending_game_over: ResMut<PendingGameOver>,
     mut game_phase: ResMut<GamePhase>,
+    mut current_opening: ResMut<CurrentOpening>,
 ) {
     for event in chess_ew.read() {
         match event.action {
@@ -216,6 +217,7 @@ pub fn handle_chess_events(
                 pending_game_over.0 = None;
                 *last_move = LastMove::default();
                 *game_phase = GamePhase::StartScreen;
+                current_opening.0.clear();
                 refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
             }
             _ => {}
