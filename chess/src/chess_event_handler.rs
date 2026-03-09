@@ -4,7 +4,7 @@ use bevy_async_task::TaskRunner;
 use bevy_tweening::{lens::TransformPositionLens, *};
 use std::task::Poll;
 use chess_board::ChessBoard;
-use chess_evaluation::alpha_beta;
+use chess_evaluation::alpha_beta_root;
 use chess_foundation::ChessMove;
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
@@ -51,14 +51,12 @@ pub fn on_tween_completed(
 }
 
 async fn alpha_beta_task(
-    mut chess_board: &mut ChessBoard, // Note: Pass ownership, avoid &mut
-    conductor: &PieceConductor, // Avoid &mut, ensure these types are Clone or otherwise cheap to move
+    chess_board: &mut ChessBoard,
+    conductor: &PieceConductor,
     depth: i32,
-    alpha: i32,
-    beta: i32,
     is_white: bool,
 ) -> (i32, Option<ChessMove>) {
-    alpha_beta(&mut chess_board, &conductor, depth, alpha, beta, is_white)
+    alpha_beta_root(chess_board, conductor, depth, is_white)
 }
 
 pub fn handle_async_moves(
@@ -89,9 +87,7 @@ pub fn handle_async_moves(
                     alpha_beta_task(
                         &mut chess_board_clone,
                         &move_generator_clone,
-                        5,        // depth
-                        i32::MIN, // alpha
-                        i32::MAX, // beta
+                        5,           // depth
                         ai_is_white,
                     )
                     .await
