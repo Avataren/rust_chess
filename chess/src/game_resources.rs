@@ -15,3 +15,9 @@ impl ValidMoves {
         self.moves = moves;
     }
 }
+
+#[derive(Resource, Default)]
+pub struct LastMove {
+    pub start_square: Option<u16>,
+    pub target_square: Option<u16>,
+}

@@ -5,10 +5,17 @@ use bevy::{
 
 use crate::{
     board::{BoardDimensions, BoardTag, ChessBoardTransform},
+    game_resources::LastMove,
     pieces::{chess_coord_to_board, get_board_coords_from_cursor},
 };
 
 use chess_foundation::{board_helper::square_index_to_board_row_col, ChessMove};
+
+/// Highlights the start or destination square of the opponent's last move.
+#[derive(Component)]
+pub struct LastMoveHighlight {
+    pub is_start: bool,
+}
 
 /// Updates the position of the marker square based on the current cursor position.
 #[derive(Component)]
@@ -123,6 +130,64 @@ pub fn update_debug_squares(
     //despawn entities used to find which squares to mark
     for (_, entity) in edm_query.iter_mut() {
         commands.entity(entity).despawn();
+    }
+}
+
+pub fn spawn_last_move_highlights(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    board_dimensions: Res<BoardDimensions>,
+    query: Query<Entity, With<BoardTag>>,
+) {
+    let parent = query.iter().next().unwrap();
+    let square_size = board_dimensions.square_size;
+    let rect = meshes.add(Rectangle::new(square_size, square_size));
+    let color = materials.add(Color::srgba(0.9, 0.75, 0.1, 0.55));
+
+    for is_start in [true, false] {
+        let child = commands
+            .spawn((
+                Mesh2d(rect.clone()),
+                MeshMaterial2d(color.clone()),
+                Transform::from_translation(Vec3::ZERO),
+                Visibility::Hidden,
+                LastMoveHighlight { is_start },
+            ))
+            .id();
+        commands.entity(parent).add_children(&[child]);
+    }
+}
+
+pub fn update_last_move_highlights(
+    last_move: Res<LastMove>,
+    board_dimensions: Res<BoardDimensions>,
+    mut query: Query<(&mut Transform, &mut Visibility, &LastMoveHighlight)>,
+) {
+    if !last_move.is_changed() && !board_dimensions.is_changed() {
+        return;
+    }
+    let sq_size = board_dimensions.square_size;
+    let board_offset = Vec3::new(
+        -board_dimensions.board_size.x / 2.0,
+        board_dimensions.board_size.y / 2.0,
+        0.0,
+    );
+    for (mut transform, mut visibility, highlight) in query.iter_mut() {
+        let square = if highlight.is_start {
+            last_move.start_square
+        } else {
+            last_move.target_square
+        };
+        if let Some(sq) = square {
+            let col = (sq % 8) as usize;
+            let row = 7 - (sq / 8) as usize;
+            let pos = chess_coord_to_board(row, col, sq_size, board_offset);
+            transform.translation = Vec3::new(pos.x, pos.y, 0.15);
+            *visibility = Visibility::Visible;
+        } else {
+            *visibility = Visibility::Hidden;
+        }
     }
 }
 

@@ -14,6 +14,7 @@ use std::time::Duration;
 use crate::{
     board::BoardDimensions,
     game_events::{ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
+    game_resources::LastMove,
     pieces::ChessPieceComponent,
     ChessBoardRes, PieceConductorRes,
 };
@@ -63,6 +64,7 @@ pub fn handle_async_moves(
     move_generator: ResMut<PieceConductorRes>,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     mut chess_ew: MessageReader<ChessEvent>,
+    mut last_move: ResMut<LastMove>,
 ) {
     if task_executor.is_idle() {
         // Task is idle — check for new chess events to start a task
@@ -116,6 +118,8 @@ pub fn handle_async_moves(
 
             // if let Some(engine_move) = moves.choose(&mut rand::thread_rng()) {
             if chess_board.chess_board.make_move(&mut engine_move) {
+                last_move.start_square = Some(engine_move.start_square());
+                last_move.target_square = Some(engine_move.target_square());
                 // Inside the 'if let Some(engine_move) = moves.choose(&mut rand::thread_rng())' block
                 let start_local_position = get_local_position_from_board_coords(
                     engine_move.start_square() % 8,

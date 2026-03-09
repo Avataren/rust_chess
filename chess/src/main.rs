@@ -67,6 +67,7 @@ fn main() {
                 initialize_game,
                 board_accessories::spawn_board_accessories,
                 board_accessories::spawn_debug_markers,
+                board_accessories::spawn_last_move_highlights,
             )
         )
         .add_systems(
@@ -74,7 +75,8 @@ fn main() {
             (
                 board::handle_resize_event,
                 board::resize_board,
-                
+
+                board_accessories::update_last_move_highlights,
                 board_accessories::update_marker_square,
                 board_accessories::update_debug_squares,
                 chess_event_handler::on_tween_completed,
@@ -97,6 +99,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(board::BoardDimensions::default());
     commands.insert_resource(pieces::PieceTextures::default());
     commands.insert_resource(game_resources::ValidMoves::new());
+    commands.insert_resource(game_resources::LastMove::default());
     commands.insert_resource(ResolutionInfo {
         width: 1280.0,
         height: 1080.0,
