@@ -5,7 +5,7 @@ use move_generator::{
 };
 use rand::seq::SliceRandom;
 
-use crate::evaluate_board;
+use crate::{evaluate_board, opening_book::OpeningBook};
 
 /// Continues searching capture-only moves after the main search depth is
 /// exhausted, so we never evaluate a position mid-capture-sequence.
@@ -136,8 +136,7 @@ pub fn alpha_beta(
     }
 }
 
-/// Root-level search. Collects all moves that score equally and picks one
-/// at random, preventing the engine from always playing identically.
+/// Root-level search. Probes the opening book first; falls back to alpha-beta.
 ///
 /// Each root move is searched with a fresh [MIN, MAX] window so that fail-hard
 /// alpha-beta doesn't mask the true score of later moves. Without this, a move
@@ -146,9 +145,24 @@ pub fn alpha_beta(
 pub fn alpha_beta_root(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
+    book: Option<&OpeningBook>,
     depth: i32,
     is_white: bool,
 ) -> (i32, Option<ChessMove>) {
+    // Opening book probe: if we get a hit, find the matching legal move and return it.
+    if let Some(book) = book {
+        if let Some((from, to)) = book.probe(chess_board) {
+            let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+            if let Some(book_move) = legal
+                .into_iter()
+                .find(|m| m.start_square() == from && m.target_square() == to)
+            {
+                println!("Book move: {}", book_move.to_san_simple());
+                return (0, Some(book_move));
+            }
+        }
+    }
+
     let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board), None);

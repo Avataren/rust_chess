@@ -21,7 +21,7 @@ use embed_plugin::EmbeddedAssetPlugin;
 use game_events::{
    RefreshPiecesFromBoardEvent,
 };
-use game_resources::{GameOverState, GamePhase, PendingGameOver, PlayerColor};
+use game_resources::{GameOverState, GamePhase, OpeningBookRes, PendingGameOver, PlayerColor};
 use input_plugin::ChessInputPlugin;
 use move_generator::piece_conductor::PieceConductor;
 use preload_assets_plugin::PreloadAssetsPlugin;
@@ -142,6 +142,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 
     let magic = PieceConductor::new();
+    let book = chess_evaluation::OpeningBook::build(&magic);
+    commands.insert_resource(OpeningBookRes { book });
     commands.insert_resource(PieceConductorRes { magic });
 
     board::spawn_board(&mut commands, asset_server);

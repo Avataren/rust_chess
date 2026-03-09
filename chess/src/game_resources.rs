@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use chess_evaluation::OpeningBook;
 use chess_foundation::ChessMove;
 
 #[derive(Resource)]
@@ -47,4 +48,9 @@ pub enum GamePhase {
     #[default]
     StartScreen,
     Playing,
+}
+
+#[derive(Resource)]
+pub struct OpeningBookRes {
+    pub book: OpeningBook,
 }

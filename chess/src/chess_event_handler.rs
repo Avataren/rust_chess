@@ -4,7 +4,7 @@ use bevy_async_task::TaskRunner;
 use bevy_tweening::{lens::TransformPositionLens, *};
 use std::task::Poll;
 use chess_board::ChessBoard;
-use chess_evaluation::alpha_beta_root;
+use chess_evaluation::{alpha_beta_root, OpeningBook};
 use chess_foundation::ChessMove;
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::{
     board::BoardDimensions,
     game_events::{ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
-    game_resources::{GameOverState, GamePhase, LastMove, PendingGameOver, PlayerColor},
+    game_resources::{GameOverState, GamePhase, LastMove, OpeningBookRes, PendingGameOver, PlayerColor},
     pieces::ChessPieceComponent,
     ChessBoardRes, PieceConductorRes,
 };
@@ -53,10 +53,11 @@ pub fn on_tween_completed(
 async fn alpha_beta_task(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
+    book: &OpeningBook,
     depth: i32,
     is_white: bool,
 ) -> (i32, Option<ChessMove>) {
-    alpha_beta_root(chess_board, conductor, depth, is_white)
+    alpha_beta_root(chess_board, conductor, Some(book), depth, is_white)
 }
 
 pub fn handle_async_moves(
@@ -72,6 +73,7 @@ pub fn handle_async_moves(
     mut pending_game_over: ResMut<PendingGameOver>,
     player_color: Res<PlayerColor>,
     game_phase: Res<GamePhase>,
+    opening_book: Res<OpeningBookRes>,
 ) {
     if task_executor.is_idle() {
         // Task is idle — check for new chess events to start a task
@@ -83,10 +85,12 @@ pub fn handle_async_moves(
                 let ai_is_white = *player_color == PlayerColor::Black;
                 let mut chess_board_clone = chess_board.chess_board.clone();
                 let move_generator_clone = move_generator.magic.clone();
+                let book_clone = opening_book.book.clone();
                 task_executor.start(async move {
                     alpha_beta_task(
                         &mut chess_board_clone,
                         &move_generator_clone,
+                        &book_clone,
                         5,           // depth
                         ai_is_white,
                     )
