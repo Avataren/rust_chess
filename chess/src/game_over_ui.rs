@@ -1,5 +1,6 @@
-use bevy::prelude::*;
+use bevy::{ecs::message::MessageWriter, prelude::*};
 
+use crate::game_events::{ChessAction, ChessEvent};
 use crate::game_resources::GameOverState;
 
 #[derive(Component)]
@@ -35,7 +36,7 @@ pub fn spawn_game_over_ui(mut commands: Commands) {
                 GameOverText,
             ));
             parent.spawn((
-                Text::new("Press R to restart"),
+                Text::new("Press any key to continue"),
                 TextFont {
                     font_size: 36.0,
                     ..default()
@@ -64,5 +65,19 @@ pub fn update_game_over_ui(
     }
     for mut text in text_query.iter_mut() {
         **text = message.to_string();
+    }
+}
+
+/// When game is over, any key press returns to the start screen.
+pub fn handle_game_over_input(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    game_over_state: Res<GameOverState>,
+    mut chess_ew: MessageWriter<ChessEvent>,
+) {
+    if *game_over_state == GameOverState::Playing {
+        return;
+    }
+    if keyboard_input.get_just_pressed().next().is_some() {
+        chess_ew.write(ChessEvent::new(ChessAction::Restart));
     }
 }

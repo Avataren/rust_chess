@@ -12,11 +12,18 @@ use crate::{
         ChessAction, ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent,
         RefreshPiecesFromBoardEvent,
     },
-    game_resources::{GameOverState, ValidMoves},
+    game_resources::{GameOverState, GamePhase, PlayerColor, ValidMoves},
     pieces::{get_board_coords_from_cursor, ChessPieceComponent},
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, PieceConductorRes,
 };
+
+fn is_player_piece(piece_char: char, player_color: PlayerColor) -> bool {
+    match player_color {
+        PlayerColor::White => piece_char.is_uppercase(),
+        PlayerColor::Black => piece_char.is_lowercase(),
+    }
+}
 use chess_foundation::{board_helper::board_row_col_to_square_index, Bitboard};
 
 #[derive(Resource)]
@@ -139,6 +146,8 @@ pub fn pick_up_piece(
     mut chess_input_er: MessageReader<PickUpPieceEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
     game_over_state: Res<GameOverState>,
+    game_phase: Res<GamePhase>,
+    player_color: Res<PlayerColor>,
 ) {
     let mut position = Option::None;
     for inp in chess_input_er.read() {
@@ -147,7 +156,7 @@ pub fn pick_up_piece(
     if position.is_none() {
         return;
     }
-    if *game_over_state != GameOverState::Playing {
+    if *game_phase != GamePhase::Playing || *game_over_state != GameOverState::Playing {
         return;
     }
 
@@ -167,7 +176,11 @@ pub fn pick_up_piece(
             // spawn debug pieces
             if let Some((entity, transform, chess_piece)) = piece_query
                 .iter_mut()
-                .find(|(_, _, chess_piece)| chess_piece.row == row && chess_piece.col == col)
+                .find(|(_, _, chess_piece)| {
+                    chess_piece.row == row
+                        && chess_piece.col == col
+                        && is_player_piece(chess_piece.piece_type, *player_color)
+                })
             {
                 piece_is_picked_up.piece_type = Some(chess_piece.piece_type);
                 piece_is_picked_up.original_row_col = (row, col);
@@ -252,6 +265,7 @@ pub fn drop_piece(
     mut valid_moves_res: ResMut<ValidMoves>,
     mut game_event_ew: MessageWriter<ChessEvent>,
     game_over_state: Res<GameOverState>,
+    game_phase: Res<GamePhase>,
 ) {
     let mut position = Option::None;
     for inp in chess_input_er.read() {
@@ -261,7 +275,7 @@ pub fn drop_piece(
     if position.is_none() {
         return;
     }
-    if *game_over_state != GameOverState::Playing {
+    if *game_phase != GamePhase::Playing || *game_over_state != GameOverState::Playing {
         *piece_is_picked_up = PieceIsPickedUp::default();
         return;
     }

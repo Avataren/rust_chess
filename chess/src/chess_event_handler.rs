@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::{
     board::BoardDimensions,
     game_events::{ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
-    game_resources::{GameOverState, LastMove, PendingGameOver},
+    game_resources::{GameOverState, GamePhase, LastMove, PendingGameOver, PlayerColor},
     pieces::ChessPieceComponent,
     ChessBoardRes, PieceConductorRes,
 };
@@ -72,14 +72,17 @@ pub fn handle_async_moves(
     mut last_move: ResMut<LastMove>,
     mut game_over_state: ResMut<GameOverState>,
     mut pending_game_over: ResMut<PendingGameOver>,
+    player_color: Res<PlayerColor>,
+    game_phase: Res<GamePhase>,
 ) {
     if task_executor.is_idle() {
         // Task is idle — check for new chess events to start a task
         for event in chess_ew.read() {
             if let ChessAction::MakeMove = event.action {
-                if *game_over_state != GameOverState::Playing {
+                if *game_over_state != GameOverState::Playing || *game_phase != GamePhase::Playing {
                     break;
                 }
+                let ai_is_white = *player_color == PlayerColor::Black;
                 let mut chess_board_clone = chess_board.chess_board.clone();
                 let move_generator_clone = move_generator.magic.clone();
                 task_executor.start(async move {
@@ -89,7 +92,7 @@ pub fn handle_async_moves(
                         5,        // depth
                         i32::MIN, // alpha
                         i32::MAX, // beta
-                        false,    // is_white
+                        ai_is_white,
                     )
                     .await
                 });
@@ -109,15 +112,18 @@ pub fn handle_async_moves(
         }
         Poll::Ready((score, mut best_move)) => {
             println!("Received score {score}");
+            let ai_is_white = *player_color == PlayerColor::Black;
+            let player_is_white = !ai_is_white;
+
             if best_move.is_none() {
                 let all_moves = get_all_legal_moves_for_color(
                     &mut chess_board.chess_board,
                     &move_generator.magic,
-                    false,
+                    ai_is_white,
                 );
                 if all_moves.is_empty() {
-                    // Black has no moves: checkmate or stalemate (no piece animation needed)
-                    if move_generator.magic.is_king_in_check(&chess_board.chess_board, false) {
+                    // AI has no moves: player wins or stalemate (no piece animation needed)
+                    if move_generator.magic.is_king_in_check(&chess_board.chess_board, ai_is_white) {
                         println!("Checkmate — player wins!");
                         *game_over_state = GameOverState::PlayerWins;
                     } else {
@@ -136,15 +142,15 @@ pub fn handle_async_moves(
                 last_move.start_square = Some(engine_move.start_square());
                 last_move.target_square = Some(engine_move.target_square());
 
-                // Check if white (player) has any legal moves after AI's move.
+                // Check if the player has any legal moves after AI's move.
                 // Store result as pending — the overlay will appear after the tween finishes.
-                let white_moves = get_all_legal_moves_for_color(
+                let player_moves = get_all_legal_moves_for_color(
                     &mut chess_board.chess_board,
                     &move_generator.magic,
-                    true,
+                    player_is_white,
                 );
-                if white_moves.is_empty() {
-                    let outcome = if move_generator.magic.is_king_in_check(&chess_board.chess_board, true) {
+                if player_moves.is_empty() {
+                    let outcome = if move_generator.magic.is_king_in_check(&chess_board.chess_board, player_is_white) {
                         println!("Checkmate — opponent wins!");
                         GameOverState::OpponentWins
                     } else {
@@ -194,6 +200,7 @@ pub fn handle_chess_events(
     mut game_over_state: ResMut<GameOverState>,
     mut last_move: ResMut<LastMove>,
     mut pending_game_over: ResMut<PendingGameOver>,
+    mut game_phase: ResMut<GamePhase>,
 ) {
     for event in chess_ew.read() {
         match event.action {
@@ -203,11 +210,12 @@ pub fn handle_chess_events(
                 refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
             }
             ChessAction::Restart => {
-                println!("Restarting game");
+                println!("Returning to start screen");
                 chess_board.chess_board = chess_board::ChessBoard::new();
                 *game_over_state = GameOverState::Playing;
                 pending_game_over.0 = None;
                 *last_move = LastMove::default();
+                *game_phase = GamePhase::StartScreen;
                 refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
             }
             _ => {}

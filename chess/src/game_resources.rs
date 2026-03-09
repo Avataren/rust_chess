@@ -34,3 +34,17 @@ pub enum GameOverState {
 /// Holds a game-over outcome that should be applied after the current tween finishes.
 #[derive(Resource, Default)]
 pub struct PendingGameOver(pub Option<GameOverState>);
+
+#[derive(Resource, Default, PartialEq, Debug, Clone, Copy)]
+pub enum PlayerColor {
+    #[default]
+    White,
+    Black,
+}
+
+#[derive(Resource, Default, PartialEq, Debug, Clone, Copy)]
+pub enum GamePhase {
+    #[default]
+    StartScreen,
+    Playing,
+}

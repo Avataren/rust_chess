@@ -15,54 +15,52 @@ fn evaluate_material(pieces: Bitboard, value: i32) -> i32 {
     pieces.count_ones() as i32 * value
 }
 
-/// Evaluates the chess board state and returns a score from the perspective of the active player.
+/// Evaluates the chess board and returns an absolute score:
+/// positive = white is ahead, negative = black is ahead.
 pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
-    let active_color_board = if chess_board.is_white_active() {
-        chess_board.get_white()
-    } else {
-        chess_board.get_black()
-    };
-    let opponent_color_board = if chess_board.is_white_active() {
-        chess_board.get_black()
-    } else {
-        chess_board.get_white()
-    };
+    let white_board = chess_board.get_white();
+    let black_board = chess_board.get_black();
 
     let mut score = 0;
 
-    // Calculate material value for active color
-    score += evaluate_material(active_color_board & chess_board.get_pawns(), PAWN_VALUE);
-    score += evaluate_material(active_color_board & chess_board.get_knights(), KNIGHT_VALUE);
-    score += evaluate_material(active_color_board & chess_board.get_bishops(), BISHOP_VALUE);
-    score += evaluate_material(active_color_board & chess_board.get_rooks(), ROOK_VALUE);
-    score += evaluate_material(active_color_board & chess_board.get_queens(), QUEEN_VALUE);
-    score += evaluate_material(active_color_board & chess_board.get_kings(), KING_VALUE);
+    // White material (positive contribution)
+    score += evaluate_material(white_board & chess_board.get_pawns(), PAWN_VALUE);
+    score += evaluate_material(white_board & chess_board.get_knights(), KNIGHT_VALUE);
+    score += evaluate_material(white_board & chess_board.get_bishops(), BISHOP_VALUE);
+    score += evaluate_material(white_board & chess_board.get_rooks(), ROOK_VALUE);
+    score += evaluate_material(white_board & chess_board.get_queens(), QUEEN_VALUE);
+    score += evaluate_material(white_board & chess_board.get_kings(), KING_VALUE);
 
-    // Calculate material value for the opponent and subtract from score
-    score -= evaluate_material(opponent_color_board & chess_board.get_pawns(), PAWN_VALUE);
-    score -= evaluate_material(
-        opponent_color_board & chess_board.get_knights(),
-        KNIGHT_VALUE,
-    );
-    score -= evaluate_material(
-        opponent_color_board & chess_board.get_bishops(),
-        BISHOP_VALUE,
-    );
-    score -= evaluate_material(opponent_color_board & chess_board.get_rooks(), ROOK_VALUE);
-    score -= evaluate_material(opponent_color_board & chess_board.get_queens(), QUEEN_VALUE);
-    score -= evaluate_material(opponent_color_board & chess_board.get_kings(), KING_VALUE);
+    // Black material (negative contribution)
+    score -= evaluate_material(black_board & chess_board.get_pawns(), PAWN_VALUE);
+    score -= evaluate_material(black_board & chess_board.get_knights(), KNIGHT_VALUE);
+    score -= evaluate_material(black_board & chess_board.get_bishops(), BISHOP_VALUE);
+    score -= evaluate_material(black_board & chess_board.get_rooks(), ROOK_VALUE);
+    score -= evaluate_material(black_board & chess_board.get_queens(), QUEEN_VALUE);
+    score -= evaluate_material(black_board & chess_board.get_kings(), KING_VALUE);
 
-    // Evaluate pawns
-    let mut pawns = active_color_board & chess_board.get_pawns();
-    while pawns != Bitboard::default() {
-        let square = pawns.pop_lsb() as usize;
-        score += evaluate_pawn_position(square, chess_board.is_white_active());
+    // White piece-square tables (positive)
+    let mut white_pawns = white_board & chess_board.get_pawns();
+    while white_pawns != Bitboard::default() {
+        let square = white_pawns.pop_lsb() as usize;
+        score += evaluate_pawn_position(square, true);
+    }
+    let mut white_knights = white_board & chess_board.get_knights();
+    while white_knights != Bitboard::default() {
+        let square = white_knights.pop_lsb() as usize;
+        score += evaluate_knight_position(square, true);
     }
 
-    let mut knights = active_color_board & chess_board.get_knights();
-    while knights != Bitboard::default() {
-        let square = knights.pop_lsb() as usize;
-        score += evaluate_knight_position(square, chess_board.is_white_active());
+    // Black piece-square tables (negative)
+    let mut black_pawns = black_board & chess_board.get_pawns();
+    while black_pawns != Bitboard::default() {
+        let square = black_pawns.pop_lsb() as usize;
+        score -= evaluate_pawn_position(square, false);
+    }
+    let mut black_knights = black_board & chess_board.get_knights();
+    while black_knights != Bitboard::default() {
+        let square = black_knights.pop_lsb() as usize;
+        score -= evaluate_knight_position(square, false);
     }
 
     score
