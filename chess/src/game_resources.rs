@@ -70,14 +70,16 @@ pub enum Difficulty {
     #[default]
     Medium,
     Hard,
+    VeryHard,
 }
 
 impl Difficulty {
     pub fn search_depth(self) -> i32 {
         match self {
-            Difficulty::Easy   => 2,
-            Difficulty::Medium => 4,
-            Difficulty::Hard   => 7,
+            Difficulty::Easy     => 2,
+            Difficulty::Medium   => 4,
+            Difficulty::Hard     => 7,
+            Difficulty::VeryHard => 10,
         }
     }
 }

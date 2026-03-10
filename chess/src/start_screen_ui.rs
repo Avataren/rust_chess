@@ -19,14 +19,16 @@ pub enum DifficultyButton {
     Easy,
     Medium,
     Hard,
+    VeryHard,
 }
 
 impl DifficultyButton {
     fn to_difficulty(self) -> Difficulty {
         match self {
-            DifficultyButton::Easy   => Difficulty::Easy,
-            DifficultyButton::Medium => Difficulty::Medium,
-            DifficultyButton::Hard   => Difficulty::Hard,
+            DifficultyButton::Easy     => Difficulty::Easy,
+            DifficultyButton::Medium   => Difficulty::Medium,
+            DifficultyButton::Hard     => Difficulty::Hard,
+            DifficultyButton::VeryHard => Difficulty::VeryHard,
         }
     }
 }
@@ -69,9 +71,10 @@ pub fn spawn_start_screen(mut commands: Commands) {
                     ..default()
                 })
                 .with_children(|row| {
-                    spawn_difficulty_button(row, "Easy",   DifficultyButton::Easy,   false);
-                    spawn_difficulty_button(row, "Medium", DifficultyButton::Medium, true);
-                    spawn_difficulty_button(row, "Hard",   DifficultyButton::Hard,   false);
+                    spawn_difficulty_button(row, "Easy",      DifficultyButton::Easy,     false);
+                    spawn_difficulty_button(row, "Medium",    DifficultyButton::Medium,   true);
+                    spawn_difficulty_button(row, "Hard",      DifficultyButton::Hard,     false);
+                    spawn_difficulty_button(row, "Very Hard", DifficultyButton::VeryHard, false);
                 });
 
             // Color label
@@ -121,25 +124,14 @@ fn spawn_difficulty_button(
         });
 }
 
-fn difficulty_colors(button: DifficultyButton, selected: bool) -> (Color, Color) {
-    let (dim_bg, bright_bg, text) = match button {
-        DifficultyButton::Easy   => (
-            Color::srgb(0.13, 0.15, 0.13),   // near-grey, faint green tint
-            Color::srgb(0.18, 0.55, 0.22),
-            Color::srgb(0.75, 1.0, 0.78),
-        ),
-        DifficultyButton::Medium => (
-            Color::srgb(0.15, 0.14, 0.12),   // near-grey, faint warm tint
-            Color::srgb(0.55, 0.42, 0.08),
-            Color::srgb(1.0, 0.92, 0.55),
-        ),
-        DifficultyButton::Hard   => (
-            Color::srgb(0.15, 0.12, 0.12),   // near-grey, faint red tint
-            Color::srgb(0.60, 0.12, 0.12),
-            Color::srgb(1.0, 0.6, 0.6),
-        ),
-    };
-    if selected { (bright_bg, text) } else { (dim_bg, text) }
+fn difficulty_colors(_button: DifficultyButton, selected: bool) -> (Color, Color) {
+    if selected {
+        // Bright white background, dark text — clearly active.
+        (Color::srgb(0.95, 0.95, 0.95), Color::srgb(0.08, 0.08, 0.08))
+    } else {
+        // Neutral dark background, muted text — clearly inactive.
+        (Color::srgb(0.18, 0.18, 0.20), Color::srgb(0.60, 0.60, 0.65))
+    }
 }
 
 fn spawn_color_button(parent: &mut ChildSpawnerCommands, label: &str, button: ColorButton) {
