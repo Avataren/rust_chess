@@ -4,7 +4,7 @@ use bevy_async_task::TaskRunner;
 use bevy_tweening::{lens::TransformPositionLens, *};
 use std::task::Poll;
 use chess_board::ChessBoard;
-use chess_evaluation::{alpha_beta_root, OpeningBook};
+use chess_evaluation::{iterative_deepening_root, OpeningBook};
 use chess_foundation::ChessMove;
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
@@ -58,7 +58,7 @@ async fn alpha_beta_task(
     depth: i32,
     is_white: bool,
 ) -> (i32, Option<ChessMove>) {
-    alpha_beta_root(chess_board, conductor, Some(book), depth, is_white)
+    iterative_deepening_root(chess_board, conductor, Some(book), depth, is_white)
 }
 
 pub fn handle_async_moves(

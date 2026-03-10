@@ -7,6 +7,7 @@ pub mod transposition_table;
 pub use board_evaluation::evaluate_board;
 pub use alpha_beta::alpha_beta;
 pub use alpha_beta::alpha_beta_root;
+pub use alpha_beta::iterative_deepening_root;
 pub use opening_book::OpeningBook;
 pub use piece_tables::{
     evaluate_pawn_position, evaluate_knight_position,

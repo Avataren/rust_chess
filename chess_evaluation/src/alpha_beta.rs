@@ -302,41 +302,23 @@ pub fn alpha_beta(
     }
 }
 
-/// Root-level search. Probes the opening book first; falls back to alpha-beta.
-///
-/// Passes an accumulated alpha/beta window so that sub-searches can prune
-/// once we have established a good score, which is much faster than the
-/// previous approach of using a fresh [MIN, MAX] window per root move.
-pub fn alpha_beta_root(
+/// Root-level search at a single fixed depth.  The caller supplies the TT so
+/// it can be reused across iterations.  `prev_best` (the best move from the
+/// previous iteration) is ordered first to maximise alpha pruning.
+fn search_root(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
-    book: Option<&OpeningBook>,
+    tt: &mut TranspositionTable,
     depth: i32,
     is_white: bool,
+    prev_best: Option<ChessMove>,
 ) -> (i32, Option<ChessMove>) {
-    // Opening book probe: if we get a hit, return the book move immediately.
-    if let Some(book) = book {
-        if let Some((from, to)) = book.probe(chess_board) {
-            let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
-            if let Some(book_move) = legal
-                .into_iter()
-                .find(|m| m.start_square() == from && m.target_square() == to)
-            {
-                println!("Book move: {}", book_move.to_san_simple());
-                return (0, Some(book_move));
-            }
-        }
-    }
-
     let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board), None);
     }
-    legal_moves.sort();
-
-    // Fresh TT for each search.  Entries from earlier in the tree (e.g. when
-    // deeper sub-trees reach the same positions) are reused throughout this call.
-    let mut tt = TranspositionTable::new(TT_SIZE);
+    // Order: prev_best first (PV move), then the rest by MVV-LVA.
+    order_moves(&mut legal_moves, prev_best);
 
     let mut best_score = if is_white { i32::MIN + 1 } else { i32::MAX };
     let mut best_moves: Vec<ChessMove> = Vec::new();
@@ -351,7 +333,7 @@ pub fn alpha_beta_root(
         let (eval, _) = alpha_beta(
             chess_board,
             conductor,
-            &mut tt,
+            tt,
             depth - 1,
             alpha,
             beta,
@@ -387,6 +369,66 @@ pub fn alpha_beta_root(
 
     let best = best_moves.choose(&mut rand::thread_rng()).copied();
     (best_score, best)
+}
+
+/// Single-depth root search — thin wrapper kept for tests and direct callers.
+pub fn alpha_beta_root(
+    chess_board: &mut ChessBoard,
+    conductor: &PieceConductor,
+    book: Option<&OpeningBook>,
+    depth: i32,
+    is_white: bool,
+) -> (i32, Option<ChessMove>) {
+    if let Some(book) = book {
+        if let Some((from, to)) = book.probe(chess_board) {
+            let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+            if let Some(book_move) = legal
+                .into_iter()
+                .find(|m| m.start_square() == from && m.target_square() == to)
+            {
+                println!("Book move: {}", book_move.to_san_simple());
+                return (0, Some(book_move));
+            }
+        }
+    }
+    let mut tt = TranspositionTable::new(TT_SIZE);
+    search_root(chess_board, conductor, &mut tt, depth, is_white, None)
+}
+
+/// Iterative-deepening root search.  Searches depth 1, 2, …, max_depth,
+/// reusing the same TT across iterations so that shallower results guide
+/// deeper ones.  The best move from each completed iteration seeds the move
+/// ordering for the next, giving alpha-beta more pruning opportunity at every
+/// depth level.
+pub fn iterative_deepening_root(
+    chess_board: &mut ChessBoard,
+    conductor: &PieceConductor,
+    book: Option<&OpeningBook>,
+    max_depth: i32,
+    is_white: bool,
+) -> (i32, Option<ChessMove>) {
+    if let Some(book) = book {
+        if let Some((from, to)) = book.probe(chess_board) {
+            let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+            if let Some(book_move) = legal
+                .into_iter()
+                .find(|m| m.start_square() == from && m.target_square() == to)
+            {
+                println!("Book move: {}", book_move.to_san_simple());
+                return (0, Some(book_move));
+            }
+        }
+    }
+
+    let mut tt = TranspositionTable::new(TT_SIZE);
+    let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
+
+    for depth in 1..=max_depth {
+        best = search_root(chess_board, conductor, &mut tt, depth, is_white, best.1);
+        println!("depth={depth} score={}", best.0);
+    }
+
+    best
 }
 
 #[cfg(test)]
@@ -561,6 +603,54 @@ mod tests {
         // depth=4 ensures NMP and LMR are triggered
         alpha_beta_root(&mut board, &c, None, 4, true);
         assert_eq!(board.current_hash(), hash_before);
+    }
+
+    // -----------------------------------------------------------------------
+    // Iterative deepening
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn id_returns_a_move_from_starting_position() {
+        let mut board = ChessBoard::new();
+        let c = conductor();
+        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 3, true);
+        assert!(mv.is_some(), "ID must return a move from the starting position");
+    }
+
+    /// ID at max_depth=N must produce the same score as a single-depth search
+    /// at depth=N, because both use the same underlying alpha-beta.
+    #[test]
+    fn id_score_matches_fixed_depth() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let c = conductor();
+        let (id_score, _) = iterative_deepening_root(&mut board, &c, None, 3, true);
+        let (ab_score, _) = alpha_beta_root(&mut board, &c, None, 3, true);
+        assert_eq!(id_score, ab_score,
+            "ID and fixed-depth must agree: id={id_score}, ab={ab_score}");
+    }
+
+    #[test]
+    fn id_board_state_unchanged_after_search() {
+        let mut board = ChessBoard::new();
+        let hash_before = board.current_hash();
+        let c = conductor();
+        iterative_deepening_root(&mut board, &c, None, 4, true);
+        assert_eq!(board.current_hash(), hash_before,
+            "ID must not leave the board in a modified state");
+    }
+
+    /// ID must find the forced capture even through multiple depth iterations.
+    #[test]
+    fn id_finds_hanging_queen() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let c = conductor();
+        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 2, true);
+        let m = mv.expect("ID must find a move");
+        assert_eq!(m.start_square(), 27);
+        assert_eq!(m.target_square(), 35);
+        assert!(score > 800, "got {score}");
     }
 
     // -----------------------------------------------------------------------
