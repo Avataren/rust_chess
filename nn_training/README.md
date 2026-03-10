@@ -92,6 +92,9 @@ python scripts/split_dataset.py --input data/all.jsonl --train data/train.jsonl 
 PYTHONPATH=. python scripts/train.py --config configs/default.yaml --out artifacts/checkpoint.pt
 ```
 
+The training loader uses `drop_last=False`, so small datasets still run (including when `len(train) < batch_size`).
+
+
 ## 4) Export quantized weights
 
 ```bash

@@ -144,13 +144,25 @@ def main():
         max_cp_abs=cfg["data"]["max_cp_abs"],
     )
 
+
+    if len(train_ds) == 0:
+        raise ValueError("Training dataset is empty. Provide at least one training sample.")
+    if len(val_ds) == 0:
+        raise ValueError("Validation dataset is empty. Provide at least one validation sample.")
+
+    if len(train_ds) < cfg["training"]["batch_size"]:
+        print(
+            "Warning: train dataset is smaller than batch_size; "
+            "training will use a partial batch each epoch (drop_last=False)."
+        )
+
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg["training"]["batch_size"],
         shuffle=True,
         num_workers=cfg["training"]["workers"],
         pin_memory=cfg["training"]["pin_memory"],
-        drop_last=True,
+        drop_last=False,
     )
     val_loader = DataLoader(
         val_ds,
