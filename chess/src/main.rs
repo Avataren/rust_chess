@@ -1,4 +1,4 @@
-use bevy::{audio::AudioPlugin, ecs::message::MessageWriter, prelude::*, window::WindowResolution};
+use bevy::{ecs::message::MessageWriter, prelude::*, window::WindowResolution};
 use bevy_fps_counter::FpsCounterPlugin;
 mod board;
 mod board_accessories;

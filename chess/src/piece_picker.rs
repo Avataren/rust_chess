@@ -268,7 +268,7 @@ pub fn drop_piece(
     mut refresh_pieces_events: MessageWriter<RefreshPiecesFromBoardEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
     mut game_event_ew: MessageWriter<ChessEvent>,
-    mut game_over_state: ResMut<GameOverState>,
+    game_over_state: ResMut<GameOverState>,
     mut pending_game_over: ResMut<PendingGameOver>,
     game_phase: Res<GamePhase>,
 ) {
