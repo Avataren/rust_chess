@@ -60,7 +60,7 @@
       <canvas id="game-canvas" tabindex="0"></canvas>
     </div>
     <script type="module">
-      import init from './chess.js';
+      import init, { initThreadPool } from './chess.js';
 
       function resumeAudioContext() {
         if (!window.myAudioContext) {
@@ -92,7 +92,12 @@
       const canvas = document.getElementById('game-canvas');
       const info = document.getElementById('info');
       init()
-        .then(() => {
+        .then(async () => {
+          // Initialise the rayon thread pool (requires COOP/COEP headers).
+          const threads = navigator.hardwareConcurrency || 4;
+          console.log(`Initialising thread pool with ${threads} threads`);
+          await initThreadPool(threads);
+
           canvas.blur();
           canvas.style.visibility = 'visible';
           info.style.display = 'none';

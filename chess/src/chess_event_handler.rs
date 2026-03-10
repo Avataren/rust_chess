@@ -4,7 +4,7 @@ use bevy_async_task::TaskRunner;
 use bevy_tweening::{lens::TransformPositionLens, *};
 use std::task::Poll;
 use chess_board::ChessBoard;
-use chess_evaluation::{iterative_deepening_root, OpeningBook};
+use chess_evaluation::{iterative_deepening_root, search_root, OpeningBook, TranspositionTable, ASPIRATION_DELTA, TT_SIZE};
 use chess_foundation::ChessMove;
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
@@ -55,17 +55,70 @@ async fn alpha_beta_task(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
     book: &OpeningBook,
-    depth: i32,
+    max_depth: i32,
     is_white: bool,
-    deadline: Option<std::time::Instant>,
+    deadline: Option<web_time::Instant>,
 ) -> (i32, Option<ChessMove>) {
-    // On WASM the async executor runs as a microtask, which fires *before*
-    // the browser's paint step.  A setTimeout(0) promotes the continuation
-    // to a proper browser task so the engine renders the piece landing first.
-    #[cfg(target_arch = "wasm32")]
-    gloo_timers::future::TimeoutFuture::new(0).await;
+    // On WASM we reimplement the iterative-deepening loop here so we can yield
+    // between depth iterations, letting the browser paint frames (animated
+    // "Thinking..." indicator).  On native, the search runs on a background
+    // thread so we just call iterative_deepening_root directly.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return iterative_deepening_root(chess_board, conductor, Some(book), max_depth, is_white, deadline, None);
+    }
 
-    iterative_deepening_root(chess_board, conductor, Some(book), depth, is_white, deadline, None)
+    #[cfg(target_arch = "wasm32")]
+    {
+        use move_generator::move_generator::get_all_legal_moves_for_color;
+
+        // Yield once so the browser paints the piece landing before we start.
+        gloo_timers::future::TimeoutFuture::new(0).await;
+
+        // Book probe
+        if let Some((from, to)) = book.probe(chess_board) {
+            let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+            if let Some(book_move) = legal.into_iter().find(|m| m.start_square() == from && m.target_square() == to) {
+                return (0, Some(book_move));
+            }
+        }
+
+        let mut tt = TranspositionTable::new(TT_SIZE);
+        let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
+
+        for depth in 1..=max_depth {
+            let (prev_score, prev_move) = best;
+
+            best = if depth <= 2 {
+                search_root(chess_board, conductor, &mut tt, depth, i32::MIN + 1, i32::MAX, is_white, prev_move)
+            } else {
+                let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
+                let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
+                loop {
+                    let result = search_root(chess_board, conductor, &mut tt, depth, lo, hi, is_white, prev_move);
+                    if result.0 > lo && result.0 < hi {
+                        break result;
+                    } else if result.0 <= lo {
+                        lo = i32::MIN + 1;
+                    } else {
+                        hi = i32::MAX;
+                    }
+                    if lo == i32::MIN + 1 && hi == i32::MAX {
+                        break result;
+                    }
+                }
+            };
+
+            if let Some(dl) = deadline {
+                if web_time::Instant::now() >= dl { break; }
+            }
+
+            // Yield between depths so the browser can paint a frame.
+            gloo_timers::future::TimeoutFuture::new(0).await;
+        }
+
+        best
+    }
 }
 
 pub fn handle_async_moves(
@@ -109,7 +162,7 @@ pub fn handle_async_moves(
                 let move_generator_clone = move_generator.magic.clone();
                 let book_clone = opening_book.book.clone();
                 let depth = difficulty.search_depth();
-                let deadline = difficulty.time_limit().map(|d| std::time::Instant::now() + d);
+                let deadline = difficulty.time_limit().map(|d| web_time::Instant::now() + d);
                 task_executor.start(async move {
                     if let Some(m) = forced {
                         return (0, Some(m));

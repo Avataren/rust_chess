@@ -27,10 +27,11 @@ else
     fi
 fi
 
-# ── Build ─────────────────────────────────────────────────────────────────────
+# ── Build (nightly + rebuild std with atomics for SharedArrayBuffer) ─────────
 
-echo "Building ${CRATE} for ${TARGET} (profile: ${PROFILE})..."
-cargo build -p ${CRATE} --target ${TARGET} --profile ${PROFILE}
+echo "Building ${CRATE} for ${TARGET} (profile: ${PROFILE}, threaded)..."
+cargo +nightly build -p ${CRATE} --target ${TARGET} --profile ${PROFILE} \
+    -Z build-std=panic_abort,std
 
 # ── Generate JS bindings ──────────────────────────────────────────────────────
 
@@ -46,6 +47,8 @@ if command -v wasm-opt &>/dev/null; then
         --enable-nontrapping-float-to-int \
         --enable-bulk-memory \
         --enable-sign-ext \
+        --enable-threads \
+        --enable-mutable-globals \
         "${WASM_OUT}" -o "${WASM_OUT}"
 else
     echo "wasm-opt not found — skipping (install binaryen to reduce binary size)"
@@ -58,6 +61,10 @@ echo ""
 echo "Done! Output in ${OUT_DIR}/"
 echo "  ${WASM_OUT}  (${SIZE})"
 echo ""
+echo "IMPORTANT: Your server must send these headers for SharedArrayBuffer:"
+echo "  Cross-Origin-Opener-Policy: same-origin"
+echo "  Cross-Origin-Embedder-Policy: require-corp"
+echo ""
 echo "Serve with:"
-echo "  python3 -m http.server --directory ${OUT_DIR} 8080"
+echo "  python3 serve_coop.py"
 echo "  then open http://localhost:8080"

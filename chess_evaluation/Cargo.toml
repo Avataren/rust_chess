@@ -10,9 +10,8 @@ chess_foundation = { path = "../chess_foundation" }
 chess_board = { path = "../chess_board" }
 move_generator = { path = "../move_generator" }
 rand = "0.8"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rayon = "1"
+rayon = "1.8"
+web-time = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }

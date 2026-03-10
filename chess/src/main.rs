@@ -1,5 +1,8 @@
 use bevy::{ecs::message::MessageWriter, prelude::*, window::WindowResolution};
 use bevy_fps_counter::{FpsCounterPlugin, FpsCounterText};
+
+#[cfg(target_arch = "wasm32")]
+pub use wasm_bindgen_rayon::init_thread_pool;
 mod board;
 mod board_accessories;
 mod chess_event_handler;

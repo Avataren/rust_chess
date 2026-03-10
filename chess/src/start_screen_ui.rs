@@ -92,8 +92,8 @@ pub fn spawn_start_screen(mut commands: Commands) {
                     ..default()
                 })
                 .with_children(|row| {
-                    spawn_color_button(row, "♔  Play as White", ColorButton::White);
                     spawn_color_button(row, "♚  Play as Black", ColorButton::Black);
+                    spawn_color_button(row, "♔  Play as White", ColorButton::White);
                 });
         });
 }

@@ -4,10 +4,9 @@ use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
 };
 use rand::seq::SliceRandom;
-#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use std::time::Instant;
+use web_time::Instant;
 
 use crate::{
     evaluate_board,
@@ -16,7 +15,7 @@ use crate::{
 };
 
 /// Shared TT for the sequential path and ID iterations.
-const TT_SIZE: usize = 1 << 20; // 1M entries ≈ 32 MB
+pub const TT_SIZE: usize = 1 << 20; // 1M entries ≈ 32 MB
 
 /// Per-thread TT for parallel root search.  Sub-trees from a single root move
 /// rarely exceed ~500K unique positions, so 256K entries suffices while keeping
@@ -26,7 +25,7 @@ const PARALLEL_TT_SIZE: usize = 1 << 18; // 256K entries ≈ 8 MB
 /// Initial aspiration window half-width in centipawns.  Searches at depth N
 /// use [prev_score - DELTA, prev_score + DELTA]; on failure one side widens to
 /// the full bound and we retry.
-const ASPIRATION_DELTA: i32 = 50;
+pub const ASPIRATION_DELTA: i32 = 50;
 
 /// Continues searching capture-only moves after the main search depth is
 /// exhausted, so we never evaluate a position mid-capture-sequence.
@@ -334,7 +333,7 @@ pub fn alpha_beta(
 /// Shallow depths (< 3) use a sequential growing-alpha window.  Deeper depths
 /// evaluate all root moves in parallel — each on its own board clone with a
 /// fresh per-thread TT — then pick the best result.
-fn search_root(
+pub fn search_root(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
     tt: &mut TranspositionTable,
@@ -355,7 +354,6 @@ fn search_root(
     // Each root move is evaluated independently on its own board clone with a
     // fresh per-thread TT.  The aspiration window [alpha, beta] is forwarded to
     // every sub-search, narrowing the search space at each thread.
-    #[cfg(not(target_arch = "wasm32"))]
     if depth >= 3 {
         let results: Vec<(i32, ChessMove)> = legal_moves
             .into_par_iter()

@@ -64,14 +64,17 @@ pub fn spawn_thinking_indicator(mut commands: Commands) {
 
 pub fn update_thinking_ui(
     is_ai_thinking: Res<IsAiThinking>,
-    mut query: Query<&mut Visibility, With<ThinkingIndicator>>,
+    time: Res<Time>,
+    mut query: Query<(&mut Visibility, &mut Text), With<ThinkingIndicator>>,
 ) {
-    if !is_ai_thinking.is_changed() {
-        return;
-    }
-    let vis = if is_ai_thinking.0 { Visibility::Visible } else { Visibility::Hidden };
-    for mut v in query.iter_mut() {
-        *v = vis;
+    for (mut vis, mut text) in query.iter_mut() {
+        if is_ai_thinking.0 {
+            *vis = Visibility::Visible;
+            let dots = (time.elapsed_secs() * 2.0) as usize % 4;
+            **text = format!("Thinking{}", ".".repeat(dots));
+        } else if is_ai_thinking.is_changed() {
+            *vis = Visibility::Hidden;
+        }
     }
 }
 
