@@ -31,11 +31,11 @@ impl Plugin for ChessInputPlugin {
             .add_systems(
                 Update,
                 (
-                    pieces::spawn_chess_pieces,
                     piece_picker::pick_up_piece,
                     piece_picker::drag_piece,
                     piece_picker::drop_piece,
-                    chess_event_handler::handle_async_moves
+                    pieces::spawn_chess_pieces,
+                    chess_event_handler::handle_async_moves,
                 )
                     .chain(),
             )
