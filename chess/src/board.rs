@@ -3,9 +3,6 @@ use bevy::ecs::message::MessageReader;
 use crate::game_resources::PlayerColor;
 
 #[derive(Component)]
-pub struct ResolutionText;
-
-#[derive(Component)]
 pub struct BoardTag;
 
 #[derive(Resource)]

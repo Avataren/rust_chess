@@ -7,9 +7,6 @@ pub struct SoundEffects {
     pub sounds: HashMap<String, Handle<AudioSource>>,
 }
 
-#[derive(Resource)]
-pub struct SoundsPreloaded(pub bool);
-
 #[derive(Component)]
 pub struct SoundEffect;
 
