@@ -95,6 +95,8 @@ PYTHONPATH=. python scripts/train.py --config configs/default.yaml --out artifac
 The training loader uses `drop_last=False`, so small datasets still run (including when `len(train) < batch_size`).
 
 
+The WDL head is trained against the soft WDL target distribution from the dataset (not argmax-hardened labels).
+
 ## 4) Export quantized weights
 
 ```bash

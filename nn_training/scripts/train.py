@@ -29,16 +29,21 @@ def detect_device() -> torch.device:
     return torch.device("cpu")
 
 
+def soft_target_cross_entropy(logits: torch.Tensor, target_probs: torch.Tensor) -> torch.Tensor:
+    log_probs = torch.log_softmax(logits, dim=1)
+    return -(target_probs * log_probs).sum(dim=1).mean()
+
+
 def train_epoch(model, loader, optimizer, scaler, device, cfg):
     model.train()
     cp_loss_fn = nn.HuberLoss(delta=100.0)
-    wdl_loss_fn = nn.CrossEntropyLoss()
 
     total_loss = 0.0
     total_cp_loss = 0.0
     total_wdl_loss = 0.0
     total_cp_mae = 0.0
     total_wdl_acc = 0.0
+    total_wdl_target_confidence = 0.0
 
     for x, cp, wdl in tqdm(loader, desc="train", leave=False):
         x = x.to(device, non_blocking=True)
@@ -51,7 +56,7 @@ def train_epoch(model, loader, optimizer, scaler, device, cfg):
         with torch.autocast(device_type=device.type, enabled=cfg["training"]["amp"] and device.type == "cuda"):
             cp_pred, wdl_logits = model(x)
             cp_loss = cp_loss_fn(cp_pred, cp)
-            wdl_loss = wdl_loss_fn(wdl_logits, wdl_idx)
+            wdl_loss = soft_target_cross_entropy(wdl_logits, wdl)
             loss = cfg["loss"]["cp_weight"] * cp_loss + cfg["loss"]["wdl_weight"] * wdl_loss
 
         scaler.scale(loss).backward()
@@ -62,12 +67,14 @@ def train_epoch(model, loader, optimizer, scaler, device, cfg):
 
         cp_mae = torch.mean(torch.abs(cp_pred - cp))
         wdl_acc = (torch.argmax(wdl_logits, dim=1) == wdl_idx).float().mean()
+        target_confidence = torch.gather(wdl, 1, torch.argmax(wdl_logits, dim=1, keepdim=True)).mean()
 
         total_loss += float(loss.item())
         total_cp_loss += float(cp_loss.item())
         total_wdl_loss += float(wdl_loss.item())
         total_cp_mae += float(cp_mae.item())
         total_wdl_acc += float(wdl_acc.item())
+        total_wdl_target_confidence += float(target_confidence.item())
 
     denom = max(1, len(loader))
     return {
@@ -76,6 +83,7 @@ def train_epoch(model, loader, optimizer, scaler, device, cfg):
         "wdl_loss": total_wdl_loss / denom,
         "cp_mae": total_cp_mae / denom,
         "wdl_acc": total_wdl_acc / denom,
+        "wdl_target_confidence": total_wdl_target_confidence / denom,
     }
 
 
@@ -83,13 +91,13 @@ def train_epoch(model, loader, optimizer, scaler, device, cfg):
 def eval_epoch(model, loader, device, cfg):
     model.eval()
     cp_loss_fn = nn.HuberLoss(delta=100.0)
-    wdl_loss_fn = nn.CrossEntropyLoss()
 
     total_loss = 0.0
     total_cp_loss = 0.0
     total_wdl_loss = 0.0
     total_cp_mae = 0.0
     total_wdl_acc = 0.0
+    total_wdl_target_confidence = 0.0
 
     for x, cp, wdl in tqdm(loader, desc="val", leave=False):
         x = x.to(device, non_blocking=True)
@@ -99,17 +107,19 @@ def eval_epoch(model, loader, device, cfg):
 
         cp_pred, wdl_logits = model(x)
         cp_loss = cp_loss_fn(cp_pred, cp)
-        wdl_loss = wdl_loss_fn(wdl_logits, wdl_idx)
+        wdl_loss = soft_target_cross_entropy(wdl_logits, wdl)
         loss = cfg["loss"]["cp_weight"] * cp_loss + cfg["loss"]["wdl_weight"] * wdl_loss
 
         cp_mae = torch.mean(torch.abs(cp_pred - cp))
         wdl_acc = (torch.argmax(wdl_logits, dim=1) == wdl_idx).float().mean()
+        target_confidence = torch.gather(wdl, 1, torch.argmax(wdl_logits, dim=1, keepdim=True)).mean()
 
         total_loss += float(loss.item())
         total_cp_loss += float(cp_loss.item())
         total_wdl_loss += float(wdl_loss.item())
         total_cp_mae += float(cp_mae.item())
         total_wdl_acc += float(wdl_acc.item())
+        total_wdl_target_confidence += float(target_confidence.item())
 
     denom = max(1, len(loader))
     return {
@@ -118,6 +128,7 @@ def eval_epoch(model, loader, device, cfg):
         "wdl_loss": total_wdl_loss / denom,
         "cp_mae": total_cp_mae / denom,
         "wdl_acc": total_wdl_acc / denom,
+        "wdl_target_confidence": total_wdl_target_confidence / denom,
     }
 
 def main():
@@ -203,7 +214,8 @@ def main():
                 f"epoch={epoch} "
                 f"train_loss={tr['loss']:.4f} val_loss={va['loss']:.4f} "
                 f"train_cp_mae={tr['cp_mae']:.2f} val_cp_mae={va['cp_mae']:.2f} "
-                f"train_wdl_acc={tr['wdl_acc']:.3f} val_wdl_acc={va['wdl_acc']:.3f}"
+                f"train_wdl_acc={tr['wdl_acc']:.3f} val_wdl_acc={va['wdl_acc']:.3f} "
+                f"train_wdl_conf={tr['wdl_target_confidence']:.3f} val_wdl_conf={va['wdl_target_confidence']:.3f}"
             )
 
             writer.add_scalar("train/loss", tr["loss"], epoch)
@@ -211,12 +223,14 @@ def main():
             writer.add_scalar("train/wdl_loss", tr["wdl_loss"], epoch)
             writer.add_scalar("train/cp_mae", tr["cp_mae"], epoch)
             writer.add_scalar("train/wdl_acc", tr["wdl_acc"], epoch)
+            writer.add_scalar("train/wdl_target_confidence", tr["wdl_target_confidence"], epoch)
 
             writer.add_scalar("val/loss", va["loss"], epoch)
             writer.add_scalar("val/cp_loss", va["cp_loss"], epoch)
             writer.add_scalar("val/wdl_loss", va["wdl_loss"], epoch)
             writer.add_scalar("val/cp_mae", va["cp_mae"], epoch)
             writer.add_scalar("val/wdl_acc", va["wdl_acc"], epoch)
+            writer.add_scalar("val/wdl_target_confidence", va["wdl_target_confidence"], epoch)
             writer.flush()
 
             if va["loss"] < best_val:
