@@ -1,0 +1,7 @@
+torch
+torchvision
+pyyaml
+numpy
+python-chess
+tqdm
+tensorboard
