@@ -5,6 +5,7 @@ use move_generator::{
 };
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
+use std::time::Instant;
 
 use crate::{
     evaluate_board,
@@ -437,12 +438,17 @@ pub fn alpha_beta_root(
 /// deeper ones.  The best move from each completed iteration seeds the move
 /// ordering for the next, giving alpha-beta more pruning opportunity at every
 /// depth level.
+///
+/// If `deadline` is `Some`, the loop stops after the first completed iteration
+/// that exceeds the deadline.  The result of the last *fully completed*
+/// iteration is always returned, so the move is never half-searched.
 pub fn iterative_deepening_root(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
     book: Option<&OpeningBook>,
     max_depth: i32,
     is_white: bool,
+    deadline: Option<Instant>,
 ) -> (i32, Option<ChessMove>) {
     if let Some(book) = book {
         if let Some((from, to)) = book.probe(chess_board) {
@@ -491,6 +497,13 @@ pub fn iterative_deepening_root(
         };
 
         println!("depth={depth} score={}", best.0);
+
+        if let Some(dl) = deadline {
+            if Instant::now() >= dl {
+                println!("Time limit reached, stopping at depth={depth}");
+                break;
+            }
+        }
     }
 
     best
@@ -678,7 +691,7 @@ mod tests {
     fn id_returns_a_move_from_starting_position() {
         let mut board = ChessBoard::new();
         let c = conductor();
-        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 3, true);
+        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 3, true, None);
         assert!(mv.is_some(), "ID must return a move from the starting position");
     }
 
@@ -689,7 +702,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
-        let (id_score, _) = iterative_deepening_root(&mut board, &c, None, 3, true);
+        let (id_score, _) = iterative_deepening_root(&mut board, &c, None, 3, true, None);
         let (ab_score, _) = alpha_beta_root(&mut board, &c, None, 3, true);
         assert_eq!(id_score, ab_score,
             "ID and fixed-depth must agree: id={id_score}, ab={ab_score}");
@@ -700,7 +713,7 @@ mod tests {
         let mut board = ChessBoard::new();
         let hash_before = board.current_hash();
         let c = conductor();
-        iterative_deepening_root(&mut board, &c, None, 4, true);
+        iterative_deepening_root(&mut board, &c, None, 4, true, None);
         assert_eq!(board.current_hash(), hash_before,
             "ID must not leave the board in a modified state");
     }
@@ -711,7 +724,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
-        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 2, true);
+        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 2, true, None);
         let m = mv.expect("ID must find a move");
         assert_eq!(m.start_square(), 27);
         assert_eq!(m.target_square(), 35);
@@ -725,7 +738,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 b - - 0 1");
         let c = conductor();
-        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 2, false);
+        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 2, false, None);
         let m = mv.expect("ID must find a move for black");
         assert_eq!(m.start_square(), 35);
         assert_eq!(m.target_square(), 27);
@@ -738,7 +751,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
         let c = conductor();
-        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 2, true);
+        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 2, true, None);
         let m = mv.expect("ID must find a move");
         let mut board_after = board.clone();
         let mut mv_copy = m;
@@ -753,7 +766,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("8/8/8/8/8/1q6/8/K1k5 b - - 0 1");
         let c = conductor();
-        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 2, false);
+        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 2, false, None);
         let m = mv.expect("ID must find a move");
         let mut board_after = board.clone();
         let mut mv_copy = m;
@@ -770,7 +783,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let hash_before = board.current_hash();
         let c = conductor();
-        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 4, true);
+        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 4, true, None);
         assert!(mv.is_some(), "ID must return a move at depth 4");
         assert!(score > 800, "ID with NMP/LMR must still reflect a queen-up advantage, got {score}");
         assert_eq!(board.current_hash(), hash_before, "Board must be clean after search");

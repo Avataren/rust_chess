@@ -57,8 +57,9 @@ async fn alpha_beta_task(
     book: &OpeningBook,
     depth: i32,
     is_white: bool,
+    deadline: Option<std::time::Instant>,
 ) -> (i32, Option<ChessMove>) {
-    iterative_deepening_root(chess_board, conductor, Some(book), depth, is_white)
+    iterative_deepening_root(chess_board, conductor, Some(book), depth, is_white, deadline)
 }
 
 pub fn handle_async_moves(
@@ -91,6 +92,7 @@ pub fn handle_async_moves(
                 let move_generator_clone = move_generator.magic.clone();
                 let book_clone = opening_book.book.clone();
                 let depth = difficulty.search_depth();
+                let deadline = difficulty.time_limit().map(|d| std::time::Instant::now() + d);
                 task_executor.start(async move {
                     alpha_beta_task(
                         &mut chess_board_clone,
@@ -98,6 +100,7 @@ pub fn handle_async_moves(
                         &book_clone,
                         depth,
                         ai_is_white,
+                        deadline,
                     )
                     .await
                 });

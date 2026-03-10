@@ -79,7 +79,18 @@ impl Difficulty {
             Difficulty::Easy     => 2,
             Difficulty::Medium   => 4,
             Difficulty::Hard     => 7,
-            Difficulty::VeryHard => 10,
+            Difficulty::VeryHard => 12,
+        }
+    }
+
+    /// Time budget for the search. `None` means run to the full depth cap
+    /// (only appropriate for shallow depths that finish quickly).
+    pub fn time_limit(self) -> Option<std::time::Duration> {
+        match self {
+            Difficulty::Easy     => None,
+            Difficulty::Medium   => None,
+            Difficulty::Hard     => None,
+            Difficulty::VeryHard => Some(std::time::Duration::from_secs(5)),
         }
     }
 }
