@@ -653,6 +653,64 @@ mod tests {
         assert!(score > 800, "got {score}");
     }
 
+    /// Black side: ID must find the forced capture (exercises the minimising
+    /// branch of search_root).
+    #[test]
+    fn id_black_finds_hanging_queen() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 b - - 0 1");
+        let c = conductor();
+        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 2, false);
+        let m = mv.expect("ID must find a move for black");
+        assert_eq!(m.start_square(), 35);
+        assert_eq!(m.target_square(), 27);
+        assert!(score < -800, "got {score}");
+    }
+
+    /// ID must find checkmate-in-one for white across multiple depth iterations.
+    #[test]
+    fn id_white_finds_checkmate() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
+        let c = conductor();
+        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 2, true);
+        let m = mv.expect("ID must find a move");
+        let mut board_after = board.clone();
+        let mut mv_copy = m;
+        board_after.make_move(&mut mv_copy);
+        let replies = get_all_legal_moves_for_color(&mut board_after, &c, false);
+        assert!(replies.is_empty(), "After ID's best move black should have no legal replies");
+    }
+
+    /// ID must find checkmate-in-one for black across multiple depth iterations.
+    #[test]
+    fn id_black_finds_checkmate() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("8/8/8/8/8/1q6/8/K1k5 b - - 0 1");
+        let c = conductor();
+        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 2, false);
+        let m = mv.expect("ID must find a move");
+        let mut board_after = board.clone();
+        let mut mv_copy = m;
+        board_after.make_move(&mut mv_copy);
+        let replies = get_all_legal_moves_for_color(&mut board_after, &c, true);
+        assert!(replies.is_empty(), "After ID's best move white should have no legal replies");
+    }
+
+    /// ID at depth=4 exercises NMP (depth>=3) and LMR across all iterations.
+    /// The score must still reflect the correct material balance.
+    #[test]
+    fn id_score_correct_with_nmp_lmr_active() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let hash_before = board.current_hash();
+        let c = conductor();
+        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 4, true);
+        assert!(mv.is_some(), "ID must return a move at depth 4");
+        assert!(score > 800, "ID with NMP/LMR must still reflect a queen-up advantage, got {score}");
+        assert_eq!(board.current_hash(), hash_before, "Board must be clean after search");
+    }
+
     // -----------------------------------------------------------------------
     // is_zugzwang_prone
     // -----------------------------------------------------------------------
