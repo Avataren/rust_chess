@@ -42,7 +42,9 @@ pub fn spawn_start_screen(mut commands: Commands) {
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(36.0),
+                row_gap: Val::Px(16.0),
+                overflow: Overflow::scroll_y(),
+                padding: UiRect::axes(Val::Px(8.0), Val::Px(12.0)),
                 ..default()
             },
             BackgroundColor(Color::srgba(0.08, 0.08, 0.12, 0.93)),
@@ -52,14 +54,14 @@ pub fn spawn_start_screen(mut commands: Commands) {
             // Title
             parent.spawn((
                 Text::new("XavChess"),
-                TextFont { font_size: 96.0, ..default() },
+                TextFont { font_size: 60.0, ..default() },
                 TextColor(Color::WHITE),
             ));
 
             // Difficulty label
             parent.spawn((
                 Text::new("Difficulty"),
-                TextFont { font_size: 28.0, ..default() },
+                TextFont { font_size: 22.0, ..default() },
                 TextColor(Color::srgba(0.75, 0.75, 0.75, 1.0)),
             ));
 
@@ -67,7 +69,10 @@ pub fn spawn_start_screen(mut commands: Commands) {
             parent
                 .spawn(Node {
                     flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(24.0),
+                    flex_wrap: FlexWrap::Wrap,
+                    justify_content: JustifyContent::Center,
+                    column_gap: Val::Px(12.0),
+                    row_gap: Val::Px(10.0),
                     ..default()
                 })
                 .with_children(|row| {
@@ -80,7 +85,7 @@ pub fn spawn_start_screen(mut commands: Commands) {
             // Color label
             parent.spawn((
                 Text::new("Choose your side"),
-                TextFont { font_size: 28.0, ..default() },
+                TextFont { font_size: 22.0, ..default() },
                 TextColor(Color::srgba(0.75, 0.75, 0.75, 1.0)),
             ));
 
@@ -88,7 +93,10 @@ pub fn spawn_start_screen(mut commands: Commands) {
             parent
                 .spawn(Node {
                     flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(40.0),
+                    flex_wrap: FlexWrap::Wrap,
+                    justify_content: JustifyContent::Center,
+                    column_gap: Val::Px(20.0),
+                    row_gap: Val::Px(10.0),
                     ..default()
                 })
                 .with_children(|row| {
@@ -109,7 +117,7 @@ fn spawn_difficulty_button(
         .spawn((
             Button,
             Node {
-                padding: UiRect::axes(Val::Px(36.0), Val::Px(16.0)),
+                padding: UiRect::axes(Val::Px(20.0), Val::Px(12.0)),
                 ..default()
             },
             BackgroundColor(bg),
@@ -118,7 +126,7 @@ fn spawn_difficulty_button(
         .with_children(|btn| {
             btn.spawn((
                 Text::new(label),
-                TextFont { font_size: 28.0, ..default() },
+                TextFont { font_size: 22.0, ..default() },
                 TextColor(text_color),
             ));
         });
@@ -143,7 +151,7 @@ fn spawn_color_button(parent: &mut ChildSpawnerCommands, label: &str, button: Co
         .spawn((
             Button,
             Node {
-                padding: UiRect::axes(Val::Px(48.0), Val::Px(24.0)),
+                padding: UiRect::axes(Val::Px(28.0), Val::Px(16.0)),
                 border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
@@ -153,7 +161,7 @@ fn spawn_color_button(parent: &mut ChildSpawnerCommands, label: &str, button: Co
         .with_children(|btn| {
             btn.spawn((
                 Text::new(label),
-                TextFont { font_size: 34.0, ..default() },
+                TextFont { font_size: 28.0, ..default() },
                 TextColor(text_color),
             ));
         });

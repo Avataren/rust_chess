@@ -116,6 +116,7 @@ fn main() {
             Update,
             (
                 game_over_ui::handle_game_over_input,
+                game_over_ui::handle_restart_button,
                 start_screen_ui::handle_difficulty_buttons,
                 start_screen_ui::handle_start_buttons,
             ),

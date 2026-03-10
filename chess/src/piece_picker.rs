@@ -385,6 +385,7 @@ pub fn drop_piece(
                             return;
                         }
                     }
+                    *piece_is_picked_up = PieceIsPickedUp::default();
                     refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
                     game_event_ew.write(ChessEvent::new(ChessAction::MakeMove));
                 } else {
