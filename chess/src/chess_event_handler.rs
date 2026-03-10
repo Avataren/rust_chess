@@ -65,13 +65,6 @@ async fn alpha_beta_task(
     #[cfg(target_arch = "wasm32")]
     gloo_timers::future::TimeoutFuture::new(0).await;
 
-    // If there is only one legal move (e.g. forced king escape from check) there
-    // is no point running the full search — just return that move immediately.
-    let all_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
-    if all_moves.len() == 1 {
-        return (0, Some(all_moves[0]));
-    }
-
     iterative_deepening_root(chess_board, conductor, Some(book), depth, is_white, deadline, None)
 }
 
@@ -101,12 +94,26 @@ pub fn handle_async_moves(
                     break;
                 }
                 let ai_is_white = *player_color == PlayerColor::Black;
+
+                // If only one legal move, return it immediately (no search needed).
+                let forced = {
+                    let moves = get_all_legal_moves_for_color(
+                        &mut chess_board.chess_board,
+                        &move_generator.magic,
+                        ai_is_white,
+                    );
+                    if moves.len() == 1 { Some(moves[0]) } else { None }
+                };
+
                 let mut chess_board_clone = chess_board.chess_board.clone();
                 let move_generator_clone = move_generator.magic.clone();
                 let book_clone = opening_book.book.clone();
                 let depth = difficulty.search_depth();
                 let deadline = difficulty.time_limit().map(|d| std::time::Instant::now() + d);
                 task_executor.start(async move {
+                    if let Some(m) = forced {
+                        return (0, Some(m));
+                    }
                     alpha_beta_task(
                         &mut chess_board_clone,
                         &move_generator_clone,

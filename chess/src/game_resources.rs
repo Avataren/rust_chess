@@ -90,7 +90,13 @@ impl Difficulty {
     }
 
     /// Time budget for the search. `None` means run to the full depth cap.
+    /// On WASM `std::time::Instant` is unsupported, so the depth cap is the
+    /// only guard; time limits are native-only.
     pub fn time_limit(self) -> Option<std::time::Duration> {
+        #[cfg(target_arch = "wasm32")]
+        return None;
+
+        #[cfg(not(target_arch = "wasm32"))]
         match self {
             Difficulty::Easy     => None,
             Difficulty::Medium   => Some(std::time::Duration::from_secs(3)),

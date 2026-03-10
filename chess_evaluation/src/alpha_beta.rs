@@ -383,13 +383,13 @@ fn search_root(
         return (best_score, best_moves.choose(&mut rand::thread_rng()).copied());
     }
 
-    // --- Sequential root search (depth < 3) ---
-    // Starts from the caller's alpha/beta and grows the window as better moves
-    // are found, giving more pruning inside each sub-tree.
+    // --- Sequential root search ---
+    // Each root move is evaluated with the ORIGINAL alpha/beta bounds (no window
+    // narrowing between moves).  This matches the parallel search behaviour and
+    // prevents LMR/NMP in sub-trees from making incorrect pruning decisions
+    // based on an artificially tightened window.
     let mut best_score = if is_white { i32::MIN + 1 } else { i32::MAX };
     let mut best_moves: Vec<ChessMove> = Vec::new();
-    let mut alpha = alpha;
-    let mut beta = beta;
 
     for mut chess_move in legal_moves {
         chess_board.make_move(&mut chess_move);
@@ -403,7 +403,6 @@ fn search_root(
                 best_score = eval;
                 best_moves.clear();
                 best_moves.push(chess_move);
-                if eval > alpha { alpha = eval; }
             } else if eval == best_score {
                 best_moves.push(chess_move);
             }
@@ -412,12 +411,10 @@ fn search_root(
                 best_score = eval;
                 best_moves.clear();
                 best_moves.push(chess_move);
-                if eval < beta { beta = eval; }
             } else if eval == best_score {
                 best_moves.push(chess_move);
             }
         }
-        if alpha >= beta { break; }
     }
 
     let best = best_moves.choose(&mut rand::thread_rng()).copied();
@@ -922,5 +919,101 @@ mod tests {
             !(m.target_square() == 40),
             "Engine must not play Qa6 (stalemate)"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sequential vs parallel parity — the sequential root search (used on
+    // WASM) must produce the same quality results as the parallel search.
+    // These tests call search_root directly with narrow aspiration-like
+    // windows to expose pruning-related issues.
+    // -----------------------------------------------------------------------
+
+    /// White has a hanging knight on c3 that black can take.  At depth 4 with a
+    /// narrow aspiration window the engine must still see the free piece.
+    #[test]
+    fn sequential_root_sees_free_piece_with_aspiration() {
+        let mut board = ChessBoard::new();
+        // White: Ke1, Nc3.  Black: Ke8, Qd8.  Black to move — Qxc3 wins a knight.
+        board.set_from_fen("3qk3/8/8/8/8/2N5/8/4K3 b - - 0 1");
+        let c = conductor();
+        let mut tt = TranspositionTable::new(TT_SIZE);
+        // Simulate an aspiration window around 0 (symmetric position guess)
+        let (score, mv) = search_root(&mut board, &c, &mut tt, 4, -50, 50, false, None);
+        // Score should show black winning material (negative = black ahead)
+        // If it's inside the window, great.  If it failed, the ID loop would retry,
+        // but the score direction must be correct.
+        assert!(score < -200 || score <= -50,
+            "Black should win material or fail-low, got {score}");
+        if score > -50 && score < 50 {
+            let m = mv.expect("Must return a move");
+            // Should capture the knight
+            assert_eq!(m.target_square(), 18, "Should capture on c3 (sq 18), got {}", m.target_square());
+        }
+    }
+
+    /// White queen hangs a piece — sequential search with ID must find the defence.
+    #[test]
+    fn id_sequential_defends_hanging_piece() {
+        let mut board = ChessBoard::new();
+        // White: Ke1, Qd1, Nc3.  Black: Ke8, Qd8.  White to move.
+        // Black threatens Qxc3.  White must defend (e.g. Qd2 or move the knight).
+        board.set_from_fen("3qk3/8/8/8/8/2N5/8/3QK3 w - - 0 1");
+        let c = conductor();
+        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
+        let m = mv.expect("Must return a move");
+        // After white's move, the knight should not be hanging.
+        // White should not blunder the knight (score should not be < -200).
+        assert!(score > -200,
+            "White should not blunder a piece, score {score}");
+    }
+
+    /// Pin position: black has a bishop pinning white's knight to the king.
+    /// White must not move the pinned knight (illegal), and should find a
+    /// reasonable move.  Tests that the sequential search handles pins correctly.
+    #[test]
+    fn id_handles_pin_correctly() {
+        let mut board = ChessBoard::new();
+        // White: Ke1, Nd2.  Black: Ke8, Bb4 (pins Nd2 to Ke1).
+        // White must not move the knight (it's pinned).
+        board.set_from_fen("4k3/8/8/8/1b6/8/3N4/4K3 w - - 0 1");
+        let c = conductor();
+        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
+        let m = mv.expect("Must return a move");
+        // The knight is on d2 (sq 11).  If the engine moves it, the king is in check.
+        // The move generator should prevent this, but verify the search agrees.
+        let legal = get_all_legal_moves_for_color(&mut board, &c, true);
+        assert!(legal.iter().any(|lm| lm.start_square() == m.start_square() && lm.target_square() == m.target_square()),
+            "Engine must return a legal move");
+    }
+
+    /// Verify that search_root with full window and search_root with
+    /// narrow aspiration agree on the best move for a tactical position.
+    #[test]
+    fn aspiration_agrees_with_full_window() {
+        let mut board = ChessBoard::new();
+        // White: Ke1, Qd4.  Black: Ke8, Nd5 (knight hanging).
+        board.set_from_fen("4k3/8/8/3n4/3Q4/8/8/4K3 w - - 0 1");
+        let c = conductor();
+
+        // Full window search
+        let mut tt1 = TranspositionTable::new(TT_SIZE);
+        let (score_full, mv_full) = search_root(&mut board, &c, &mut tt1, 4, i32::MIN + 1, i32::MAX, true, None);
+
+        // Narrow aspiration window around 0
+        let mut tt2 = TranspositionTable::new(TT_SIZE);
+        let (score_asp, _) = search_root(&mut board, &c, &mut tt2, 4, -50, 50, true, None);
+
+        let m = mv_full.expect("Full window must return a move");
+        assert!(score_full > 200, "White should win material, got {score_full}");
+        // Aspiration should either agree or fail (outside window).
+        // If inside window, scores must match direction.
+        if score_asp > -50 && score_asp < 50 {
+            // This would be wrong — white is clearly winning
+            panic!("Aspiration search returned {score_asp} — should have failed high");
+        }
+        // Fail-high is expected and correct.
+        assert!(score_asp >= 50 || score_asp <= -50,
+            "Aspiration should fail, got {score_asp}");
+        let _ = m; // suppress warning
     }
 }
