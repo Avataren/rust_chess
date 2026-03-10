@@ -4,3 +4,4 @@ pyyaml
 numpy
 python-chess
 tqdm
+tensorboard

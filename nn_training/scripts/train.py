@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import argparse
-import os
 import random
+from pathlib import Path
 
 import numpy as np
 import torch
 import yaml
 from torch import nn
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from nnue_train.dataset import JsonlPositionDataset
@@ -33,7 +34,12 @@ def train_epoch(model, loader, optimizer, scaler, device, cfg):
     cp_loss_fn = nn.HuberLoss(delta=100.0)
     wdl_loss_fn = nn.CrossEntropyLoss()
 
-    total = 0.0
+    total_loss = 0.0
+    total_cp_loss = 0.0
+    total_wdl_loss = 0.0
+    total_cp_mae = 0.0
+    total_wdl_acc = 0.0
+
     for x, cp, wdl in tqdm(loader, desc="train", leave=False):
         x = x.to(device, non_blocking=True)
         cp = cp.to(device, non_blocking=True)
@@ -54,9 +60,23 @@ def train_epoch(model, loader, optimizer, scaler, device, cfg):
         scaler.step(optimizer)
         scaler.update()
 
-        total += float(loss.item())
+        cp_mae = torch.mean(torch.abs(cp_pred - cp))
+        wdl_acc = (torch.argmax(wdl_logits, dim=1) == wdl_idx).float().mean()
 
-    return total / max(1, len(loader))
+        total_loss += float(loss.item())
+        total_cp_loss += float(cp_loss.item())
+        total_wdl_loss += float(wdl_loss.item())
+        total_cp_mae += float(cp_mae.item())
+        total_wdl_acc += float(wdl_acc.item())
+
+    denom = max(1, len(loader))
+    return {
+        "loss": total_loss / denom,
+        "cp_loss": total_cp_loss / denom,
+        "wdl_loss": total_wdl_loss / denom,
+        "cp_mae": total_cp_mae / denom,
+        "wdl_acc": total_wdl_acc / denom,
+    }
 
 
 @torch.no_grad()
@@ -65,7 +85,12 @@ def eval_epoch(model, loader, device, cfg):
     cp_loss_fn = nn.HuberLoss(delta=100.0)
     wdl_loss_fn = nn.CrossEntropyLoss()
 
-    total = 0.0
+    total_loss = 0.0
+    total_cp_loss = 0.0
+    total_wdl_loss = 0.0
+    total_cp_mae = 0.0
+    total_wdl_acc = 0.0
+
     for x, cp, wdl in tqdm(loader, desc="val", leave=False):
         x = x.to(device, non_blocking=True)
         cp = cp.to(device, non_blocking=True)
@@ -76,15 +101,30 @@ def eval_epoch(model, loader, device, cfg):
         cp_loss = cp_loss_fn(cp_pred, cp)
         wdl_loss = wdl_loss_fn(wdl_logits, wdl_idx)
         loss = cfg["loss"]["cp_weight"] * cp_loss + cfg["loss"]["wdl_weight"] * wdl_loss
-        total += float(loss.item())
 
-    return total / max(1, len(loader))
+        cp_mae = torch.mean(torch.abs(cp_pred - cp))
+        wdl_acc = (torch.argmax(wdl_logits, dim=1) == wdl_idx).float().mean()
 
+        total_loss += float(loss.item())
+        total_cp_loss += float(cp_loss.item())
+        total_wdl_loss += float(wdl_loss.item())
+        total_cp_mae += float(cp_mae.item())
+        total_wdl_acc += float(wdl_acc.item())
+
+    denom = max(1, len(loader))
+    return {
+        "loss": total_loss / denom,
+        "cp_loss": total_cp_loss / denom,
+        "wdl_loss": total_wdl_loss / denom,
+        "cp_mae": total_cp_mae / denom,
+        "wdl_acc": total_wdl_acc / denom,
+    }
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/default.yaml")
     ap.add_argument("--out", default="artifacts/checkpoint.pt")
+    ap.add_argument("--tb-logdir", default="runs/nn_training", help="TensorBoard log directory")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config, "r", encoding="utf-8"))
@@ -136,25 +176,51 @@ def main():
     scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
 
     best_val = float("inf")
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(1, cfg["training"]["epochs"] + 1):
-        tr = train_epoch(model, train_loader, optimizer, scaler, device, cfg)
-        va = eval_epoch(model, val_loader, device, cfg)
-        print(f"epoch={epoch} train={tr:.4f} val={va:.4f}")
+    writer = SummaryWriter(log_dir=args.tb_logdir)
+    print(f"TensorBoard logdir: {args.tb_logdir}")
 
-        if va < best_val:
-            best_val = va
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "config": cfg,
-                    "val_loss": va,
-                    "epoch": epoch,
-                },
-                args.out,
+    try:
+        for epoch in range(1, cfg["training"]["epochs"] + 1):
+            tr = train_epoch(model, train_loader, optimizer, scaler, device, cfg)
+            va = eval_epoch(model, val_loader, device, cfg)
+
+            print(
+                f"epoch={epoch} "
+                f"train_loss={tr['loss']:.4f} val_loss={va['loss']:.4f} "
+                f"train_cp_mae={tr['cp_mae']:.2f} val_cp_mae={va['cp_mae']:.2f} "
+                f"train_wdl_acc={tr['wdl_acc']:.3f} val_wdl_acc={va['wdl_acc']:.3f}"
             )
-            print(f"saved checkpoint: {args.out}")
+
+            writer.add_scalar("train/loss", tr["loss"], epoch)
+            writer.add_scalar("train/cp_loss", tr["cp_loss"], epoch)
+            writer.add_scalar("train/wdl_loss", tr["wdl_loss"], epoch)
+            writer.add_scalar("train/cp_mae", tr["cp_mae"], epoch)
+            writer.add_scalar("train/wdl_acc", tr["wdl_acc"], epoch)
+
+            writer.add_scalar("val/loss", va["loss"], epoch)
+            writer.add_scalar("val/cp_loss", va["cp_loss"], epoch)
+            writer.add_scalar("val/wdl_loss", va["wdl_loss"], epoch)
+            writer.add_scalar("val/cp_mae", va["cp_mae"], epoch)
+            writer.add_scalar("val/wdl_acc", va["wdl_acc"], epoch)
+            writer.flush()
+
+            if va["loss"] < best_val:
+                best_val = va["loss"]
+                torch.save(
+                    {
+                        "model_state": model.state_dict(),
+                        "config": cfg,
+                        "val_loss": va["loss"],
+                        "epoch": epoch,
+                    },
+                    out_path,
+                )
+                print(f"saved checkpoint: {out_path}")
+    finally:
+        writer.close()
 
 
 if __name__ == "__main__":

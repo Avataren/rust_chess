@@ -101,6 +101,20 @@ PYTHONPATH=. python scripts/export_weights.py \
   --output artifacts/nnue_like_weights.npz
 ```
 
+## 5) Monitor with TensorBoard
+
+Training writes TensorBoard scalars by default to `runs/nn_training`.
+
+```bash
+tensorboard --logdir runs
+```
+
+You can override the log directory:
+
+```bash
+PYTHONPATH=. python scripts/train.py --config configs/default.yaml --out checkpoint.pt --tb-logdir runs/experiment_01
+```
+
 ## Next step for Rust integration
 
 Implement a Rust evaluator in `chess_evaluation` that:
