@@ -61,7 +61,26 @@ impl ChessBoard {
     pub fn toggle_turn(&mut self) {
         self.white_is_active = !self.white_is_active;
     }
-    
+
+    /// Give the opponent a free move without moving any piece.
+    /// Must always be followed by exactly one `undo_null_move()`.
+    pub fn make_null_move(&mut self) {
+        // Sentinel with flag=0 (NO_FLAG): get_last_move() will not report
+        // PAWN_TWO_UP_FLAG, erasing en-passant rights for the sub-search.
+        self.move_history.push((ChessMove::new(0, 0), self.castling_rights));
+        self.white_is_active = !self.white_is_active;
+        // Incremental hash update: only the side-to-move bit changes.
+        let t = ZobristTable::get();
+        let new_hash = self.current_hash() ^ t.side_to_move;
+        self.position_history.push(new_hash);
+    }
+
+    pub fn undo_null_move(&mut self) {
+        self.move_history.pop();
+        self.position_history.pop();
+        self.white_is_active = !self.white_is_active;
+    }
+
     pub fn clear(&mut self) {
         self.white = Bitboard(0);
         self.black = Bitboard(0);
@@ -762,5 +781,43 @@ mod tests {
         let h_b = board_b.current_hash();
 
         assert_eq!(h_a, h_b, "Same position must always hash the same");
+    }
+
+    #[test]
+    fn null_move_preserves_castling_rights() {
+        let mut board = ChessBoard::new();
+        let rights_before = board.castling_rights;
+        board.make_null_move();
+        assert_eq!(board.castling_rights, rights_before);
+        board.undo_null_move();
+        assert_eq!(board.castling_rights, rights_before);
+    }
+
+    #[test]
+    fn null_move_round_trip_restores_state() {
+        let mut board = ChessBoard::new();
+        let hash_before = board.current_hash();
+        let was_white = board.is_white_active();
+        board.make_null_move();
+        assert_ne!(board.current_hash(), hash_before);
+        assert_ne!(board.is_white_active(), was_white);
+        board.undo_null_move();
+        assert_eq!(board.current_hash(), hash_before);
+        assert_eq!(board.is_white_active(), was_white);
+    }
+
+    #[test]
+    fn null_move_clears_en_passant() {
+        let mut board = ChessBoard::new();
+        let mut mv = ChessMove::new_with_flag(12, 28, ChessMove::PAWN_TWO_UP_FLAG);
+        board.make_move(&mut mv);
+        // After e2-e4, last move has PAWN_TWO_UP_FLAG.
+        assert!(board.get_last_move().map_or(false, |m| m.has_flag(ChessMove::PAWN_TWO_UP_FLAG)));
+        board.make_null_move();
+        // Null move sentinel erases the en passant flag.
+        assert!(!board.get_last_move().map_or(false, |m| m.has_flag(ChessMove::PAWN_TWO_UP_FLAG)));
+        board.undo_null_move();
+        // Undo restores the original last move.
+        assert!(board.get_last_move().map_or(false, |m| m.has_flag(ChessMove::PAWN_TWO_UP_FLAG)));
     }
 }
