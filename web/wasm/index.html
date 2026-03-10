@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>WASM Chess</title>
     <style>
       html,
@@ -37,6 +38,7 @@
         -moz-user-select: none; /* Firefox */
         -ms-user-select: none; /* Internet Explorer/Edge */
         user-select: none; /* Non-prefixed version, currently supported by Chrome, Opera, and Edge */
+        touch-action: none;
         visibility: hidden;
         width: 100% !important;
         height: 100% !important;
@@ -103,6 +105,11 @@
         });
 
       canvas.addEventListener('click', resumeAudioContext);
+      canvas.addEventListener('touchstart', resumeAudioContext, { passive: true });
+
+      canvas.addEventListener('contextmenu', function (event) {
+        event.preventDefault();
+      });
 
       document.addEventListener('mousedown', function (event) {
         if (event.target !== canvas) {

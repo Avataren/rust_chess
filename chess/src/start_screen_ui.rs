@@ -124,17 +124,17 @@ fn spawn_difficulty_button(
 fn difficulty_colors(button: DifficultyButton, selected: bool) -> (Color, Color) {
     let (dim_bg, bright_bg, text) = match button {
         DifficultyButton::Easy   => (
-            Color::srgb(0.10, 0.28, 0.12),
+            Color::srgb(0.13, 0.15, 0.13),   // near-grey, faint green tint
             Color::srgb(0.18, 0.55, 0.22),
             Color::srgb(0.75, 1.0, 0.78),
         ),
         DifficultyButton::Medium => (
-            Color::srgb(0.28, 0.22, 0.06),
+            Color::srgb(0.15, 0.14, 0.12),   // near-grey, faint warm tint
             Color::srgb(0.55, 0.42, 0.08),
             Color::srgb(1.0, 0.92, 0.55),
         ),
         DifficultyButton::Hard   => (
-            Color::srgb(0.30, 0.08, 0.08),
+            Color::srgb(0.15, 0.12, 0.12),   // near-grey, faint red tint
             Color::srgb(0.60, 0.12, 0.12),
             Color::srgb(1.0, 0.6, 0.6),
         ),

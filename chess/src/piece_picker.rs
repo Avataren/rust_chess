@@ -31,9 +31,9 @@ pub struct PieceIsPickedUp {
     pub piece_type: Option<char>,
     pub piece_entity: Option<Entity>,
     pub original_row_col: (usize, usize),
-    // pub target_row_col: (usize, usize),
     pub current_position: Vec3,
     pub is_dragging: bool,
+    pub is_tap_selected: bool,
 }
 
 impl Default for PieceIsPickedUp {
@@ -42,9 +42,9 @@ impl Default for PieceIsPickedUp {
             piece_type: None,
             piece_entity: None,
             original_row_col: (0, 0),
-            // target_row_col: (0, 0),
             current_position: Vec3::new(0.0, 0.0, 0.0),
             is_dragging: false,
+            is_tap_selected: false,
         }
     }
 }
@@ -59,7 +59,13 @@ pub fn handle_touch_input(
     for ev in touch_er.read() {
         match ev.phase {
             TouchPhase::Started => {
-                if !piece_is_picked_up.is_dragging {
+                if piece_is_picked_up.is_tap_selected && !piece_is_picked_up.is_dragging {
+                    // Piece already selected via tap — treat this touch as the destination
+                    chess_drop_ew.write(DropPieceEvent {
+                        position: ev.position,
+                    });
+                } else {
+                    // Nothing selected yet — pick up whatever is at this position
                     chess_pickup_ew.write(PickUpPieceEvent {
                         position: ev.position,
                     });
@@ -70,19 +76,13 @@ pub fn handle_touch_input(
                     position: ev.position,
                 });
             }
-            TouchPhase::Ended => {
+            TouchPhase::Ended | TouchPhase::Canceled => {
                 if piece_is_picked_up.is_dragging {
                     chess_drop_ew.write(DropPieceEvent {
                         position: ev.position,
                     });
                 }
-            }
-            TouchPhase::Canceled => {
-                if piece_is_picked_up.is_dragging {
-                    chess_drop_ew.write(DropPieceEvent {
-                        position: ev.position,
-                    });
-                }
+                // If tap-selected (not dragging), keep the selection for the next tap
             }
         }
     }
@@ -161,14 +161,15 @@ pub fn pick_up_piece(
     }
 
     if let Ok((camera, camera_transform)) = q_camera.single() {
-        let board_coords = get_board_coords_from_cursor(
+        let Some(board_coords) = get_board_coords_from_cursor(
             position.unwrap(),
             camera,
             camera_transform,
             &board_transform,
             &board_dimensions,
-        )
-        .expect("Failed to get board coordinates"); // Consider handling this more gracefully
+        ) else {
+            return;
+        };
 
         if let Some((col, row)) =
             board_coords_to_chess_coords(board_coords, board_dimensions.square_size)
@@ -186,7 +187,8 @@ pub fn pick_up_piece(
                 piece_is_picked_up.original_row_col = (row, col);
                 piece_is_picked_up.current_position = transform.translation;
                 piece_is_picked_up.piece_entity = Some(entity);
-                piece_is_picked_up.is_dragging = true;
+                piece_is_picked_up.is_dragging = false;
+                piece_is_picked_up.is_tap_selected = true;
 
                 println!("**************** PICKUP ****************");
 
@@ -212,7 +214,7 @@ pub fn drag_piece(
     q_camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     board_transform: Res<ChessBoardTransform>,
     board_dimensions: Res<BoardDimensions>,
-    piece_is_picked_up: ResMut<PieceIsPickedUp>,
+    mut piece_is_picked_up: ResMut<PieceIsPickedUp>,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     mut chess_input_er: MessageReader<DragPieceEvent>,
 ) {
@@ -224,22 +226,24 @@ pub fn drag_piece(
         return;
     }
 
-    if (!piece_is_picked_up.is_dragging) || (piece_is_picked_up.piece_entity.is_none()) {
+    if piece_is_picked_up.piece_entity.is_none() {
         return;
     }
 
     if let Ok((camera, camera_transform)) = q_camera.single() {
         if let Some(piece_entity) = piece_is_picked_up.piece_entity {
             if let Ok((_, mut transform, _)) = piece_query.get_mut(piece_entity) {
-                let board_coords = get_board_coords_from_cursor(
+                let Some(board_coords) = get_board_coords_from_cursor(
                     position.unwrap(),
                     camera,
                     camera_transform,
                     &board_transform,
                     &board_dimensions,
-                )
-                .expect("Failed to get board coordinates"); // Consider handling this more gracefully
+                ) else {
+                    return;
+                };
 
+                piece_is_picked_up.is_dragging = true;
                 transform.translation = Vec3::new(
                     board_coords.x - board_dimensions.board_size.x / 2.0,
                     board_coords.y - board_dimensions.board_size.y / 2.0,
@@ -281,10 +285,11 @@ pub fn drop_piece(
         return;
     }
 
-    if !piece_is_picked_up.is_dragging || piece_is_picked_up.piece_entity.is_none() {
+    let has_piece = piece_is_picked_up.piece_entity.is_some();
+    let can_drop = piece_is_picked_up.is_dragging || piece_is_picked_up.is_tap_selected;
+    if !has_piece || !can_drop {
         *piece_is_picked_up = PieceIsPickedUp::default();
         refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
-        println!("Not dragging piece");
         return;
     }
 
@@ -296,14 +301,17 @@ pub fn drop_piece(
 
         if let Some(piece_entity) = piece_is_picked_up.piece_entity {
             if let Ok((_, _transform, mut chess_piece)) = piece_query.get_mut(piece_entity) {
-                let board_coords = get_board_coords_from_cursor(
+                let Some(board_coords) = get_board_coords_from_cursor(
                     position.unwrap(),
                     camera,
                     camera_transform,
                     &board_transform,
                     &board_dimensions,
-                )
-                .expect("Failed to get board coordinates"); // Consider handling this more gracefully
+                ) else {
+                    *piece_is_picked_up = PieceIsPickedUp::default();
+                    refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
+                    return;
+                };
 
                 if let Some((col, row)) =
                     board_coords_to_chess_coords(board_coords, board_dimensions.square_size)

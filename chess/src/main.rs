@@ -53,7 +53,7 @@ fn main() {
                 resizable: true,
                 //mode: WindowMode::BorderlessFullscreen,
                 resolution: WindowResolution::new(1280, 1280),
-                prevent_default_event_handling: false,
+                prevent_default_event_handling: true,
                 present_mode: bevy::window::PresentMode::AutoNoVsync,
                 ..default()
             }),
