@@ -11,9 +11,9 @@ BINARY="target/${TARGET}/${PROFILE}/${CRATE}.wasm"
 # ── Check / install wasm-bindgen-cli ─────────────────────────────────────────
 
 REQUIRED_WBG=$(cargo tree -p ${CRATE} --target ${TARGET} 2>/dev/null \
-    | grep "^[│ ]*wasm-bindgen v" \
+    | grep "wasm-bindgen v" \
     | head -1 \
-    | sed 's/.*wasm-bindgen v\([0-9.]*\).*/\1/')
+    | sed 's/.*wasm-bindgen v\([0-9.]*\).*/\1/' || true)
 
 if [[ -z "$REQUIRED_WBG" ]]; then
     echo "Could not determine required wasm-bindgen version — continuing anyway"
