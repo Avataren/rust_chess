@@ -18,7 +18,15 @@ def main():
     random.seed(args.seed)
     lines = Path(args.input).read_text(encoding="utf-8").splitlines()
     random.shuffle(lines)
-    n_val = int(len(lines) * args.val_ratio)
+    total = len(lines)
+    if total == 0:
+        n_val = 0
+    else:
+        n_val = int(total * args.val_ratio)
+        n_val = max(1, n_val)
+        if total > 1:
+            n_val = min(n_val, total - 1)
+
     val = lines[:n_val]
     train = lines[n_val:]
 

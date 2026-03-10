@@ -86,6 +86,9 @@ python scripts/generate_data.py \
 python scripts/split_dataset.py --input data/all.jsonl --train data/train.jsonl --val data/val.jsonl
 ```
 
+For non-empty inputs, the splitter guarantees at least 1 validation row (and keeps at least 1 training row when possible), so small datasets still work end-to-end.
+
+
 ## 3) Train
 
 ```bash
