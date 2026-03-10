@@ -4,6 +4,7 @@ use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
 };
 use rand::seq::SliceRandom;
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::time::Instant;
@@ -339,10 +340,11 @@ fn search_root(
     // Order: prev_best first (PV move from previous ID iteration), then MVV-LVA.
     order_moves(&mut legal_moves, prev_best);
 
-    // --- Parallel root search (depth >= 3) ---
+    // --- Parallel root search (depth >= 3, native only) ---
     // Each root move is evaluated independently on its own board clone with a
     // fresh per-thread TT.  The aspiration window [alpha, beta] is forwarded to
     // every sub-search, narrowing the search space at each thread.
+    #[cfg(not(target_arch = "wasm32"))]
     if depth >= 3 {
         let results: Vec<(i32, ChessMove)> = legal_moves
             .into_par_iter()
