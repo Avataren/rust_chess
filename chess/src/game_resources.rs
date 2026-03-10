@@ -75,17 +75,29 @@ pub enum Difficulty {
 
 impl Difficulty {
     pub fn search_depth(self) -> i32 {
-        match self {
+        let d = match self {
             Difficulty::Easy     => 2,
             Difficulty::Medium   => 4,
             Difficulty::Hard     => 7,
             Difficulty::VeryHard => 12,
-        }
+        };
+        // WASM runs the search on the browser's main thread — cap depth to
+        // prevent page freezes.  The time limit below provides the real guard.
+        #[cfg(target_arch = "wasm32")]
+        { d.min(4) }
+        #[cfg(not(target_arch = "wasm32"))]
+        d
     }
 
     /// Time budget for the search. `None` means run to the full depth cap
     /// (only appropriate for shallow depths that finish quickly).
     pub fn time_limit(self) -> Option<std::time::Duration> {
+        // On WASM the search blocks the browser main thread, so always impose
+        // a hard ceiling to avoid the browser showing "page unresponsive".
+        #[cfg(target_arch = "wasm32")]
+        return Some(std::time::Duration::from_millis(800));
+
+        #[cfg(not(target_arch = "wasm32"))]
         match self {
             Difficulty::Easy     => None,
             Difficulty::Medium   => None,

@@ -59,6 +59,12 @@ async fn alpha_beta_task(
     is_white: bool,
     deadline: Option<std::time::Instant>,
 ) -> (i32, Option<ChessMove>) {
+    // On WASM the async executor runs as a microtask, which fires *before*
+    // the browser's paint step.  A setTimeout(0) promotes the continuation
+    // to a proper browser task so the engine renders the piece landing first.
+    #[cfg(target_arch = "wasm32")]
+    gloo_timers::future::TimeoutFuture::new(0).await;
+
     iterative_deepening_root(chess_board, conductor, Some(book), depth, is_white, deadline, None)
 }
 
