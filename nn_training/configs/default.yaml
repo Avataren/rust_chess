@@ -26,4 +26,4 @@ data:
   max_cp_abs: 1500
 
 export:
-  output_path: artifacts/nnue_like_weights.npz
+  output_path: artifacts/eval.onnx

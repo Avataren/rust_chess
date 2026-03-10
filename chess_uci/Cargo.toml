@@ -1,0 +1,10 @@
+[package]
+name = "chess_uci"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chess_foundation = { path = "../chess_foundation" }
+chess_board     = { path = "../chess_board" }
+chess_evaluation = { path = "../chess_evaluation" }
+move_generator  = { path = "../move_generator" }

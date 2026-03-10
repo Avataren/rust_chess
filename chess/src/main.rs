@@ -1,5 +1,5 @@
 use bevy::{ecs::message::MessageWriter, prelude::*, window::WindowResolution};
-use bevy_fps_counter::FpsCounterPlugin;
+use bevy_fps_counter::{FpsCounterPlugin, FpsCounterText};
 mod board;
 mod board_accessories;
 mod chess_event_handler;
@@ -13,6 +13,7 @@ mod piece_picker;
 mod pieces;
 mod sound;
 mod embed_plugin;
+mod material_ui;
 mod preload_assets_plugin;
 mod input_plugin;
 use bevy_tweening::TweeningPlugin;
@@ -40,6 +41,15 @@ struct PieceConductorRes {
 
 
 
+fn reposition_fps_counter(mut q: Query<&mut Node, With<FpsCounterText>>) {
+    for mut node in q.iter_mut() {
+        node.position_type = PositionType::Absolute;
+        node.top   = Val::Px(8.0);
+        node.right = Val::Px(14.0);
+        node.left  = Val::Auto;
+    }
+}
+
 fn main() {
     if cfg!(debug_assertions) {
         std::env::set_var("RUST_BACKTRACE", "1");
@@ -65,6 +75,7 @@ fn main() {
         .add_plugins(PreloadAssetsPlugin)
         .add_plugins(ChessInputPlugin)
         .add_systems(PreStartup, setup)
+        .add_systems(PostStartup, reposition_fps_counter)
         .add_systems(
             Startup,
             (
@@ -76,6 +87,7 @@ fn main() {
                 start_screen_ui::spawn_start_screen,
                 opening_name_ui::spawn_opening_name_ui,
                 opening_name_ui::spawn_thinking_indicator,
+                material_ui::spawn_material_ui,
             )
         )
         .add_systems(
@@ -94,6 +106,7 @@ fn main() {
                 opening_name_ui::detect_opening,
                 opening_name_ui::update_opening_name_ui,
                 opening_name_ui::update_thinking_ui,
+                material_ui::update_material_ui,
             ).chain(),
         )
         .add_systems(

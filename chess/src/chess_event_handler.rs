@@ -59,7 +59,7 @@ async fn alpha_beta_task(
     is_white: bool,
     deadline: Option<std::time::Instant>,
 ) -> (i32, Option<ChessMove>) {
-    iterative_deepening_root(chess_board, conductor, Some(book), depth, is_white, deadline)
+    iterative_deepening_root(chess_board, conductor, Some(book), depth, is_white, deadline, None)
 }
 
 pub fn handle_async_moves(
