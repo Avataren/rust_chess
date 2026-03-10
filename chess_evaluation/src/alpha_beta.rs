@@ -205,6 +205,17 @@ pub fn alpha_beta(
     }
 
     let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+
+    if legal_moves.is_empty() {
+        if in_check {
+            // Checkmate: worst possible for the side to move.
+            return if is_white { (-1_000_000, None) } else { (1_000_000, None) };
+        } else {
+            // Stalemate: draw.
+            return (0, None);
+        }
+    }
+
     order_moves(&mut legal_moves, tt_move);
 
     let mut best_move: Option<ChessMove> = None;
@@ -406,6 +417,7 @@ fn search_root(
                 best_moves.push(chess_move);
             }
         }
+        if alpha >= beta { break; }
     }
 
     let best = best_moves.choose(&mut rand::thread_rng()).copied();
@@ -873,5 +885,42 @@ mod tests {
         let (_, mv) = alpha_beta_root(&mut board, &c, None, 3, true);
         assert!(mv.is_some(), "Engine must return an evasion move when in check");
         assert_eq!(board.current_hash(), hash_before, "Board must be clean after search");
+    }
+
+    // -----------------------------------------------------------------------
+    // Stalemate detection
+    // -----------------------------------------------------------------------
+
+    /// Black king on a8, white king on c7, white queen on b6.
+    /// Black has no legal moves and is NOT in check → stalemate → draw (score ≈ 0).
+    #[test]
+    fn stalemate_is_draw() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("k7/8/1QK5/8/8/8/8/8 b - - 0 1");
+        let c = conductor();
+        let moves = get_all_legal_moves_for_color(&mut board, &c, false);
+        assert!(moves.is_empty(), "Black should have no legal moves (stalemate)");
+        let mut tt = TranspositionTable::new(1 << 16);
+        let (score, _) = alpha_beta(&mut board, &c, &mut tt, 2, i32::MIN + 1, i32::MAX, false, true);
+        assert_eq!(score, 0, "Stalemate must evaluate to 0 (draw), got {score}");
+    }
+
+    /// White is winning and has a move that stalemates black vs. a move that
+    /// keeps material advantage.  The engine must NOT prefer stalemate.
+    #[test]
+    fn engine_avoids_stalemate_when_winning() {
+        let mut board = ChessBoard::new();
+        // White: Kc6, Qd5, Pa7.  Black: Ka8.
+        // Qa6 is stalemate; anything else keeps the winning advantage.
+        board.set_from_fen("k7/P7/2K5/3Q4/8/8/8/8 w - - 0 1");
+        let c = conductor();
+        let (score, mv) = alpha_beta_root(&mut board, &c, None, 4, true);
+        let m = mv.expect("Engine must return a move");
+        assert!(score > 500, "White is winning, score should be large, got {score}");
+        // The move must not be Qa6 (stalemate = draw = score 0).
+        assert!(
+            !(m.target_square() == 40),
+            "Engine must not play Qa6 (stalemate)"
+        );
     }
 }

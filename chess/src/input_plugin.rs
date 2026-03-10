@@ -34,6 +34,7 @@ impl Plugin for ChessInputPlugin {
                     piece_picker::pick_up_piece,
                     piece_picker::drag_piece,
                     piece_picker::drop_piece,
+                    piece_picker::hide_debug_on_drop,
                     pieces::spawn_chess_pieces,
                     chess_event_handler::handle_async_moves,
                 )

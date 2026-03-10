@@ -65,6 +65,13 @@ async fn alpha_beta_task(
     #[cfg(target_arch = "wasm32")]
     gloo_timers::future::TimeoutFuture::new(0).await;
 
+    // If there is only one legal move (e.g. forced king escape from check) there
+    // is no point running the full search — just return that move immediately.
+    let all_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+    if all_moves.len() == 1 {
+        return (0, Some(all_moves[0]));
+    }
+
     iterative_deepening_root(chess_board, conductor, Some(book), depth, is_white, deadline, None)
 }
 

@@ -3,7 +3,7 @@ use bevy::{
     prelude::*,
 };
 use bevy::ecs::message::{MessageReader, MessageWriter};
-use move_generator::move_generator::get_legal_move_list_from_square;
+use move_generator::move_generator::{get_all_legal_moves_for_color, get_legal_move_list_from_square};
 
 use crate::{
     board::{BoardDimensions, ChessBoardTransform},
@@ -12,7 +12,7 @@ use crate::{
         ChessAction, ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent,
         RefreshPiecesFromBoardEvent,
     },
-    game_resources::{GameOverState, GamePhase, PendingGameOver, PlayerColor, ValidMoves},
+    game_resources::{GameOverState, GamePhase, PlayerColor, ValidMoves},
     pieces::{get_board_coords_from_cursor, ChessPieceComponent},
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, PieceConductorRes,
@@ -261,16 +261,16 @@ pub fn drop_piece(
     mut piece_is_picked_up: ResMut<PieceIsPickedUp>,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
     mut chess_input_er: MessageReader<DropPieceEvent>,
-    mut debug_squares_query: Query<(Entity, &DebugSquare)>,
     mut commands: Commands,
     sound_effects: Res<SoundEffects>,
     mut chess_board: ResMut<ChessBoardRes>,
     mut refresh_pieces_events: MessageWriter<RefreshPiecesFromBoardEvent>,
     mut valid_moves_res: ResMut<ValidMoves>,
     mut game_event_ew: MessageWriter<ChessEvent>,
-    game_over_state: ResMut<GameOverState>,
-    mut pending_game_over: ResMut<PendingGameOver>,
+    mut game_over_state: ResMut<GameOverState>,
     game_phase: Res<GamePhase>,
+    player_color: Res<PlayerColor>,
+    move_generator_res: Res<PieceConductorRes>,
 ) {
     let mut position = Option::None;
     for inp in chess_input_er.read() {
@@ -294,10 +294,6 @@ pub fn drop_piece(
     }
 
     if let Ok((camera, camera_transform)) = q_camera.single() {
-        //hide debug squares
-        for (entity, _) in debug_squares_query.iter_mut() {
-            commands.entity(entity).insert(Visibility::Hidden);
-        }
 
         if let Some(piece_entity) = piece_is_picked_up.piece_entity {
             if let Ok((_, _transform, mut chess_piece)) = piece_query.get_mut(piece_entity) {
@@ -360,8 +356,33 @@ pub fn drop_piece(
                             spawn_sound(&mut commands, &sound_effects, "move-self.ogg");
                         }
                         println!("Released piece at row: {}, col: {}", row, col);
+
                         if chess_board.chess_board.is_repetition(3) {
-                            pending_game_over.0 = Some(GameOverState::Draw);
+                            println!("Draw by repetition!");
+                            *game_over_state = GameOverState::Draw;
+                            refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
+                            *piece_is_picked_up = PieceIsPickedUp::default();
+                            return;
+                        }
+
+                        // Check if the AI has any legal moves before starting the search.
+                        let ai_is_white = *player_color == PlayerColor::Black;
+                        let ai_moves = get_all_legal_moves_for_color(
+                            &mut chess_board.chess_board,
+                            &move_generator_res.magic,
+                            ai_is_white,
+                        );
+                        if ai_moves.is_empty() {
+                            if move_generator_res.magic.is_king_in_check(&chess_board.chess_board, ai_is_white) {
+                                println!("Checkmate — player wins!");
+                                *game_over_state = GameOverState::PlayerWins;
+                            } else {
+                                println!("Stalemate!");
+                                *game_over_state = GameOverState::Stalemate;
+                            }
+                            refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
+                            *piece_is_picked_up = PieceIsPickedUp::default();
+                            return;
                         }
                     }
                     refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
@@ -372,5 +393,18 @@ pub fn drop_piece(
                 }
             }
         }
+    }
+}
+
+pub fn hide_debug_on_drop(
+    mut chess_input_er: MessageReader<DropPieceEvent>,
+    mut debug_squares_query: Query<(Entity, &DebugSquare)>,
+    mut commands: Commands,
+) {
+    for _ in chess_input_er.read() {
+        for (entity, _) in debug_squares_query.iter_mut() {
+            commands.entity(entity).insert(Visibility::Hidden);
+        }
+        break;
     }
 }

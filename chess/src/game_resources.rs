@@ -89,19 +89,12 @@ impl Difficulty {
         d
     }
 
-    /// Time budget for the search. `None` means run to the full depth cap
-    /// (only appropriate for shallow depths that finish quickly).
+    /// Time budget for the search. `None` means run to the full depth cap.
     pub fn time_limit(self) -> Option<std::time::Duration> {
-        // On WASM the search blocks the browser main thread, so always impose
-        // a hard ceiling to avoid the browser showing "page unresponsive".
-        #[cfg(target_arch = "wasm32")]
-        return Some(std::time::Duration::from_millis(800));
-
-        #[cfg(not(target_arch = "wasm32"))]
         match self {
             Difficulty::Easy     => None,
-            Difficulty::Medium   => None,
-            Difficulty::Hard     => None,
+            Difficulty::Medium   => Some(std::time::Duration::from_secs(3)),
+            Difficulty::Hard     => Some(std::time::Duration::from_secs(8)),
             Difficulty::VeryHard => Some(std::time::Duration::from_secs(5)),
         }
     }
