@@ -109,6 +109,10 @@ PYTHONPATH=. python scripts/export_weights.py \
   --output artifacts/nnue_like_weights.npz
 ```
 
+By default export fails fast on int16 overflow after scaling (`--on-overflow error`).
+If you prefer saturating behavior, pass `--on-overflow clip`.
+
+
 ## 5) Monitor with TensorBoard
 
 Training writes TensorBoard scalars by default to `runs/nn_training`.
