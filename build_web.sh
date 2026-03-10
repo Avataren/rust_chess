@@ -42,7 +42,11 @@ wasm-bindgen --out-dir "${OUT_DIR}" --target web "${BINARY}"
 WASM_OUT="${OUT_DIR}/${CRATE}_bg.wasm"
 if command -v wasm-opt &>/dev/null; then
     echo "Optimising with wasm-opt..."
-    wasm-opt -Oz "${WASM_OUT}" -o "${WASM_OUT}"
+    wasm-opt -Oz \
+        --enable-nontrapping-float-to-int \
+        --enable-bulk-memory \
+        --enable-sign-ext \
+        "${WASM_OUT}" -o "${WASM_OUT}"
 else
     echo "wasm-opt not found — skipping (install binaryen to reduce binary size)"
 fi
