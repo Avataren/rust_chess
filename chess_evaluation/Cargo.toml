@@ -10,3 +10,4 @@ chess_foundation = { path = "../chess_foundation" }
 chess_board = { path = "../chess_board" }
 move_generator = { path = "../move_generator" }
 rand = "0.8"
+rayon = "1"

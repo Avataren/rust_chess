@@ -4,6 +4,7 @@ use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
 };
 use rand::seq::SliceRandom;
+use rayon::prelude::*;
 
 use crate::{
     evaluate_board,
@@ -11,8 +12,13 @@ use crate::{
     transposition_table::{TranspositionTable, TtFlag},
 };
 
-/// 256 K entries ≈ 8 MB.  Chosen to fit comfortably in native and WASM builds.
+/// Shared TT for the sequential path and ID iterations.
 const TT_SIZE: usize = 1 << 20; // 1M entries ≈ 32 MB
+
+/// Per-thread TT for parallel root search.  Sub-trees from a single root move
+/// rarely exceed ~500K unique positions, so 256K entries suffices while keeping
+/// peak memory at ≈ 8 MB × number of Rayon threads.
+const PARALLEL_TT_SIZE: usize = 1 << 18; // 256K entries ≈ 8 MB
 
 /// Continues searching capture-only moves after the main search depth is
 /// exhausted, so we never evaluate a position mid-capture-sequence.
@@ -305,6 +311,10 @@ pub fn alpha_beta(
 /// Root-level search at a single fixed depth.  The caller supplies the TT so
 /// it can be reused across iterations.  `prev_best` (the best move from the
 /// previous iteration) is ordered first to maximise alpha pruning.
+///
+/// Shallow depths (< 3) use a sequential growing-alpha window.  Deeper depths
+/// evaluate all root moves in parallel — each on its own board clone with a
+/// fresh per-thread TT — then pick the best result.
 fn search_root(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
@@ -317,28 +327,52 @@ fn search_root(
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board), None);
     }
-    // Order: prev_best first (PV move), then the rest by MVV-LVA.
+    // Order: prev_best first (PV move from previous ID iteration), then MVV-LVA.
     order_moves(&mut legal_moves, prev_best);
 
+    // --- Parallel root search (depth >= 3) ---
+    // Each root move is evaluated independently: own board clone, fresh TT,
+    // full [MIN, MAX] window.  We lose the accumulated alpha between moves but
+    // gain parallelism across all of them simultaneously.
+    if depth >= 3 {
+        let results: Vec<(i32, ChessMove)> = legal_moves
+            .into_par_iter()
+            .map(|mut chess_move| {
+                let mut board = chess_board.clone();
+                let mut local_tt = TranspositionTable::new(PARALLEL_TT_SIZE);
+                board.make_move(&mut chess_move);
+                let eval = alpha_beta(
+                    &mut board, conductor, &mut local_tt,
+                    depth - 1, i32::MIN + 1, i32::MAX, !is_white, true,
+                ).0;
+                (eval, chess_move)
+            })
+            .collect();
+
+        let best_score = if is_white {
+            results.iter().map(|(s, _)| *s).max().unwrap_or(i32::MIN + 1)
+        } else {
+            results.iter().map(|(s, _)| *s).min().unwrap_or(i32::MAX)
+        };
+        let best_moves: Vec<ChessMove> = results.into_iter()
+            .filter(|(s, _)| *s == best_score)
+            .map(|(_, mv)| mv)
+            .collect();
+        return (best_score, best_moves.choose(&mut rand::thread_rng()).copied());
+    }
+
+    // --- Sequential root search (depth < 3) ---
+    // Maintains a growing alpha/beta window: each good move tightens the bound
+    // for subsequent moves, giving more pruning inside sub-trees.
     let mut best_score = if is_white { i32::MIN + 1 } else { i32::MAX };
     let mut best_moves: Vec<ChessMove> = Vec::new();
-
-    // Use a growing window: alpha rises (for white) or beta falls (for black)
-    // as we find better moves, enabling pruning in every subsequent sub-search.
     let mut alpha = i32::MIN + 1;
     let mut beta = i32::MAX;
 
     for mut chess_move in legal_moves {
         chess_board.make_move(&mut chess_move);
         let (eval, _) = alpha_beta(
-            chess_board,
-            conductor,
-            tt,
-            depth - 1,
-            alpha,
-            beta,
-            !is_white,
-            true,
+            chess_board, conductor, tt, depth - 1, alpha, beta, !is_white, true,
         );
         chess_board.undo_move();
 
@@ -347,9 +381,7 @@ fn search_root(
                 best_score = eval;
                 best_moves.clear();
                 best_moves.push(chess_move);
-                if eval > alpha {
-                    alpha = eval;
-                }
+                if eval > alpha { alpha = eval; }
             } else if eval == best_score {
                 best_moves.push(chess_move);
             }
@@ -358,9 +390,7 @@ fn search_root(
                 best_score = eval;
                 best_moves.clear();
                 best_moves.push(chess_move);
-                if eval < beta {
-                    beta = eval;
-                }
+                if eval < beta { beta = eval; }
             } else if eval == best_score {
                 best_moves.push(chess_move);
             }
