@@ -167,11 +167,15 @@ def main():
             "training will use a partial batch each epoch (drop_last=False)."
         )
 
+    train_workers = int(cfg["training"]["workers"])
+    default_val_workers = 0 if train_workers == 0 else max(1, train_workers // 2)
+    val_workers = int(cfg["training"].get("val_workers", default_val_workers))
+
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg["training"]["batch_size"],
         shuffle=True,
-        num_workers=cfg["training"]["workers"],
+        num_workers=train_workers,
         pin_memory=cfg["training"]["pin_memory"],
         drop_last=False,
     )
@@ -179,7 +183,7 @@ def main():
         val_ds,
         batch_size=cfg["training"]["batch_size"],
         shuffle=False,
-        num_workers=max(1, cfg["training"]["workers"] // 2),
+        num_workers=val_workers,
         pin_memory=cfg["training"]["pin_memory"],
     )
 
@@ -201,6 +205,8 @@ def main():
     best_val = float("inf")
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"DataLoader workers: train={train_workers}, val={val_workers}")
 
     writer = SummaryWriter(log_dir=args.tb_logdir)
     print(f"TensorBoard logdir: {args.tb_logdir}")

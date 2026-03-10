@@ -98,6 +98,8 @@ PYTHONPATH=. python scripts/train.py --config configs/default.yaml --out artifac
 The training loader uses `drop_last=False`, so small datasets still run (including when `len(train) < batch_size`).
 
 
+By default validation workers follow training workers, but if `training.workers` is `0`, validation also uses `0` workers (no multiprocessing). You can override validation worker count with optional `training.val_workers` in the config.
+
 The WDL head is trained against the soft WDL target distribution from the dataset (not argmax-hardened labels).
 
 ## 4) Export quantized weights
