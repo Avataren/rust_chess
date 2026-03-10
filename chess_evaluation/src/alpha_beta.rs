@@ -20,6 +20,11 @@ const TT_SIZE: usize = 1 << 20; // 1M entries ≈ 32 MB
 /// peak memory at ≈ 8 MB × number of Rayon threads.
 const PARALLEL_TT_SIZE: usize = 1 << 18; // 256K entries ≈ 8 MB
 
+/// Initial aspiration window half-width in centipawns.  Searches at depth N
+/// use [prev_score - DELTA, prev_score + DELTA]; on failure one side widens to
+/// the full bound and we retry.
+const ASPIRATION_DELTA: i32 = 50;
+
 /// Continues searching capture-only moves after the main search depth is
 /// exhausted, so we never evaluate a position mid-capture-sequence.
 /// This eliminates the horizon effect that causes higher depths to play worse.
@@ -320,6 +325,8 @@ fn search_root(
     conductor: &PieceConductor,
     tt: &mut TranspositionTable,
     depth: i32,
+    alpha: i32,
+    beta: i32,
     is_white: bool,
     prev_best: Option<ChessMove>,
 ) -> (i32, Option<ChessMove>) {
@@ -331,9 +338,9 @@ fn search_root(
     order_moves(&mut legal_moves, prev_best);
 
     // --- Parallel root search (depth >= 3) ---
-    // Each root move is evaluated independently: own board clone, fresh TT,
-    // full [MIN, MAX] window.  We lose the accumulated alpha between moves but
-    // gain parallelism across all of them simultaneously.
+    // Each root move is evaluated independently on its own board clone with a
+    // fresh per-thread TT.  The aspiration window [alpha, beta] is forwarded to
+    // every sub-search, narrowing the search space at each thread.
     if depth >= 3 {
         let results: Vec<(i32, ChessMove)> = legal_moves
             .into_par_iter()
@@ -343,7 +350,7 @@ fn search_root(
                 board.make_move(&mut chess_move);
                 let eval = alpha_beta(
                     &mut board, conductor, &mut local_tt,
-                    depth - 1, i32::MIN + 1, i32::MAX, !is_white, true,
+                    depth - 1, alpha, beta, !is_white, true,
                 ).0;
                 (eval, chess_move)
             })
@@ -362,12 +369,12 @@ fn search_root(
     }
 
     // --- Sequential root search (depth < 3) ---
-    // Maintains a growing alpha/beta window: each good move tightens the bound
-    // for subsequent moves, giving more pruning inside sub-trees.
+    // Starts from the caller's alpha/beta and grows the window as better moves
+    // are found, giving more pruning inside each sub-tree.
     let mut best_score = if is_white { i32::MIN + 1 } else { i32::MAX };
     let mut best_moves: Vec<ChessMove> = Vec::new();
-    let mut alpha = i32::MIN + 1;
-    let mut beta = i32::MAX;
+    let mut alpha = alpha;
+    let mut beta = beta;
 
     for mut chess_move in legal_moves {
         chess_board.make_move(&mut chess_move);
@@ -422,7 +429,7 @@ pub fn alpha_beta_root(
         }
     }
     let mut tt = TranspositionTable::new(TT_SIZE);
-    search_root(chess_board, conductor, &mut tt, depth, is_white, None)
+    search_root(chess_board, conductor, &mut tt, depth, i32::MIN + 1, i32::MAX, is_white, None)
 }
 
 /// Iterative-deepening root search.  Searches depth 1, 2, …, max_depth,
@@ -454,7 +461,35 @@ pub fn iterative_deepening_root(
     let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
 
     for depth in 1..=max_depth {
-        best = search_root(chess_board, conductor, &mut tt, depth, is_white, best.1);
+        let (prev_score, prev_move) = best;
+
+        best = if depth <= 2 {
+            // Full window for shallow depths — aspirating an unknown score is useless.
+            search_root(chess_board, conductor, &mut tt, depth, i32::MIN + 1, i32::MAX, is_white, prev_move)
+        } else {
+            // Narrow aspiration window around previous score.  Widen one side on
+            // failure and retry until the result lands inside the window.
+            let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
+            let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
+            loop {
+                let result = search_root(chess_board, conductor, &mut tt, depth, lo, hi, is_white, prev_move);
+                if result.0 > lo && result.0 < hi {
+                    // Inside the window — accept.
+                    break result;
+                } else if result.0 <= lo {
+                    // Fail-low: widen the lower bound.
+                    lo = i32::MIN + 1;
+                } else {
+                    // Fail-high: widen the upper bound.
+                    hi = i32::MAX;
+                }
+                if lo == i32::MIN + 1 && hi == i32::MAX {
+                    // Both bounds already fully open — accept whatever we got.
+                    break result;
+                }
+            }
+        };
+
         println!("depth={depth} score={}", best.0);
     }
 
