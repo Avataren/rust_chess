@@ -288,7 +288,7 @@ pub fn handle_async_moves(
                             end: end_local_position,
                         },
                     );
-                    let sequence = Delay::new(Duration::from_millis(50)).then(tween);
+                    let sequence = Delay::new(Duration::from_millis(150)).then(tween);
 
                     commands.entity(entity).insert(TweenAnim::new(sequence));
                 } else {
