@@ -1,10 +1,14 @@
 use bevy::prelude::*;
 use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy_async_task::TaskRunner;
-use bevy_tweening::{lens::TransformPositionLens, *};
+use bevy_tweening::{lens::TransformPositionLens, Delay, *};
 use std::task::Poll;
 use chess_board::ChessBoard;
-use chess_evaluation::{iterative_deepening_root, search_root, OpeningBook, TranspositionTable, ASPIRATION_DELTA, TT_SIZE};
+use chess_evaluation::iterative_deepening_root;
+#[cfg(target_arch = "wasm32")]
+use chess_evaluation::{search_root, OpeningBook, TranspositionTable, ASPIRATION_DELTA, TT_SIZE};
+#[cfg(not(target_arch = "wasm32"))]
+use chess_evaluation::OpeningBook;
 use chess_foundation::ChessMove;
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
@@ -14,7 +18,7 @@ use std::time::Duration;
 use crate::{
     board::BoardDimensions,
     game_events::{ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
-    game_resources::{CurrentOpening, Difficulty, GameOverState, GamePhase, IsAiThinking, LastMove, OpeningBookRes, PendingGameOver, PlayerColor},
+    game_resources::{CurrentOpening, Difficulty, GameOverState, GamePhase, IsAiThinking, LastMove, OpeningBookRes, PendingGameOver, PendingMoveSound, PlayerColor},
     pieces::ChessPieceComponent,
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, PieceConductorRes,
@@ -40,9 +44,14 @@ pub fn on_tween_completed(
     mut refresh_pieces_events: MessageWriter<RefreshPiecesFromBoardEvent>,
     mut pending_game_over: ResMut<PendingGameOver>,
     mut game_over_state: ResMut<GameOverState>,
+    mut commands: Commands,
+    sound_effects: Res<SoundEffects>,
+    mut pending_move_sound: ResMut<PendingMoveSound>,
 ) {
     for _ in tween_completed_events.read() {
-        println!("Tween completed");
+        if let Some(sound) = pending_move_sound.0.take() {
+            spawn_sound(&mut commands, &sound_effects, sound);
+        }
         refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
         if let Some(state) = pending_game_over.0.take() {
             *game_over_state = state;
@@ -136,8 +145,8 @@ pub fn handle_async_moves(
     game_phase: Res<GamePhase>,
     opening_book: Res<OpeningBookRes>,
     mut is_ai_thinking: ResMut<IsAiThinking>,
-    sound_effects: Res<SoundEffects>,
     difficulty: Res<Difficulty>,
+    mut pending_move_sound: ResMut<PendingMoveSound>,
 ) {
     if task_executor.is_idle() {
         // Task is idle — check for new chess events to start a task
@@ -233,7 +242,7 @@ pub fn handle_async_moves(
                 } else {
                     "notify.ogg"
                 };
-                spawn_sound(&mut commands, &sound_effects, sound);
+                pending_move_sound.0 = Some(sound);
 
                 // Check if the player has any legal moves after AI's move.
                 // Store result as pending — the overlay will appear after the tween finishes.
@@ -273,14 +282,15 @@ pub fn handle_async_moves(
                 }) {
                     let tween = Tween::new(
                         EaseFunction::CubicOut,
-                        Duration::from_millis(250),
+                        Duration::from_millis(300),
                         TransformPositionLens {
                             start: start_local_position,
                             end: end_local_position,
                         },
                     );
+                    let sequence = Delay::new(Duration::from_millis(50)).then(tween);
 
-                    commands.entity(entity).insert(TweenAnim::new(tween));
+                    commands.entity(entity).insert(TweenAnim::new(sequence));
                 } else {
                     println!("No piece found at start square");
                 }

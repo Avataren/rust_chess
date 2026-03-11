@@ -64,6 +64,10 @@ pub struct CurrentOpening(pub String);
 #[derive(Resource, Default)]
 pub struct IsAiThinking(pub bool);
 
+/// Sound effect to play when the AI piece finishes its landing animation.
+#[derive(Resource, Default)]
+pub struct PendingMoveSound(pub Option<&'static str>);
+
 #[derive(Resource, Default, PartialEq, Debug, Clone, Copy)]
 pub enum Difficulty {
     VeryEasy,
