@@ -42,6 +42,9 @@ pub const MAX_PLY: usize = 64;
 pub struct SearchContext {
     killers: [[Option<ChessMove>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
+    nodes: u64,
+    stop: Option<Arc<AtomicBool>>,
+    deadline: Option<Instant>,
 }
 
 impl SearchContext {
@@ -49,7 +52,35 @@ impl SearchContext {
         Self {
             killers: [[None; 2]; MAX_PLY],
             history: [[0; 64]; 64],
+            nodes: 0,
+            stop: None,
+            deadline: None,
         }
+    }
+
+    pub fn with_stop_and_deadline(stop: Arc<AtomicBool>, deadline: Option<Instant>) -> Self {
+        Self {
+            killers: [[None; 2]; MAX_PLY],
+            history: [[0; 64]; 64],
+            nodes: 0,
+            stop: Some(stop),
+            deadline,
+        }
+    }
+
+    /// Check every 4096 nodes whether the stop flag or deadline has been hit.
+    #[inline]
+    pub fn should_stop(&mut self) -> bool {
+        self.nodes += 1;
+        if self.nodes & 4095 == 0 {
+            if let Some(ref s) = self.stop {
+                if s.load(Ordering::Relaxed) { return true; }
+            }
+            if let Some(dl) = self.deadline {
+                if Instant::now() >= dl { return true; }
+            }
+        }
+        false
     }
 
     /// Halve all history scores between ID iterations so that shallower
@@ -260,6 +291,9 @@ pub fn alpha_beta(
     is_white: bool,
     null_move_allowed: bool,
 ) -> (i32, Option<ChessMove>) {
+    if ctx.should_stop() {
+        return (evaluate_board(chess_board, conductor), None);
+    }
     if depth == 0 {
         return (quiescence(chess_board, conductor, alpha, beta, is_white, 4), None);
     }
@@ -532,12 +566,17 @@ pub fn search_root(
     // Each root move is evaluated independently on its own board clone with a
     // fresh per-thread TT and SearchContext.
     if depth >= 3 {
+        let stop = ctx.stop.clone();
+        let dl = ctx.deadline;
         let results: Vec<(i32, ChessMove)> = legal_moves
             .into_par_iter()
             .map(|mut chess_move| {
                 let mut board = chess_board.clone();
                 let mut local_tt = TranspositionTable::new(PARALLEL_TT_SIZE);
-                let mut local_ctx = SearchContext::new();
+                let mut local_ctx = match &stop {
+                    Some(s) => SearchContext::with_stop_and_deadline(Arc::clone(s), dl),
+                    None => SearchContext::new(),
+                };
                 board.make_move(&mut chess_move);
                 let eval = alpha_beta(
                     &mut board, conductor, &mut local_tt, &mut local_ctx,
@@ -652,10 +691,14 @@ pub fn iterative_deepening_root(
     }
 
     let mut tt = TranspositionTable::new(TT_SIZE);
-    let mut ctx = SearchContext::new();
+    let mut ctx = match stop.as_ref() {
+        Some(s) => SearchContext::with_stop_and_deadline(Arc::clone(s), deadline),
+        None => SearchContext::new(),
+    };
     let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
 
     for depth in 1..=max_depth {
+        let iter_start = Instant::now();
         let (prev_score, prev_move) = best;
 
         // Age history at the start of each new iteration (skip depth 1 — nothing
@@ -664,7 +707,7 @@ pub fn iterative_deepening_root(
             ctx.age_history();
         }
 
-        best = if depth <= 2 {
+        let result = if depth <= 2 {
             // Full window for shallow depths — aspirating an unknown score is useless.
             search_root(chess_board, conductor, &mut tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move)
         } else {
@@ -687,11 +730,22 @@ pub fn iterative_deepening_root(
             }
         };
 
+        // If stop was triggered mid-iteration, the result is unreliable —
+        // keep the last fully completed iteration's result.
         if let Some(ref s) = stop {
             if s.load(Ordering::Relaxed) { break; }
         }
+
+        best = result;
+
         if let Some(dl) = deadline {
-            if Instant::now() >= dl { break; }
+            let now = Instant::now();
+            if now >= dl { break; }
+            // Time estimation: each depth typically takes 3-5x longer than
+            // the previous. Don't start the next depth if likely to overshoot.
+            let iter_elapsed = now.duration_since(iter_start);
+            let time_left = dl.duration_since(now);
+            if iter_elapsed * 3 > time_left { break; }
         }
     }
 

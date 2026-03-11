@@ -117,13 +117,19 @@ fn parse_go(tokens: &[&str], is_white: bool) -> GoParams {
     if movetime_ms.is_none() {
         let (remaining, inc) = if is_white { (wtime, winc) } else { (btime, binc) };
         if let Some(rem) = remaining {
-            // Bullet (<60s remaining): fast formula — 1/40 + 70% inc, min 50ms
-            // Longer TCs: aggressive formula — 1/20 + 75% inc, min 100ms
-            if rem < 60_000 {
-                movetime_ms = Some((rem / 40).saturating_add(inc * 7 / 10).max(50));
+            let think = if rem < 15_000 {
+                // Emergency (<15s): move very fast
+                (rem / 60).saturating_add(inc * 6 / 10).max(50)
+            } else if rem < 60_000 {
+                // Low time (<60s): conservative
+                (rem / 40).saturating_add(inc * 7 / 10).max(100)
             } else {
-                movetime_ms = Some((rem / 20).saturating_add(inc * 3 / 4).max(100));
-            }
+                // Normal play: ~3% of remaining + 80% of increment
+                // Cap at 1/6 of remaining to prevent blundering the clock
+                let base = (rem / 35).saturating_add(inc * 4 / 5);
+                base.min(rem / 6).max(100)
+            };
+            movetime_ms = Some(think);
         }
     }
 
