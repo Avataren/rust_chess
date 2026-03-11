@@ -23,6 +23,18 @@ const EG_QUEEN_VALUE:  i32 = 936;
 const ISOLATED_PAWN_PENALTY: i32 = 15;
 const DOUBLED_PAWN_PENALTY:  i32 = 15;
 
+const MG_BISHOP_PAIR_BONUS: i32 = 30;
+const EG_BISHOP_PAIR_BONUS: i32 = 50;
+
+const MG_ROOK_OPEN_FILE:      i32 = 20;
+const EG_ROOK_OPEN_FILE:      i32 = 15;
+const MG_ROOK_SEMI_OPEN_FILE: i32 = 10;
+const EG_ROOK_SEMI_OPEN_FILE: i32 = 8;
+
+// King safety — applied to mg only, so it fades naturally in the endgame blend.
+const KING_SHIELD_MISSING:  i32 = 15; // no friendly pawn on this file
+const KING_SHIELD_ADVANCED: i32 =  5; // pawn exists but has left the shield zone
+
 const FILE_MASKS: [u64; 8] = [
     0x0101010101010101, // a-file
     0x0202020202020202, // b-file
@@ -119,6 +131,37 @@ fn pawn_structure_penalty(pawns_bb: u64) -> i32 {
     penalty
 }
 
+/// King safety penalty for one side (always positive = penalty amount).
+///
+/// Examines the 3 files centred on the king:
+///  - Missing friendly pawn on a file → `KING_SHIELD_MISSING`
+///  - Pawn exists but has advanced past the two shield ranks → `KING_SHIELD_ADVANCED`
+///
+/// Applied only to the MG score, so the penalty fades naturally during the endgame blend.
+fn king_safety_penalty(king_sq: usize, friendly_pawns: u64, is_white: bool) -> i32 {
+    let king_file = king_sq % 8;
+    // Clamp centre so we always examine exactly 3 files (avoids edge under/overflow).
+    let center = king_file.max(1).min(6);
+
+    // Squares where a pawn still forms a tight shield (ranks 2–3 for white, 6–7 for black).
+    let shield_ranks: u64 = if is_white {
+        0x0000_0000_00FF_FF00 // ranks 2–3 (squares 8–23)
+    } else {
+        0x00FF_FF00_0000_0000 // ranks 6–7 (squares 40–55)
+    };
+
+    let mut penalty = 0i32;
+    for file in (center - 1)..=(center + 1) {
+        let pawn_on_file = friendly_pawns & FILE_MASKS[file];
+        if pawn_on_file == 0 {
+            penalty += KING_SHIELD_MISSING;
+        } else if pawn_on_file & shield_ranks == 0 {
+            penalty += KING_SHIELD_ADVANCED;
+        }
+    }
+    penalty
+}
+
 /// Evaluates the chess board and returns an absolute score:
 /// positive = white is ahead, negative = black is ahead.
 pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
@@ -136,6 +179,9 @@ pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
 
     let white_pawns_bb = (white & pawns).0;
     let black_pawns_bb = (black & pawns).0;
+
+    let white_king_sq = (white & kings).0.trailing_zeros() as usize;
+    let black_king_sq = (black & kings).0.trailing_zeros() as usize;
 
     let mut mg = 0i32;
     let mut eg = 0i32;
@@ -173,11 +219,36 @@ pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
     for_each_sq(black & bishops, |sq| { mg -= mg_bishop_table(sq, false); eg -= eg_bishop_table(sq, false); });
     for_each_sq(black & rooks,   |sq| { mg -= mg_rook_table(sq, false);   eg -= eg_rook_table(sq, false); });
     for_each_sq(black & queens,  |sq| { mg -= mg_queen_table(sq, false);  eg -= eg_queen_table(sq, false); });
-    let mut black_king_sq = 0usize;
     for_each_sq(black & kings, |sq| {
         mg -= mg_king_table(sq, false);
         eg -= eg_king_table(sq, false);
-        black_king_sq = sq;
+    });
+
+    // --- King safety (MG only — fades naturally in endgame blend) ---
+    mg -= king_safety_penalty(white_king_sq, white_pawns_bb, true);
+    mg += king_safety_penalty(black_king_sq, black_pawns_bb, false);
+
+    // --- Bishop pair ---
+    if count(white & bishops) >= 2 { mg += MG_BISHOP_PAIR_BONUS; eg += EG_BISHOP_PAIR_BONUS; }
+    if count(black & bishops) >= 2 { mg -= MG_BISHOP_PAIR_BONUS; eg -= EG_BISHOP_PAIR_BONUS; }
+
+    // --- Rook on open / semi-open file ---
+    let all_pawns_bb  = (pawns).0;
+    for_each_sq(white & rooks, |sq| {
+        let file_mask = FILE_MASKS[sq % 8];
+        if all_pawns_bb & file_mask == 0 {
+            mg += MG_ROOK_OPEN_FILE;      eg += EG_ROOK_OPEN_FILE;
+        } else if white_pawns_bb & file_mask == 0 {
+            mg += MG_ROOK_SEMI_OPEN_FILE; eg += EG_ROOK_SEMI_OPEN_FILE;
+        }
+    });
+    for_each_sq(black & rooks, |sq| {
+        let file_mask = FILE_MASKS[sq % 8];
+        if all_pawns_bb & file_mask == 0 {
+            mg -= MG_ROOK_OPEN_FILE;      eg -= EG_ROOK_OPEN_FILE;
+        } else if black_pawns_bb & file_mask == 0 {
+            mg -= MG_ROOK_SEMI_OPEN_FILE; eg -= EG_ROOK_SEMI_OPEN_FILE;
+        }
     });
 
     // --- Tapered blend ---
@@ -190,7 +261,6 @@ pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
         + count(white & bishops) * MG_BISHOP_VALUE - count(black & bishops) * MG_BISHOP_VALUE
         + count(white & rooks)   * MG_ROOK_VALUE   - count(black & rooks)   * MG_ROOK_VALUE
         + count(white & queens)  * MG_QUEEN_VALUE  - count(black & queens)  * MG_QUEEN_VALUE;
-    let white_king_sq = (white & kings).0.trailing_zeros() as usize;
     score += mop_up(material_score, white_king_sq, black_king_sq, mg_phase);
 
     // --- Passed pawns (applied post-blend; important in endgame) ---
