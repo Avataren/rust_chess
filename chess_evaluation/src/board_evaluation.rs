@@ -13,6 +13,20 @@ const ROOK_VALUE: i32 = 500;
 const QUEEN_VALUE: i32 = 900;
 const KING_VALUE: i32 = 20000;
 
+const ISOLATED_PAWN_PENALTY: i32 = 15;
+const DOUBLED_PAWN_PENALTY: i32 = 15;
+
+const FILE_MASKS: [u64; 8] = [
+    0x0101010101010101, // a-file
+    0x0202020202020202, // b-file
+    0x0404040404040404, // c-file
+    0x0808080808080808, // d-file
+    0x1010101010101010, // e-file
+    0x2020202020202020, // f-file
+    0x4040404040404040, // g-file
+    0x8080808080808080, // h-file
+];
+
 fn count(bb: Bitboard) -> i32 {
     bb.count_ones() as i32
 }
@@ -91,6 +105,35 @@ fn mop_up(
     (corner_push + proximity) * eg_weight / 256
 }
 
+/// Pawn structure penalty for one side's pawns (always positive = penalty amount).
+///
+/// * **Doubled**: each extra pawn beyond the first on a file costs `DOUBLED_PAWN_PENALTY`.
+/// * **Isolated**: a pawn with no friendly pawns on either adjacent file costs
+///   `ISOLATED_PAWN_PENALTY` per isolated pawn.
+fn pawn_structure_penalty(pawns_bb: u64) -> i32 {
+    let mut penalty = 0i32;
+    for file in 0..8usize {
+        let on_file = (pawns_bb & FILE_MASKS[file]).count_ones() as i32;
+        if on_file == 0 {
+            continue;
+        }
+
+        // Doubled pawn: each extra pawn beyond the first on this file.
+        if on_file > 1 {
+            penalty += (on_file - 1) * DOUBLED_PAWN_PENALTY;
+        }
+
+        // Isolated pawn: no friendly pawns on either adjacent file.
+        let mut adjacent = 0u64;
+        if file > 0 { adjacent |= FILE_MASKS[file - 1]; }
+        if file < 7 { adjacent |= FILE_MASKS[file + 1]; }
+        if pawns_bb & adjacent == 0 {
+            penalty += on_file * ISOLATED_PAWN_PENALTY;
+        }
+    }
+    penalty
+}
+
 /// Evaluates the chess board and returns an absolute score:
 /// positive = white is ahead, negative = black is ahead.
 pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
@@ -160,6 +203,10 @@ pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
     // material_score excludes king values (both sides have one, they cancel out)
     let material_score = score - count(white & kings) * KING_VALUE + count(black & kings) * KING_VALUE;
     score += mop_up(material_score, white_king_sq, black_king_sq, eg_weight);
+
+    // --- Pawn structure ---
+    score -= pawn_structure_penalty(white_pawns_bb) as i32;
+    score += pawn_structure_penalty(black_pawns_bb) as i32;
 
     score
 }
