@@ -403,7 +403,7 @@ impl OpeningBook {
 
         let n_positions = positions.len();
         let n_names = names.len();
-        println!("Opening book: {n_positions} book positions, {n_names} named openings");
+        eprintln!("Opening book: {n_positions} book positions, {n_names} named openings");
         OpeningBook { table, positions, names }
     }
 

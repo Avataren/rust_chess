@@ -85,7 +85,8 @@ fn apply_position(board: &mut ChessBoard, conductor: &PieceConductor, tokens: &[
 
 struct GoParams {
     max_depth: i32,
-    deadline: Option<Instant>,
+    movetime_ms: Option<u64>,
+    is_ponder: bool,
 }
 
 fn parse_go(tokens: &[&str], is_white: bool) -> GoParams {
@@ -95,6 +96,7 @@ fn parse_go(tokens: &[&str], is_white: bool) -> GoParams {
     let mut btime: Option<u64> = None;
     let mut winc: u64 = 0;
     let mut binc: u64 = 0;
+    let mut is_ponder = false;
 
     let mut i = 0;
     while i < tokens.len() {
@@ -105,6 +107,7 @@ fn parse_go(tokens: &[&str], is_white: bool) -> GoParams {
             "btime"    => { btime = tokens.get(i+1).and_then(|s| s.parse().ok()); i += 2; }
             "winc"     => { winc  = tokens.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 2; }
             "binc"     => { binc  = tokens.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 2; }
+            "ponder"   => { is_ponder = true; i += 1; }
             "infinite" => { i += 1; } // max_depth=64, no deadline — stop signal controls it
             _          => { i += 1; }
         }
@@ -114,14 +117,20 @@ fn parse_go(tokens: &[&str], is_white: bool) -> GoParams {
     if movetime_ms.is_none() {
         let (remaining, inc) = if is_white { (wtime, winc) } else { (btime, binc) };
         if let Some(rem) = remaining {
-            // 1/30 of remaining + 80% of increment, minimum 50 ms
-            movetime_ms = Some((rem / 30).saturating_add(inc * 4 / 5).max(50));
+            // Bullet (<60s remaining): fast formula — 1/40 + 70% inc, min 50ms
+            // Longer TCs: aggressive formula — 1/20 + 75% inc, min 100ms
+            if rem < 60_000 {
+                movetime_ms = Some((rem / 40).saturating_add(inc * 7 / 10).max(50));
+            } else {
+                movetime_ms = Some((rem / 20).saturating_add(inc * 3 / 4).max(100));
+            }
         }
     }
 
     GoParams {
         max_depth,
-        deadline: movetime_ms.map(|ms| Instant::now() + Duration::from_millis(ms)),
+        movetime_ms,
+        is_ponder,
     }
 }
 
@@ -135,6 +144,12 @@ fn search_and_respond(
     stop: Arc<AtomicBool>,
     is_white: bool,
 ) {
+    let deadline = if params.is_ponder {
+        None // no deadline during ponder — wait for ponderhit or stop
+    } else {
+        params.movetime_ms.map(|ms| Instant::now() + Duration::from_millis(ms))
+    };
+
     let t0 = Instant::now();
     let (score, best) = iterative_deepening_root(
         &mut board,
@@ -142,7 +157,7 @@ fn search_and_respond(
         Some(&book),
         params.max_depth,
         is_white,
-        params.deadline,
+        deadline,
         Some(stop),
     );
     let ms = t0.elapsed().as_millis();
@@ -161,6 +176,8 @@ fn main() {
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let mut search_handle: Option<thread::JoinHandle<()>> = None;
+    let mut pondering = false;
+    let mut ponder_movetime_ms: Option<u64> = None;
 
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
@@ -173,6 +190,7 @@ fn main() {
             "uci" => {
                 println!("id name {NAME}");
                 println!("id author {AUTHOR}");
+                println!("option name Ponder type check default true");
                 println!("uciok");
             }
             "isready" => {
@@ -183,6 +201,7 @@ fn main() {
                 stop_flag.store(true, Ordering::Relaxed);
                 if let Some(h) = search_handle.take() { let _ = h.join(); }
                 stop_flag.store(false, Ordering::Relaxed);
+                pondering = false;
                 board = ChessBoard::new();
             }
             "position" => {
@@ -199,6 +218,9 @@ fn main() {
                 let is_white = board.is_white_active();
                 let params = parse_go(&tokens[1..], is_white);
 
+                pondering = params.is_ponder;
+                ponder_movetime_ms = params.movetime_ms;
+
                 let board_c     = board.clone();
                 let conductor_c = conductor.clone();
                 let book_c      = book.clone();
@@ -208,12 +230,26 @@ fn main() {
                     search_and_respond(board_c, conductor_c, book_c, params, stop_c, is_white);
                 }));
             }
+            "ponderhit" => {
+                if pondering {
+                    pondering = false;
+                    // Opponent played the expected move — start the real clock.
+                    // Spawn a timer that will stop the search after the allocated time.
+                    if let Some(ms) = ponder_movetime_ms {
+                        let stop_c = Arc::clone(&stop_flag);
+                        thread::spawn(move || {
+                            thread::sleep(Duration::from_millis(ms));
+                            stop_c.store(true, Ordering::Relaxed);
+                        });
+                    }
+                }
+            }
             "stop" => {
+                pondering = false;
                 stop_flag.store(true, Ordering::Relaxed);
                 if let Some(h) = search_handle.take() { let _ = h.join(); }
             }
             "quit" => break,
-            // Silently ignore: debug, setoption, register, ponderhit
             _ => {}
         }
 
