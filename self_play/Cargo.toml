@@ -1,0 +1,13 @@
+[package]
+name = "self_play"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "self_play"
+path = "src/main.rs"
+
+[dependencies]
+chess_board      = { path = "../chess_board" }
+chess_foundation = { path = "../chess_foundation" }
+move_generator   = { path = "../move_generator" }
