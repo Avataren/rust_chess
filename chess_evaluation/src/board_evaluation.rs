@@ -2,19 +2,26 @@ use chess_board::ChessBoard;
 use chess_foundation::Bitboard;
 
 use crate::piece_tables::{
-    bishop_table_value, is_passed_pawn, king_table_value, knight_table_value,
-    passed_pawn_bonus, pawn_table_value, queen_table_value, rook_table_value,
+    eg_bishop_table, eg_king_table, eg_knight_table, eg_pawn_table, eg_queen_table,
+    eg_rook_table, is_passed_pawn, mg_bishop_table, mg_king_table, mg_knight_table,
+    mg_pawn_table, mg_queen_table, mg_rook_table, passed_pawn_bonus,
 };
 
-const PAWN_VALUE: i32 = 100;
-const KNIGHT_VALUE: i32 = 320;
-const BISHOP_VALUE: i32 = 330;
-const ROOK_VALUE: i32 = 500;
-const QUEEN_VALUE: i32 = 900;
-const KING_VALUE: i32 = 20000;
+// PeSTO tapered piece values
+const MG_PAWN_VALUE:   i32 =  82;
+const MG_KNIGHT_VALUE: i32 = 337;
+const MG_BISHOP_VALUE: i32 = 365;
+const MG_ROOK_VALUE:   i32 = 477;
+const MG_QUEEN_VALUE:  i32 = 1025;
+
+const EG_PAWN_VALUE:   i32 =  94;
+const EG_KNIGHT_VALUE: i32 = 281;
+const EG_BISHOP_VALUE: i32 = 297;
+const EG_ROOK_VALUE:   i32 = 512;
+const EG_QUEEN_VALUE:  i32 = 936;
 
 const ISOLATED_PAWN_PENALTY: i32 = 15;
-const DOUBLED_PAWN_PENALTY: i32 = 15;
+const DOUBLED_PAWN_PENALTY:  i32 = 15;
 
 const FILE_MASKS: [u64; 8] = [
     0x0101010101010101, // a-file
@@ -31,16 +38,13 @@ fn count(bb: Bitboard) -> i32 {
     bb.count_ones() as i32
 }
 
-/// Compute a game-phase weight.
-/// Returns 0 (full endgame) … 256 (full middlegame).
-fn endgame_weight(chess_board: &ChessBoard) -> i32 {
+/// Game phase weight: 0 (full endgame) … 24 (full middlegame).
+fn game_phase(chess_board: &ChessBoard) -> i32 {
     let queens  = count(chess_board.get_queens())  * 4;
     let rooks   = count(chess_board.get_rooks())   * 2;
     let bishops = count(chess_board.get_bishops()) * 1;
     let knights = count(chess_board.get_knights()) * 1;
-    let phase   = (queens + rooks + bishops + knights).min(24); // 24 = opening
-    // Map 24→0 (mg), 0→256 (eg)
-    ((24 - phase) * 256) / 24
+    (queens + rooks + bishops + knights).min(24)
 }
 
 /// Iterate a bitboard, calling `f(square)` for each set bit.
@@ -52,7 +56,6 @@ fn for_each_sq(mut bb: Bitboard, mut f: impl FnMut(usize)) {
 }
 
 /// Manhattan distance of a king from the nearest centre square (d4/d5/e4/e5).
-/// Returns 0 when on a centre square, up to 6 when in a corner.
 fn king_center_distance(sq: usize) -> i32 {
     let rank = (sq / 8) as i32;
     let file = (sq % 8) as i32;
@@ -70,46 +73,32 @@ fn manhattan(sq1: usize, sq2: usize) -> i32 {
     (r1 - r2).abs() + (f1 - f2).abs()
 }
 
-/// Mop-up bonus for the winning side:
-///  - push the losing king toward a corner (high center-distance = good)
-///  - keep the winning king close to the losing king
-///
-/// `material_score` is from white's perspective.
-/// Returns a value to ADD to the overall score (positive = good for white).
+/// Mop-up bonus: drive the losing king to a corner in winning endgames.
 fn mop_up(
     material_score: i32,
     white_king_sq: usize,
     black_king_sq: usize,
-    eg_weight: i32,
+    mg_phase: i32,
 ) -> i32 {
-    // Only meaningful in the endgame and when one side is clearly ahead.
+    let eg_weight = ((24 - mg_phase) * 256) / 24;
     if eg_weight < 80 || material_score.abs() < 150 {
         return 0;
     }
 
-    // corner_push: reward driving the losing king to a corner/edge (0..=60)
-    // proximity:   reward the winning king being adjacent to the losing king (0..=56)
     let (corner_push, proximity) = if material_score > 0 {
-        // White is winning — push black king to a corner
         let corner_push = king_center_distance(black_king_sq) * 10;
         let proximity = (14 - manhattan(white_king_sq, black_king_sq)) * 4;
         (corner_push, proximity)
     } else {
-        // Black is winning — push white king to a corner
         let corner_push = king_center_distance(white_king_sq) * 10;
         let proximity = (14 - manhattan(black_king_sq, white_king_sq)) * 4;
         (-(corner_push), -(proximity))
     };
 
-    // Scale by how far into the endgame we are
     (corner_push + proximity) * eg_weight / 256
 }
 
-/// Pawn structure penalty for one side's pawns (always positive = penalty amount).
-///
-/// * **Doubled**: each extra pawn beyond the first on a file costs `DOUBLED_PAWN_PENALTY`.
-/// * **Isolated**: a pawn with no friendly pawns on either adjacent file costs
-///   `ISOLATED_PAWN_PENALTY` per isolated pawn.
+/// Pawn structure penalty (doubled + isolated).
 fn pawn_structure_penalty(pawns_bb: u64) -> i32 {
     let mut penalty = 0i32;
     for file in 0..8usize {
@@ -117,13 +106,9 @@ fn pawn_structure_penalty(pawns_bb: u64) -> i32 {
         if on_file == 0 {
             continue;
         }
-
-        // Doubled pawn: each extra pawn beyond the first on this file.
         if on_file > 1 {
             penalty += (on_file - 1) * DOUBLED_PAWN_PENALTY;
         }
-
-        // Isolated pawn: no friendly pawns on either adjacent file.
         let mut adjacent = 0u64;
         if file > 0 { adjacent |= FILE_MASKS[file - 1]; }
         if file < 7 { adjacent |= FILE_MASKS[file + 1]; }
@@ -146,67 +131,83 @@ pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
     let queens  = chess_board.get_queens();
     let kings   = chess_board.get_kings();
 
-    let eg_weight = endgame_weight(chess_board);
+    let mg_phase = game_phase(chess_board);
+    let eg_phase = 24 - mg_phase;
 
     let white_pawns_bb = (white & pawns).0;
     let black_pawns_bb = (black & pawns).0;
 
-    let mut score = 0i32;
+    let mut mg = 0i32;
+    let mut eg = 0i32;
 
-    // --- Material ---
-    score += count(white & pawns)   * PAWN_VALUE;
-    score += count(white & knights) * KNIGHT_VALUE;
-    score += count(white & bishops) * BISHOP_VALUE;
-    score += count(white & rooks)   * ROOK_VALUE;
-    score += count(white & queens)  * QUEEN_VALUE;
-    score += count(white & kings)   * KING_VALUE;
+    // --- Material (tapered) ---
+    let n = count(white & pawns);   mg += n * MG_PAWN_VALUE;   eg += n * EG_PAWN_VALUE;
+    let n = count(white & knights); mg += n * MG_KNIGHT_VALUE; eg += n * EG_KNIGHT_VALUE;
+    let n = count(white & bishops); mg += n * MG_BISHOP_VALUE; eg += n * EG_BISHOP_VALUE;
+    let n = count(white & rooks);   mg += n * MG_ROOK_VALUE;   eg += n * EG_ROOK_VALUE;
+    let n = count(white & queens);  mg += n * MG_QUEEN_VALUE;  eg += n * EG_QUEEN_VALUE;
 
-    score -= count(black & pawns)   * PAWN_VALUE;
-    score -= count(black & knights) * KNIGHT_VALUE;
-    score -= count(black & bishops) * BISHOP_VALUE;
-    score -= count(black & rooks)   * ROOK_VALUE;
-    score -= count(black & queens)  * QUEEN_VALUE;
-    score -= count(black & kings)   * KING_VALUE;
+    let n = count(black & pawns);   mg -= n * MG_PAWN_VALUE;   eg -= n * EG_PAWN_VALUE;
+    let n = count(black & knights); mg -= n * MG_KNIGHT_VALUE; eg -= n * EG_KNIGHT_VALUE;
+    let n = count(black & bishops); mg -= n * MG_BISHOP_VALUE; eg -= n * EG_BISHOP_VALUE;
+    let n = count(black & rooks);   mg -= n * MG_ROOK_VALUE;   eg -= n * EG_ROOK_VALUE;
+    let n = count(black & queens);  mg -= n * MG_QUEEN_VALUE;  eg -= n * EG_QUEEN_VALUE;
 
-    // --- White piece-square tables ---
+    // --- White PSTs ---
     for_each_sq(white & pawns, |sq| {
-        score += pawn_table_value(sq, true);
+        mg += mg_pawn_table(sq, true);
+        eg += eg_pawn_table(sq, true);
+    });
+    for_each_sq(white & knights, |sq| { mg += mg_knight_table(sq, true); eg += eg_knight_table(sq, true); });
+    for_each_sq(white & bishops, |sq| { mg += mg_bishop_table(sq, true); eg += eg_bishop_table(sq, true); });
+    for_each_sq(white & rooks,   |sq| { mg += mg_rook_table(sq, true);   eg += eg_rook_table(sq, true); });
+    for_each_sq(white & queens,  |sq| { mg += mg_queen_table(sq, true);  eg += eg_queen_table(sq, true); });
+    for_each_sq(white & kings,   |sq| { mg += mg_king_table(sq, true);   eg += eg_king_table(sq, true); });
+
+    // --- Black PSTs ---
+    for_each_sq(black & pawns, |sq| {
+        mg -= mg_pawn_table(sq, false);
+        eg -= eg_pawn_table(sq, false);
+    });
+    for_each_sq(black & knights, |sq| { mg -= mg_knight_table(sq, false); eg -= eg_knight_table(sq, false); });
+    for_each_sq(black & bishops, |sq| { mg -= mg_bishop_table(sq, false); eg -= eg_bishop_table(sq, false); });
+    for_each_sq(black & rooks,   |sq| { mg -= mg_rook_table(sq, false);   eg -= eg_rook_table(sq, false); });
+    for_each_sq(black & queens,  |sq| { mg -= mg_queen_table(sq, false);  eg -= eg_queen_table(sq, false); });
+    let mut black_king_sq = 0usize;
+    for_each_sq(black & kings, |sq| {
+        mg -= mg_king_table(sq, false);
+        eg -= eg_king_table(sq, false);
+        black_king_sq = sq;
+    });
+
+    // --- Tapered blend ---
+    let mut score = (mg * mg_phase + eg * eg_phase) / 24;
+
+    // --- Mop-up: drive the losing king to a corner in winning endgames ---
+    let material_score =
+          count(white & pawns)   * MG_PAWN_VALUE   - count(black & pawns)   * MG_PAWN_VALUE
+        + count(white & knights) * MG_KNIGHT_VALUE - count(black & knights) * MG_KNIGHT_VALUE
+        + count(white & bishops) * MG_BISHOP_VALUE - count(black & bishops) * MG_BISHOP_VALUE
+        + count(white & rooks)   * MG_ROOK_VALUE   - count(black & rooks)   * MG_ROOK_VALUE
+        + count(white & queens)  * MG_QUEEN_VALUE  - count(black & queens)  * MG_QUEEN_VALUE;
+    let white_king_sq = (white & kings).0.trailing_zeros() as usize;
+    score += mop_up(material_score, white_king_sq, black_king_sq, mg_phase);
+
+    // --- Passed pawns (applied post-blend; important in endgame) ---
+    for_each_sq(white & pawns, |sq| {
         if is_passed_pawn(sq, black_pawns_bb, true) {
             score += passed_pawn_bonus(sq, true);
         }
     });
-    for_each_sq(white & knights, |sq| score += knight_table_value(sq, true));
-    for_each_sq(white & bishops, |sq| score += bishop_table_value(sq, true));
-    for_each_sq(white & rooks,   |sq| score += rook_table_value(sq, true));
-    for_each_sq(white & queens,  |sq| score += queen_table_value(sq, true));
-    for_each_sq(white & kings,   |sq| score += king_table_value(sq, true, eg_weight));
-
-    // --- Black piece-square tables ---
     for_each_sq(black & pawns, |sq| {
-        score -= pawn_table_value(sq, false);
         if is_passed_pawn(sq, white_pawns_bb, false) {
             score -= passed_pawn_bonus(sq, false);
         }
     });
-    for_each_sq(black & knights, |sq| score -= knight_table_value(sq, false));
-    for_each_sq(black & bishops, |sq| score -= bishop_table_value(sq, false));
-    for_each_sq(black & rooks,   |sq| score -= rook_table_value(sq, false));
-    for_each_sq(black & queens,  |sq| score -= queen_table_value(sq, false));
-    let mut black_king_sq = 0usize;
-    for_each_sq(black & kings, |sq| {
-        score -= king_table_value(sq, false, eg_weight);
-        black_king_sq = sq;
-    });
-
-    // --- Mop-up: drive the losing king to the corner in winning endgames ---
-    let white_king_sq = (white & kings).0.trailing_zeros() as usize;
-    // material_score excludes king values (both sides have one, they cancel out)
-    let material_score = score - count(white & kings) * KING_VALUE + count(black & kings) * KING_VALUE;
-    score += mop_up(material_score, white_king_sq, black_king_sq, eg_weight);
 
     // --- Pawn structure ---
-    score -= pawn_structure_penalty(white_pawns_bb) as i32;
-    score += pawn_structure_penalty(black_pawns_bb) as i32;
+    score -= pawn_structure_penalty(white_pawns_bb);
+    score += pawn_structure_penalty(black_pawns_bb);
 
     score
 }
