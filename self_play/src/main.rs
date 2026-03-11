@@ -176,8 +176,11 @@ enum GameResult {
     Draw,
 }
 
-/// Maximum half-moves before we adjudicate a draw.
-const MAX_PLIES: usize = 400;
+/// Safety cap: if somehow 300 full moves pass the game is a draw.
+const MAX_PLIES: usize = 600;
+
+/// 50-move rule: 50 moves (100 half-moves) without a pawn push or capture.
+const FIFTY_MOVE_PLIES: u32 = 100;
 
 fn play_game(
     engine1: &mut Engine,
@@ -188,6 +191,7 @@ fn play_game(
 ) -> (GameResult, String) {
     let mut board = ChessBoard::new();
     let mut move_list: Vec<String> = Vec::new();
+    let mut no_progress: u32 = 0; // half-moves since last pawn push or capture
 
     engine1.new_game();
     engine2.new_game();
@@ -217,6 +221,10 @@ fn play_game(
             return (GameResult::Draw, "repetition".to_string());
         }
 
+        if no_progress >= FIFTY_MOVE_PLIES {
+            return (GameResult::Draw, "50-move rule".to_string());
+        }
+
         // ── Build position command ──
         let position_cmd = if move_list.is_empty() {
             "position startpos".to_string()
@@ -242,11 +250,19 @@ fn play_game(
         let Some(mut chess_move) = parse_uci_move(&uci_str, &legal) else {
             return (GameResult::Draw, format!("illegal move '{}'", uci_str));
         };
+        // Reset 50-move counter on pawn push or capture; otherwise increment.
+        let is_pawn = chess_move.chess_piece.map_or(false, |p| p.piece_type() == PieceType::Pawn);
+        if is_pawn || chess_move.capture.is_some() {
+            no_progress = 0;
+        } else {
+            no_progress += 1;
+        }
+
         board.make_move(&mut chess_move);
         move_list.push(mv_to_uci(chess_move));
     }
 
-    (GameResult::Draw, format!("move limit ({})", MAX_PLIES))
+    (GameResult::Draw, "move limit".to_string())
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
