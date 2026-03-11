@@ -1,6 +1,5 @@
 pub mod alpha_beta;
 pub mod board_evaluation;
-mod opening_book_data;
 pub mod opening_book;
 pub mod piece_tables;
 pub mod transposition_table;

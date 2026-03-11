@@ -51,12 +51,17 @@ def main():
     # We only need the full lines (shorter prefixes are automatically covered
     # by the replay logic in OpeningBook::build).
 
-    # Filter: skip very short lines (1 move) that are just first moves,
-    # and skip very long lines (>20 moves) which are rarely reached.
+    # Filter book lines:
+    # - Only keep lines starting with standard first moves (e4, d4, c4, Nf3)
+    #   to avoid polluting the book with dubious openings (1.a4, 1.g4, etc.)
+    # - Skip single-move lines and truncate at 20 moves
+    GOOD_FIRST_MOVES = {"e2e4", "d2d4", "c2c4", "g1f3"}
     lines = []
     seen = set()
     for eco, name, uci_moves in entries:
         if len(uci_moves) < 2:
+            continue
+        if uci_moves[0] not in GOOD_FIRST_MOVES:
             continue
         # Truncate very long lines
         uci_moves = uci_moves[:20]
