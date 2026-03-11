@@ -356,19 +356,33 @@ pub fn alpha_beta(
 
             let eval = if chess_board.is_repetition(2) {
                 0 // draw by repetition
-            } else if can_reduce {
-                let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 2, ply + 1, alpha, beta, false, true).0;
-                if reduced > alpha {
-                    // Re-search at full depth
-                    alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, false, true).0
-                } else {
-                    reduced
-                }
-            } else {
+            } else if move_index == 0 {
+                // PV move: always full depth + full window.
                 alpha_beta(chess_board, conductor, tt, ctx,
                     depth - 1, ply + 1, alpha, beta, false, true).0
+            } else if can_reduce {
+                // LMR + PVS: reduced depth, null window first.
+                let score = alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 2, ply + 1, alpha, alpha + 1, false, true).0;
+                if score > alpha {
+                    // Failed high: retry at full depth with null window.
+                    let score = alpha_beta(chess_board, conductor, tt, ctx,
+                        depth - 1, ply + 1, alpha, alpha + 1, false, true).0;
+                    if score > alpha && score < beta {
+                        // Still failing high: full window re-search.
+                        alpha_beta(chess_board, conductor, tt, ctx,
+                            depth - 1, ply + 1, alpha, beta, false, true).0
+                    } else { score }
+                } else { score }
+            } else {
+                // Non-LMR, non-PV: null window first.
+                let score = alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 1, ply + 1, alpha, alpha + 1, false, true).0;
+                if score > alpha && score < beta {
+                    // Failed high: full window re-search.
+                    alpha_beta(chess_board, conductor, tt, ctx,
+                        depth - 1, ply + 1, alpha, beta, false, true).0
+                } else { score }
             };
 
             chess_board.undo_move();
@@ -411,19 +425,33 @@ pub fn alpha_beta(
 
             let eval = if chess_board.is_repetition(2) {
                 0 // draw by repetition
-            } else if can_reduce {
-                let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 2, ply + 1, alpha, beta, true, true).0;
-                if reduced < beta {
-                    // Re-search at full depth
-                    alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, true, true).0
-                } else {
-                    reduced
-                }
-            } else {
+            } else if move_index == 0 {
+                // PV move: always full depth + full window.
                 alpha_beta(chess_board, conductor, tt, ctx,
                     depth - 1, ply + 1, alpha, beta, true, true).0
+            } else if can_reduce {
+                // LMR + PVS: reduced depth, null window first.
+                let score = alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 2, ply + 1, beta - 1, beta, true, true).0;
+                if score < beta {
+                    // Failed low: retry at full depth with null window.
+                    let score = alpha_beta(chess_board, conductor, tt, ctx,
+                        depth - 1, ply + 1, beta - 1, beta, true, true).0;
+                    if score < beta && score > alpha {
+                        // Still failing low: full window re-search.
+                        alpha_beta(chess_board, conductor, tt, ctx,
+                            depth - 1, ply + 1, alpha, beta, true, true).0
+                    } else { score }
+                } else { score }
+            } else {
+                // Non-LMR, non-PV: null window first.
+                let score = alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 1, ply + 1, beta - 1, beta, true, true).0;
+                if score < beta && score > alpha {
+                    // Failed low: full window re-search.
+                    alpha_beta(chess_board, conductor, tt, ctx,
+                        depth - 1, ply + 1, alpha, beta, true, true).0
+                } else { score }
             };
 
             chess_board.undo_move();
