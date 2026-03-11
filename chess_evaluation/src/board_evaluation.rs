@@ -1,5 +1,6 @@
 use chess_board::ChessBoard;
 use chess_foundation::Bitboard;
+use move_generator::piece_conductor::PieceConductor;
 
 use crate::piece_tables::{
     eg_bishop_table, eg_king_table, eg_knight_table, eg_pawn_table, eg_queen_table,
@@ -31,9 +32,26 @@ const EG_ROOK_OPEN_FILE:      i32 = 15;
 const MG_ROOK_SEMI_OPEN_FILE: i32 = 10;
 const EG_ROOK_SEMI_OPEN_FILE: i32 = 8;
 
-// King safety — applied to mg only, so it fades naturally in the endgame blend.
-const KING_SHIELD_MISSING:  i32 = 15; // no friendly pawn on this file
-const KING_SHIELD_ADVANCED: i32 =  5; // pawn exists but has left the shield zone
+// King safety — pawn shield (only when castled) + attack counting.
+const KING_SHIELD_MISSING:  i32 = 15;
+const KING_SHIELD_ADVANCED: i32 =  5;
+
+// Attack weight per piece type attacking king zone.
+const KNIGHT_ATTACK_WEIGHT: i32 = 2;
+const BISHOP_ATTACK_WEIGHT: i32 = 2;
+const ROOK_ATTACK_WEIGHT:   i32 = 3;
+const QUEEN_ATTACK_WEIGHT:  i32 = 5;
+
+/// Non-linear safety penalty indexed by total attack weight.
+/// Ramps slowly for 1–2 minor pieces, steeply once queen + support arrive.
+/// Values in centipawns, applied to MG score only.
+#[rustfmt::skip]
+const SAFETY_TABLE: [i32; 20] = [
+//   0    1    2    3    4    5    6    7    8    9
+     0,   0,   1,   3,   6,  12,  20,  30,  43,  58,
+//  10   11   12   13   14   15   16   17   18   19
+    75,  95, 117, 141, 168, 197, 228, 261, 296, 333,
+];
 
 const FILE_MASKS: [u64; 8] = [
     0x0101010101010101, // a-file
@@ -131,19 +149,22 @@ fn pawn_structure_penalty(pawns_bb: u64) -> i32 {
     penalty
 }
 
-/// King safety penalty for one side (always positive = penalty amount).
+/// Pawn shield penalty for one side (always positive = penalty amount).
 ///
-/// Examines the 3 files centred on the king:
-///  - Missing friendly pawn on a file → `KING_SHIELD_MISSING`
-///  - Pawn exists but has advanced past the two shield ranks → `KING_SHIELD_ADVANCED`
-///
-/// Applied only to the MG score, so the penalty fades naturally during the endgame blend.
-fn king_safety_penalty(king_sq: usize, friendly_pawns: u64, is_white: bool) -> i32 {
+/// Only applied when the king is on a wing (files a–c or f–h), indicating
+/// it has castled or moved to safety. A king in the centre gets no shield
+/// penalty — central pawns being advanced is normal opening play.
+fn king_shield_penalty(king_sq: usize, friendly_pawns: u64, is_white: bool) -> i32 {
     let king_file = king_sq % 8;
-    // Clamp centre so we always examine exactly 3 files (avoids edge under/overflow).
+
+    // Only check pawn shield when king is on a wing (likely castled).
+    if king_file >= 3 && king_file <= 4 {
+        return 0;
+    }
+
     let center = king_file.max(1).min(6);
 
-    // Squares where a pawn still forms a tight shield (ranks 2–3 for white, 6–7 for black).
+    // Ranks where a pawn still forms a tight shield.
     let shield_ranks: u64 = if is_white {
         0x0000_0000_00FF_FF00 // ranks 2–3 (squares 8–23)
     } else {
@@ -162,9 +183,75 @@ fn king_safety_penalty(king_sq: usize, friendly_pawns: u64, is_white: bool) -> i
     penalty
 }
 
+/// Attack-counting king safety.
+///
+/// Counts how many enemy pieces (knight, bishop, rook, queen) attack the
+/// king zone (the 8 squares around the king + the king square itself).
+/// Each piece type contributes a weight; the total indexes a non-linear
+/// safety table. Only penalises when >= 2 attackers (a lone piece is not
+/// usually dangerous enough to warrant a penalty).
+fn king_attack_penalty(
+    conductor: &PieceConductor,
+    king_sq: usize,
+    enemy_knights: Bitboard,
+    enemy_bishops: Bitboard,
+    enemy_rooks: Bitboard,
+    enemy_queens: Bitboard,
+    occupied: Bitboard,
+) -> i32 {
+    // King zone = king square + 8 surrounding squares.
+    let zone = conductor.king_lut[king_sq] | Bitboard(1u64 << king_sq);
+
+    let mut attack_weight = 0i32;
+    let mut attacker_count = 0i32;
+
+    // Knights
+    for_each_sq(enemy_knights, |sq| {
+        if (conductor.knight_lut[sq] & zone).0 != 0 {
+            attack_weight += KNIGHT_ATTACK_WEIGHT;
+            attacker_count += 1;
+        }
+    });
+
+    // Bishops
+    for_each_sq(enemy_bishops, |sq| {
+        let attacks = conductor.get_bishop_attacks(sq, Bitboard(0), occupied);
+        if (attacks & zone).0 != 0 {
+            attack_weight += BISHOP_ATTACK_WEIGHT;
+            attacker_count += 1;
+        }
+    });
+
+    // Rooks
+    for_each_sq(enemy_rooks, |sq| {
+        let attacks = conductor.get_rook_attacks(sq, Bitboard(0), occupied);
+        if (attacks & zone).0 != 0 {
+            attack_weight += ROOK_ATTACK_WEIGHT;
+            attacker_count += 1;
+        }
+    });
+
+    // Queens
+    for_each_sq(enemy_queens, |sq| {
+        let rook_part   = conductor.get_rook_attacks(sq, Bitboard(0), occupied);
+        let bishop_part = conductor.get_bishop_attacks(sq, Bitboard(0), occupied);
+        if ((rook_part | bishop_part) & zone).0 != 0 {
+            attack_weight += QUEEN_ATTACK_WEIGHT;
+            attacker_count += 1;
+        }
+    });
+
+    // A lone attacker rarely constitutes a real threat.
+    if attacker_count < 2 {
+        return 0;
+    }
+
+    SAFETY_TABLE[attack_weight.min(SAFETY_TABLE.len() as i32 - 1) as usize]
+}
+
 /// Evaluates the chess board and returns an absolute score:
 /// positive = white is ahead, negative = black is ahead.
-pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
+pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i32 {
     let white = chess_board.get_white();
     let black = chess_board.get_black();
     let pawns   = chess_board.get_pawns();
@@ -225,15 +312,30 @@ pub fn evaluate_board(chess_board: &ChessBoard) -> i32 {
     });
 
     // --- King safety (MG only — fades naturally in endgame blend) ---
-    mg -= king_safety_penalty(white_king_sq, white_pawns_bb, true);
-    mg += king_safety_penalty(black_king_sq, black_pawns_bb, false);
+    //
+    // Pawn shield: penalise missing/advanced shield pawns when king is on a wing.
+    mg -= king_shield_penalty(white_king_sq, white_pawns_bb, true);
+    mg += king_shield_penalty(black_king_sq, black_pawns_bb, false);
+
+    // Attack counting: penalise when multiple enemy pieces aim at the king zone.
+    let occupied = chess_board.get_all_pieces();
+    mg -= king_attack_penalty(
+        conductor, white_king_sq,
+        black & knights, black & bishops, black & rooks, black & queens,
+        occupied,
+    );
+    mg += king_attack_penalty(
+        conductor, black_king_sq,
+        white & knights, white & bishops, white & rooks, white & queens,
+        occupied,
+    );
 
     // --- Bishop pair ---
     if count(white & bishops) >= 2 { mg += MG_BISHOP_PAIR_BONUS; eg += EG_BISHOP_PAIR_BONUS; }
     if count(black & bishops) >= 2 { mg -= MG_BISHOP_PAIR_BONUS; eg -= EG_BISHOP_PAIR_BONUS; }
 
     // --- Rook on open / semi-open file ---
-    let all_pawns_bb  = (pawns).0;
+    let all_pawns_bb = (pawns).0;
     for_each_sq(white & rooks, |sq| {
         let file_mask = FILE_MASKS[sq % 8];
         if all_pawns_bb & file_mask == 0 {

@@ -92,9 +92,9 @@ fn quiescence(
     qdepth: i32,
 ) -> i32 {
     if qdepth == 0 {
-        return evaluate_board(chess_board);
+        return evaluate_board(chess_board, conductor);
     }
-    let stand_pat = evaluate_board(chess_board);
+    let stand_pat = evaluate_board(chess_board, conductor);
 
     // Fail-soft quiescence: return the actual best score found, not alpha/beta.
     // This ensures the root can distinguish between a genuine best-score and a
@@ -478,7 +478,7 @@ pub fn search_root(
 ) -> (i32, Option<ChessMove>) {
     let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
     if legal_moves.is_empty() {
-        return (evaluate_board(chess_board), None);
+        return (evaluate_board(chess_board, conductor), None);
     }
     // Order: prev_best first (PV move from previous ID iteration), then
     // killers at ply 0 (usually empty), then history-scored quiets.
