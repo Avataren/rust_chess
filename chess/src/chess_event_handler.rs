@@ -4,11 +4,10 @@ use bevy_async_task::TaskRunner;
 use bevy_tweening::{lens::TransformPositionLens, Delay, *};
 use std::task::Poll;
 use chess_board::ChessBoard;
-use chess_evaluation::iterative_deepening_root;
 #[cfg(target_arch = "wasm32")]
-use chess_evaluation::{search_root, OpeningBook, TranspositionTable, ASPIRATION_DELTA, TT_SIZE};
+use chess_evaluation::{search_root, OpeningBook, SearchContext, TranspositionTable, ASPIRATION_DELTA, TT_SIZE};
 #[cfg(not(target_arch = "wasm32"))]
-use chess_evaluation::OpeningBook;
+use chess_evaluation::{iterative_deepening_root, OpeningBook};
 use chess_foundation::ChessMove;
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
@@ -93,18 +92,19 @@ async fn alpha_beta_task(
         }
 
         let mut tt = TranspositionTable::new(TT_SIZE);
+        let mut ctx = SearchContext::new();
         let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
 
         for depth in 1..=max_depth {
             let (prev_score, prev_move) = best;
 
             best = if depth <= 2 {
-                search_root(chess_board, conductor, &mut tt, depth, i32::MIN + 1, i32::MAX, is_white, prev_move)
+                search_root(chess_board, conductor, &mut tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move)
             } else {
                 let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
                 let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
                 loop {
-                    let result = search_root(chess_board, conductor, &mut tt, depth, lo, hi, is_white, prev_move);
+                    let result = search_root(chess_board, conductor, &mut tt, &mut ctx, depth, lo, hi, is_white, prev_move);
                     if result.0 > lo && result.0 < hi {
                         break result;
                     } else if result.0 <= lo {
