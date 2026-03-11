@@ -356,19 +356,42 @@ pub fn alpha_beta(
 
             let eval = if chess_board.is_repetition(2) {
                 0 // draw by repetition
+            } else if move_index == 0 {
+                // PV node: full window search for first move.
+                alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 1, ply + 1, alpha, beta, false, true).0
             } else if can_reduce {
+                // LMR + PVS: reduced null-window search first.
                 let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 2, ply + 1, alpha, beta, false, true).0;
-                if reduced > alpha {
-                    // Re-search at full depth
+                    depth - 2, ply + 1, alpha, alpha + 1, false, true).0;
+                if reduced > alpha && reduced < beta {
+                    // Re-search at full depth, full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
                         depth - 1, ply + 1, alpha, beta, false, true).0
+                } else if reduced > alpha {
+                    // Re-search at full depth, null window — then widen if needed.
+                    let score = alpha_beta(chess_board, conductor, tt, ctx,
+                        depth - 1, ply + 1, alpha, alpha + 1, false, true).0;
+                    if score > alpha && score < beta {
+                        alpha_beta(chess_board, conductor, tt, ctx,
+                            depth - 1, ply + 1, alpha, beta, false, true).0
+                    } else {
+                        score
+                    }
                 } else {
                     reduced
                 }
             } else {
-                alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, alpha, beta, false, true).0
+                // PVS: null-window search for non-PV moves.
+                let score = alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 1, ply + 1, alpha, alpha + 1, false, true).0;
+                if score > alpha && score < beta {
+                    // Fail high — re-search with full window.
+                    alpha_beta(chess_board, conductor, tt, ctx,
+                        depth - 1, ply + 1, alpha, beta, false, true).0
+                } else {
+                    score
+                }
             };
 
             chess_board.undo_move();
@@ -381,7 +404,6 @@ pub fn alpha_beta(
                 alpha = eval;
             }
             if beta <= alpha {
-                // Record quiet β-cutoff move for killer / history.
                 if chess_move.capture.is_none() && !chess_move.is_promotion() {
                     ctx.record_cutoff(ply, depth, chess_move);
                 }
@@ -411,19 +433,42 @@ pub fn alpha_beta(
 
             let eval = if chess_board.is_repetition(2) {
                 0 // draw by repetition
+            } else if move_index == 0 {
+                // PV node: full window search for first move.
+                alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 1, ply + 1, alpha, beta, true, true).0
             } else if can_reduce {
+                // LMR + PVS: reduced null-window search first.
                 let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 2, ply + 1, alpha, beta, true, true).0;
-                if reduced < beta {
-                    // Re-search at full depth
+                    depth - 2, ply + 1, beta - 1, beta, true, true).0;
+                if reduced < beta && reduced > alpha {
+                    // Re-search at full depth, full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
                         depth - 1, ply + 1, alpha, beta, true, true).0
+                } else if reduced < beta {
+                    // Re-search at full depth, null window — then widen if needed.
+                    let score = alpha_beta(chess_board, conductor, tt, ctx,
+                        depth - 1, ply + 1, beta - 1, beta, true, true).0;
+                    if score < beta && score > alpha {
+                        alpha_beta(chess_board, conductor, tt, ctx,
+                            depth - 1, ply + 1, alpha, beta, true, true).0
+                    } else {
+                        score
+                    }
                 } else {
                     reduced
                 }
             } else {
-                alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, alpha, beta, true, true).0
+                // PVS: null-window search for non-PV moves.
+                let score = alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 1, ply + 1, beta - 1, beta, true, true).0;
+                if score < beta && score > alpha {
+                    // Fail low — re-search with full window.
+                    alpha_beta(chess_board, conductor, tt, ctx,
+                        depth - 1, ply + 1, alpha, beta, true, true).0
+                } else {
+                    score
+                }
             };
 
             chess_board.undo_move();
@@ -436,7 +481,6 @@ pub fn alpha_beta(
                 beta = eval;
             }
             if beta <= alpha {
-                // Record quiet β-cutoff move for killer / history.
                 if chess_move.capture.is_none() && !chess_move.is_promotion() {
                     ctx.record_cutoff(ply, depth, chess_move);
                 }
