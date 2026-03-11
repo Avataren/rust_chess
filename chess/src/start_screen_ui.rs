@@ -16,6 +16,7 @@ pub enum ColorButton {
 
 #[derive(Component, PartialEq, Clone, Copy)]
 pub enum DifficultyButton {
+    VeryEasy,
     Easy,
     Medium,
     Hard,
@@ -25,6 +26,7 @@ pub enum DifficultyButton {
 impl DifficultyButton {
     fn to_difficulty(self) -> Difficulty {
         match self {
+            DifficultyButton::VeryEasy => Difficulty::VeryEasy,
             DifficultyButton::Easy     => Difficulty::Easy,
             DifficultyButton::Medium   => Difficulty::Medium,
             DifficultyButton::Hard     => Difficulty::Hard,
@@ -76,6 +78,7 @@ pub fn spawn_start_screen(mut commands: Commands) {
                     ..default()
                 })
                 .with_children(|row| {
+                    spawn_difficulty_button(row, "Very Easy", DifficultyButton::VeryEasy, false);
                     spawn_difficulty_button(row, "Easy",      DifficultyButton::Easy,     false);
                     spawn_difficulty_button(row, "Medium",    DifficultyButton::Medium,   true);
                     spawn_difficulty_button(row, "Hard",      DifficultyButton::Hard,     false);
@@ -170,7 +173,8 @@ fn spawn_color_button(parent: &mut ChildSpawnerCommands, label: &str, button: Co
 pub fn handle_difficulty_buttons(
     interaction_query: Query<(&Interaction, &DifficultyButton), Changed<Interaction>>,
     mut difficulty: ResMut<Difficulty>,
-    mut button_query: Query<(&DifficultyButton, &mut BackgroundColor)>,
+    mut button_query: Query<(&DifficultyButton, &mut BackgroundColor, &Children)>,
+    mut text_query: Query<&mut TextColor>,
 ) {
     let mut changed = false;
     for (interaction, btn) in interaction_query.iter() {
@@ -182,10 +186,15 @@ pub fn handle_difficulty_buttons(
     if !changed {
         return;
     }
-    for (btn, mut bg) in button_query.iter_mut() {
+    for (btn, mut bg, children) in button_query.iter_mut() {
         let selected = btn.to_difficulty() == *difficulty;
-        let (new_bg, _) = difficulty_colors(*btn, selected);
+        let (new_bg, new_text_color) = difficulty_colors(*btn, selected);
         *bg = BackgroundColor(new_bg);
+        for child in children.iter() {
+            if let Ok(mut tc) = text_query.get_mut(child) {
+                *tc = TextColor(new_text_color);
+            }
+        }
     }
 }
 

@@ -66,6 +66,7 @@ pub struct IsAiThinking(pub bool);
 
 #[derive(Resource, Default, PartialEq, Debug, Clone, Copy)]
 pub enum Difficulty {
+    VeryEasy,
     Easy,
     #[default]
     Medium,
@@ -76,6 +77,7 @@ pub enum Difficulty {
 impl Difficulty {
     pub fn search_depth(self) -> i32 {
         match self {
+            Difficulty::VeryEasy => 1,
             Difficulty::Easy     => 2,
             Difficulty::Medium   => 4,
             Difficulty::Hard     => 7,
@@ -86,6 +88,7 @@ impl Difficulty {
     /// Time budget for the search. `None` means run to the full depth cap.
     pub fn time_limit(self) -> Option<std::time::Duration> {
         match self {
+            Difficulty::VeryEasy => None,
             Difficulty::Easy     => None,
             Difficulty::Medium   => Some(std::time::Duration::from_secs(3)),
             Difficulty::Hard     => Some(std::time::Duration::from_secs(8)),
