@@ -758,8 +758,15 @@ pub fn iterative_deepening_root(
 
         // Stop flag means the iteration may have been interrupted mid-search
         // (e.g. UCI "stop" command) — discard the unreliable result.
+        // Exception: if we have no move yet, use the interrupted result anyway
+        // so we never return best_move: None.
         if let Some(ref s) = stop {
-            if s.load(Ordering::Relaxed) { break; }
+            if s.load(Ordering::Relaxed) {
+                if best.1.is_none() && result.1.is_some() {
+                    best = result;
+                }
+                break;
+            }
         }
 
         // Iteration completed cleanly — save it before checking deadline.
@@ -1279,12 +1286,12 @@ mod tests {
         let c = conductor();
 
         for max_depth in 2..=6 {
-            let (score, mv) = iterative_deepening_root(
+            let r = iterative_deepening_root(
                 &mut board, &c, None, max_depth, true, None, None,
             );
-            assert!(mv.is_some(), "ID depth {max_depth}: must return a move");
-            assert!(score >= 999_000,
-                "ID depth {max_depth}: mate score expected, got {score}");
+            assert!(r.best_move.is_some(), "ID depth {max_depth}: must return a move");
+            assert!(r.score >= 999_000,
+                "ID depth {max_depth}: mate score expected, got {}", r.score);
         }
     }
 
@@ -1300,14 +1307,16 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
 
-        let (score_no_flag, _) = iterative_deepening_root(
+        let r1 = iterative_deepening_root(
             &mut board, &c, None, 4, true, None, None,
         );
+        let score_no_flag = r1.score;
 
         let stop = Arc::new(AtomicBool::new(false));
-        let (score_with_flag, _) = iterative_deepening_root(
+        let r2 = iterative_deepening_root(
             &mut board, &c, None, 4, true, None, Some(stop),
         );
+        let score_with_flag = r2.score;
 
         assert_eq!(score_no_flag, score_with_flag,
             "Untriggered stop flag must not change the result: no_flag={score_no_flag}, with_flag={score_with_flag}");
@@ -1323,14 +1332,16 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
 
-        let (score_no_dl, _) = iterative_deepening_root(
+        let r1 = iterative_deepening_root(
             &mut board, &c, None, 4, true, None, None,
         );
+        let score_no_dl = r1.score;
 
         let deadline = Some(Instant::now() + Duration::from_secs(60));
-        let (score_with_dl, _) = iterative_deepening_root(
+        let r2 = iterative_deepening_root(
             &mut board, &c, None, 4, true, deadline, None,
         );
+        let score_with_dl = r2.score;
 
         assert_eq!(score_no_dl, score_with_dl,
             "Generous deadline must not change result: no_dl={score_no_dl}, with_dl={score_with_dl}");
@@ -1350,15 +1361,15 @@ mod tests {
         // With a very tight deadline, the engine should still complete
         // at least depth 1-2 and return a sensible result.
         let deadline = Some(Instant::now() + Duration::from_millis(5));
-        let (score, mv) = iterative_deepening_root(
+        let r = iterative_deepening_root(
             &mut board, &c, None, 64, true, deadline, None,
         );
 
-        assert!(mv.is_some(),
+        assert!(r.best_move.is_some(),
             "Must return a move even with tight deadline");
         // White has a hanging queen to capture — score must be positive
-        assert!(score > 0,
-            "Tight deadline must still use completed depth result, got {score}");
+        assert!(r.score > 0,
+            "Tight deadline must still use completed depth result, got {}", r.score);
     }
 
     // -----------------------------------------------------------------------
@@ -1415,13 +1426,13 @@ mod tests {
         let c = conductor();
 
         let initial_score = evaluate_board(&board, &c);
-        let (search_score, mv) = iterative_deepening_root(
+        let r = iterative_deepening_root(
             &mut board, &c, None, 4, true, None, None,
         );
 
-        assert!(mv.is_some(), "Engine must return a move");
-        assert!(search_score >= initial_score,
-            "Engine should make progress: initial={initial_score}, search={search_score}");
+        assert!(r.best_move.is_some(), "Engine must return a move");
+        assert!(r.score >= initial_score,
+            "Engine should make progress: initial={initial_score}, search={}", r.score);
     }
 
     // -----------------------------------------------------------------------

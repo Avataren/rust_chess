@@ -105,6 +105,8 @@ struct GoParams {
     hard_deadline: Option<Instant>,
     /// Whether this is a ponder search (think on opponent's time).
     is_ponder: bool,
+    /// Raw movetime in ms — used by ponder to set deadline on ponderhit.
+    movetime_ms: Option<u64>,
 }
 
 fn parse_go(tokens: &[&str], is_white: bool, move_number: usize) -> GoParams {
@@ -139,6 +141,7 @@ fn parse_go(tokens: &[&str], is_white: bool, move_number: usize) -> GoParams {
             soft_deadline: Some(now + Duration::from_millis(ms)),
             hard_deadline: Some(now + Duration::from_millis(ms)),
             is_ponder,
+            movetime_ms,
         };
     }
 
@@ -168,9 +171,11 @@ fn parse_go(tokens: &[&str], is_white: bool, move_number: usize) -> GoParams {
             soft_deadline: Some(now + Duration::from_millis(soft_ms)),
             hard_deadline: Some(now + Duration::from_millis(hard_ms)),
             is_ponder,
+            // For ponder: use hard_ms as the duration after ponderhit
+            movetime_ms: Some(hard_ms),
         }
     } else {
-        GoParams { max_depth, soft_deadline: None, hard_deadline: None, is_ponder }
+        GoParams { max_depth, soft_deadline: None, hard_deadline: None, is_ponder, movetime_ms: None }
     }
 }
 
@@ -246,8 +251,9 @@ fn search_and_respond(
 
 /// Ponder search: think indefinitely until ponderhit or stop.
 ///
-/// On `ponderhit`: ponderhit flag is set → we stop the open-ended search
-/// and immediately start a fresh timed search for the same position.
+/// On `ponderhit`: the search CONTINUES for movetime_ms more, preserving
+/// all TT state built up during pondering. This effectively extends
+/// thinking time by however long we pondered.
 /// On `stop`: stop flag fires → we output whatever we have.
 fn ponder_and_respond(
     mut board: ChessBoard,
@@ -258,67 +264,72 @@ fn ponder_and_respond(
     ponderhit: Arc<AtomicBool>,
     is_white: bool,
 ) {
-    // Ponder phase: search with no deadline.  Stopped by either:
-    // - ponderhit flag (opponent played predicted move)
-    // - external stop flag (opponent played different move)
-    let ponder_stop = Arc::new(AtomicBool::new(false));
+    let search_stop = Arc::new(AtomicBool::new(false));
 
-    // Propagate external stop OR ponderhit into ponder_stop
+    // Watcher thread: monitors external stop and ponderhit.
+    // Phase 1 (ponder): search runs freely, stopped only by external stop.
+    // Phase 2 (ponderhit): start a hard-deadline timer, then stop.
     {
         let ext = Arc::clone(&stop);
         let hit = Arc::clone(&ponderhit);
-        let ps = Arc::clone(&ponder_stop);
+        let ss = Arc::clone(&search_stop);
+        let movetime = params.movetime_ms;
         thread::spawn(move || {
+            // Phase 1: wait for ponderhit or external stop
             loop {
-                if ps.load(Ordering::Relaxed) { break; }
-                if ext.load(Ordering::Relaxed) || hit.load(Ordering::Relaxed) {
-                    ps.store(true, Ordering::Relaxed);
-                    break;
+                if ss.load(Ordering::Acquire) { return; } // search finished naturally
+                if ext.load(Ordering::Acquire) {
+                    ss.store(true, Ordering::Release);
+                    return;
                 }
-                thread::sleep(Duration::from_millis(5));
+                if hit.load(Ordering::Acquire) { break; }
+                thread::sleep(Duration::from_millis(2));
+            }
+
+            // Phase 2: ponderhit received — give the search movetime more ms
+            if let Some(ms) = movetime {
+                let deadline = Instant::now() + Duration::from_millis(ms);
+                loop {
+                    if ext.load(Ordering::Acquire) || ss.load(Ordering::Acquire) {
+                        ss.store(true, Ordering::Release);
+                        return;
+                    }
+                    if Instant::now() >= deadline {
+                        ss.store(true, Ordering::Release);
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+            // No movetime — continue until external stop
+            loop {
+                if ext.load(Ordering::Acquire) || ss.load(Ordering::Acquire) {
+                    ss.store(true, Ordering::Release);
+                    return;
+                }
+                thread::sleep(Duration::from_millis(2));
             }
         });
     }
 
     let t0 = Instant::now();
-    let ponder_result = iterative_deepening_root(
+    let result = iterative_deepening_root(
         &mut board,
         &conductor,
         Some(&book),
         params.max_depth,
         is_white,
-        None,
-        Some(ponder_stop),
+        None, // no soft deadline — stop flag controls everything
+        Some(search_stop),
     );
 
-    // Check: was this a ponderhit or a stop?
-    if ponderhit.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
-        // Ponderhit — do a fresh timed search (benefits from warm CPU cache
-        // even though TT is fresh).
-        let search_stop = make_search_stop(&stop, params.hard_deadline);
-        let result = iterative_deepening_root(
-            &mut board,
-            &conductor,
-            Some(&book),
-            params.max_depth,
-            is_white,
-            params.soft_deadline,
-            Some(search_stop),
-        );
-        let ms = t0.elapsed().as_millis();
-        let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
-        let ponder_str = result.ponder_move.map(mv_to_uci);
-        println!("info score cp {} time {ms}", result.score);
-        if let Some(ref p) = ponder_str {
-            println!("bestmove {mv_str} ponder {p}");
-        } else {
-            println!("bestmove {mv_str}");
-        }
+    let ms = t0.elapsed().as_millis();
+    let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
+    let ponder_str = result.ponder_move.map(mv_to_uci);
+    println!("info score cp {} time {ms}", result.score);
+    if let Some(ref p) = ponder_str {
+        println!("bestmove {mv_str} ponder {p}");
     } else {
-        // Stopped — output ponder result
-        let ms = t0.elapsed().as_millis();
-        let mv_str = ponder_result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
-        println!("info score cp {} time {ms}", ponder_result.score);
         println!("bestmove {mv_str}");
     }
     let _ = io::stdout().flush();
@@ -355,9 +366,9 @@ fn main() {
             }
             "ucinewgame" => {
                 // Wait for any ongoing search to finish first
-                stop_flag.store(true, Ordering::Relaxed);
+                stop_flag.store(true, Ordering::Release);
                 if let Some(h) = search_handle.take() { let _ = h.join(); }
-                stop_flag.store(false, Ordering::Relaxed);
+                stop_flag.store(false, Ordering::Release);
                 board = ChessBoard::new();
                 move_number = 1;
             }
@@ -367,10 +378,10 @@ fn main() {
             "go" => {
                 // Stop any previous search
                 if let Some(h) = search_handle.take() {
-                    stop_flag.store(true, Ordering::Relaxed);
+                    stop_flag.store(true, Ordering::Release);
                     let _ = h.join();
                 }
-                stop_flag.store(false, Ordering::Relaxed);
+                stop_flag.store(false, Ordering::Release);
 
                 let is_ponder = tokens.contains(&"ponder");
                 let is_white = board.is_white_active();
@@ -382,7 +393,7 @@ fn main() {
                 let stop_c      = Arc::clone(&stop_flag);
 
                 if is_ponder {
-                    ponderhit_flag.store(false, Ordering::Relaxed);
+                    ponderhit_flag.store(false, Ordering::Release);
                     let ponder_c = Arc::clone(&ponderhit_flag);
                     search_handle = Some(thread::spawn(move || {
                         ponder_and_respond(board_c, conductor_c, book_c, params, stop_c, ponder_c, is_white);
@@ -396,11 +407,12 @@ fn main() {
             "ponderhit" => {
                 // Opponent played the predicted move — signal the ponder
                 // search to transition to a real timed search.
-                ponderhit_flag.store(true, Ordering::Relaxed);
+                ponderhit_flag.store(true, Ordering::Release);
             }
             "stop" => {
-                stop_flag.store(true, Ordering::Relaxed);
+                stop_flag.store(true, Ordering::Release);
                 if let Some(h) = search_handle.take() { let _ = h.join(); }
+                stop_flag.store(false, Ordering::Release);
             }
             "quit" => break,
             _ => {}
