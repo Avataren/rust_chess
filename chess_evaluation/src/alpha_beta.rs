@@ -1,7 +1,8 @@
 use chess_board::ChessBoard;
 use chess_foundation::ChessMove;
 use move_generator::{
-    move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
+    move_generator::{get_all_legal_captures_for_color, get_all_legal_moves_for_color},
+    piece_conductor::PieceConductor,
 };
 use rand::seq::SliceRandom;
 use rayon::prelude::*;
@@ -108,10 +109,7 @@ fn quiescence(
             alpha = stand_pat;
         }
 
-        let mut captures: Vec<ChessMove> = get_all_legal_moves_for_color(chess_board, conductor, is_white)
-            .into_iter()
-            .filter(|m| m.capture.is_some())
-            .collect();
+        let mut captures = get_all_legal_captures_for_color(chess_board, conductor, is_white);
         captures.sort();
 
         for mut chess_move in captures {
@@ -139,10 +137,7 @@ fn quiescence(
             beta = stand_pat;
         }
 
-        let mut captures: Vec<ChessMove> = get_all_legal_moves_for_color(chess_board, conductor, is_white)
-            .into_iter()
-            .filter(|m| m.capture.is_some())
-            .collect();
+        let mut captures = get_all_legal_captures_for_color(chess_board, conductor, is_white);
         captures.sort();
 
         for mut chess_move in captures {
@@ -185,7 +180,7 @@ fn order_moves(
                 m.start_square() == tt_m.start_square()
                     && m.target_square() == tt_m.target_square()
             })
-            .map(|i| moves.remove(i))
+            .map(|i| moves.swap_remove(i))
     });
 
     // Partition remaining moves into captures/promotions vs quiet.
@@ -210,7 +205,7 @@ fn order_moves(
             m.start_square() == killer.start_square()
                 && m.target_square() == killer.target_square()
         }) {
-            killer_entries.push(quiets.remove(pos));
+            killer_entries.push(quiets.swap_remove(pos));
         }
     }
 
@@ -805,11 +800,98 @@ mod tests {
     use super::*;
     use chess_board::ChessBoard;
     use move_generator::{
-        move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
+        move_generator::{get_all_legal_captures_for_color, get_all_legal_moves_for_color},
+        piece_conductor::PieceConductor,
     };
 
     fn conductor() -> PieceConductor {
         PieceConductor::new()
+    }
+
+    // -----------------------------------------------------------------------
+    // Optimisation correctness: capture generation
+    // -----------------------------------------------------------------------
+
+    /// Verify that get_all_legal_captures_for_color returns exactly the same
+    /// moves as the original filter-based approach.
+    /// Each entry is (fen, is_white_to_move) — is_white must match the FEN's
+    /// active color, since make_move enforces turn order.
+    #[test]
+    fn capture_generation_matches_filter_based_approach() {
+        let cases: &[(&str, bool)] = &[
+            ("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1", true),   // White captures black queen
+            ("4k3/8/8/3q4/3Q4/8/8/4K3 b - - 0 1", false),  // Black captures white queen
+            ("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4", true),
+            ("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4", false),
+            ("rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq d6 0 4", true),
+            ("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", true),
+            ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", true),
+            ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 b - - 0 1", false),
+            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", true), // No captures
+        ];
+        let c = conductor();
+        for &(fen, is_white) in cases {
+            let mut board = ChessBoard::new();
+            board.set_from_fen(fen);
+
+            let mut expected: Vec<_> = get_all_legal_moves_for_color(&mut board, &c, is_white)
+                .into_iter()
+                .filter(|m| m.capture.is_some())
+                .collect();
+            let mut actual = get_all_legal_captures_for_color(&mut board, &c, is_white);
+
+            // Sort both by (start, target) for order-independent comparison.
+            expected.sort_by_key(|m| (m.start_square(), m.target_square()));
+            actual.sort_by_key(|m| (m.start_square(), m.target_square()));
+
+            assert_eq!(
+                actual.len(), expected.len(),
+                "Capture count mismatch: fen={fen}, is_white={is_white}: \
+                 expected {} captures, got {}",
+                expected.len(), actual.len()
+            );
+            for (e, a) in expected.iter().zip(actual.iter()) {
+                assert_eq!(
+                    (e.start_square(), e.target_square()),
+                    (a.start_square(), a.target_square()),
+                    "Capture move mismatch: fen={fen}, is_white={is_white}"
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Optimisation correctness: search results unchanged
+    // -----------------------------------------------------------------------
+
+    /// Verify that the search score and best move are the same after all
+    /// optimisations are applied, by cross-checking against expected outcomes
+    /// for known tactical positions.
+    #[test]
+    fn optimisations_do_not_change_search_results() {
+        let c = conductor();
+
+        // Each entry: (fen, is_white, depth, expected_start_sq, expected_target_sq)
+        let cases: &[(&str, bool, i32, u16, u16)] = &[
+            // White captures hanging queen: d4→d5
+            ("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1", true,  2, 27, 35),
+            // Black captures hanging queen: d5→d4
+            ("4k3/8/8/3q4/3Q4/8/8/4K3 b - - 0 1", false, 2, 35, 27),
+            // White finds mate in 1: Qf7#
+            ("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4", true, 2, 39, 53),
+        ];
+
+        for &(fen, is_white, depth, exp_from, exp_to) in cases {
+            let mut board = ChessBoard::new();
+            board.set_from_fen(fen);
+            let (_, mv) = alpha_beta_root(&mut board, &c, None, depth, is_white);
+            let m = mv.unwrap_or_else(|| panic!("No move found for {fen}"));
+            assert_eq!(
+                (m.start_square(), m.target_square()), (exp_from, exp_to),
+                "Wrong move for {fen}: got ({}, {}), expected ({exp_from}, {exp_to})",
+                m.start_square(), m.target_square()
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

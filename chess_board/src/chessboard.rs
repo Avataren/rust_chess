@@ -141,7 +141,7 @@ impl ChessBoard {
             Some(&h) => h,
             None => return false,
         };
-        self.position_history.iter().filter(|&&h| h == current).count() >= threshold
+        self.position_history.iter().filter(|&&h| h == current).take(threshold).count() >= threshold
     }
 
     pub fn set_active_color(&mut self, is_white: bool) {

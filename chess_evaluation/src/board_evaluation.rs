@@ -72,11 +72,13 @@ const FILE_MASKS: [u64; 8] = [
     0x8080808080808080, // h-file
 ];
 
+#[inline(always)]
 fn count(bb: Bitboard) -> i32 {
     bb.count_ones() as i32
 }
 
 /// Game phase weight: 0 (full endgame) … 24 (full middlegame).
+#[inline]
 fn game_phase(chess_board: &ChessBoard) -> i32 {
     let queens  = count(chess_board.get_queens())  * 4;
     let rooks   = count(chess_board.get_rooks())   * 2;
@@ -94,6 +96,7 @@ fn for_each_sq(mut bb: Bitboard, mut f: impl FnMut(usize)) {
 }
 
 /// Manhattan distance between two squares (max 14).
+#[inline]
 fn manhattan(sq1: usize, sq2: usize) -> i32 {
     let r1 = (sq1 / 8) as i32;
     let f1 = (sq1 % 8) as i32;
@@ -103,6 +106,7 @@ fn manhattan(sq1: usize, sq2: usize) -> i32 {
 }
 
 /// Chebyshev distance between two squares (king metric: max of rank/file deltas).
+#[inline]
 fn chebyshev(sq1: usize, sq2: usize) -> i32 {
     let r1 = (sq1 / 8) as i32; let f1 = (sq1 % 8) as i32;
     let r2 = (sq2 / 8) as i32; let f2 = (sq2 % 8) as i32;
@@ -110,6 +114,7 @@ fn chebyshev(sq1: usize, sq2: usize) -> i32 {
 }
 
 /// Manhattan distance of a king from the nearest centre square (d4/d5/e4/e5).
+#[inline]
 fn king_center_distance(sq: usize) -> i32 {
     let rank = (sq / 8) as i32;
     let file = (sq % 8) as i32;
