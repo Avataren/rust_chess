@@ -32,16 +32,6 @@ const EG_ROOK_OPEN_FILE:      i32 = 15;
 const MG_ROOK_SEMI_OPEN_FILE: i32 = 10;
 const EG_ROOK_SEMI_OPEN_FILE: i32 = 8;
 
-const MG_ROOK_ON_7TH: i32 = 10;
-const EG_ROOK_ON_7TH: i32 = 20;
-
-// Endgame: king proximity to passed pawns
-const KING_ESCORT_PASSER: i32 = 5;  // bonus per distance unit closer to own passer
-const KING_BLOCK_PASSER:  i32 = 3;  // bonus per distance unit enemy king is far from our passer
-
-// Rook behind a passed pawn (Tarrasch's rule)
-const ROOK_BEHIND_PASSER: i32 = 30;
-
 // King safety — pawn shield (only when castled) + attack counting.
 const KING_SHIELD_MISSING:  i32 = 15;
 const KING_SHIELD_ADVANCED: i32 =  5;
@@ -126,12 +116,12 @@ fn mop_up(
     }
 
     let (corner_push, proximity) = if material_score > 0 {
-        let corner_push = king_center_distance(black_king_sq) * 20;
-        let proximity = (14 - manhattan(white_king_sq, black_king_sq)) * 8;
+        let corner_push = king_center_distance(black_king_sq) * 10;
+        let proximity = (14 - manhattan(white_king_sq, black_king_sq)) * 4;
         (corner_push, proximity)
     } else {
-        let corner_push = king_center_distance(white_king_sq) * 20;
-        let proximity = (14 - manhattan(black_king_sq, white_king_sq)) * 8;
+        let corner_push = king_center_distance(white_king_sq) * 10;
+        let proximity = (14 - manhattan(black_king_sq, white_king_sq)) * 4;
         (-(corner_push), -(proximity))
     };
 
@@ -359,7 +349,6 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
         } else if white_pawns_bb & file_mask == 0 {
             mg += MG_ROOK_SEMI_OPEN_FILE; eg += EG_ROOK_SEMI_OPEN_FILE;
         }
-        if sq / 8 == 6 { mg += MG_ROOK_ON_7TH; eg += EG_ROOK_ON_7TH; }
     });
     for_each_sq(black & rooks, |sq| {
         let file_mask = FILE_MASKS[sq % 8];
@@ -368,7 +357,6 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
         } else if black_pawns_bb & file_mask == 0 {
             mg -= MG_ROOK_SEMI_OPEN_FILE; eg -= EG_ROOK_SEMI_OPEN_FILE;
         }
-        if sq / 8 == 1 { mg -= MG_ROOK_ON_7TH; eg -= EG_ROOK_ON_7TH; }
     });
 
     // --- Tapered blend ---
@@ -384,49 +372,14 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
     score += mop_up(material_score, white_king_sq, black_king_sq, mg_phase);
 
     // --- Passed pawns (applied post-blend; important in endgame) ---
-    let eg_weight = ((24 - mg_phase) * 256) / 24;
-    let white_rooks_bb = (white & rooks).0;
-    let black_rooks_bb = (black & rooks).0;
-
     for_each_sq(white & pawns, |sq| {
         if is_passed_pawn(sq, black_pawns_bb, true) {
-            let base = passed_pawn_bonus(sq, true);
-
-            // King proximity: reward our king near our passer, penalise enemy king near it
-            let friendly_dist = manhattan(white_king_sq, sq);
-            let enemy_dist = manhattan(black_king_sq, sq);
-            let king_bonus = (7 - friendly_dist).max(0) * KING_ESCORT_PASSER
-                           + enemy_dist * KING_BLOCK_PASSER;
-
-            // Rook behind passer (same file, lower rank for white)
-            let file_mask = FILE_MASKS[sq % 8];
-            let pawn_rank = sq / 8;
-            let behind_mask = file_mask & ((1u64 << (pawn_rank * 8)).wrapping_sub(1));
-            let mut rook_bonus = 0i32;
-            if white_rooks_bb & behind_mask != 0 { rook_bonus += ROOK_BEHIND_PASSER; }
-            if black_rooks_bb & behind_mask != 0 { rook_bonus -= ROOK_BEHIND_PASSER / 2; }
-
-            score += base + (king_bonus + rook_bonus).max(0) * eg_weight / 256;
+            score += passed_pawn_bonus(sq, true);
         }
     });
     for_each_sq(black & pawns, |sq| {
         if is_passed_pawn(sq, white_pawns_bb, false) {
-            let base = passed_pawn_bonus(sq, false);
-
-            let friendly_dist = manhattan(black_king_sq, sq);
-            let enemy_dist = manhattan(white_king_sq, sq);
-            let king_bonus = (7 - friendly_dist).max(0) * KING_ESCORT_PASSER
-                           + enemy_dist * KING_BLOCK_PASSER;
-
-            // Rook behind passer (same file, higher rank for black)
-            let file_mask = FILE_MASKS[sq % 8];
-            let pawn_rank = sq / 8;
-            let behind_mask = file_mask & !((1u64 << ((pawn_rank + 1) * 8)).wrapping_sub(1));
-            let mut rook_bonus = 0i32;
-            if black_rooks_bb & behind_mask != 0 { rook_bonus += ROOK_BEHIND_PASSER; }
-            if white_rooks_bb & behind_mask != 0 { rook_bonus -= ROOK_BEHIND_PASSER / 2; }
-
-            score -= base + (king_bonus + rook_bonus).max(0) * eg_weight / 256;
+            score -= passed_pawn_bonus(sq, false);
         }
     });
 

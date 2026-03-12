@@ -253,7 +253,7 @@ const EG_KING: [i32; 64] = [
 
 // ── Passed-pawn bonus (rank-indexed, white perspective) ───────────────────────
 
-const PASSED_PAWN_BONUS: [i32; 8] = [0, 0, 10, 20, 40, 70, 130, 0];
+const PASSED_PAWN_BONUS: [i32; 8] = [0, 0, 10, 20, 35, 60, 100, 0];
 
 // ── Index helper ──────────────────────────────────────────────────────────────
 
