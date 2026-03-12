@@ -1,9 +1,17 @@
 use bevy::ecs::message::Message;
+use chess_foundation::ChessMove;
 
 pub enum ChessAction {
     MakeMove,
     Undo,
     Restart,
+}
+
+/// Sent by the search handler to trigger the piece tween animation for the AI move.
+/// Handled by `apply_ai_move_animation` which owns `piece_query` and `Commands`.
+#[derive(Message)]
+pub struct AiMoveAnimEvent {
+    pub engine_move: ChessMove,
 }
 
 #[derive(Message)]

@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 use chess_evaluation::OpeningBook;
 use chess_foundation::ChessMove;
+use std::collections::HashMap;
+use std::sync::{Arc, atomic::AtomicBool};
 
 #[derive(Resource)]
 pub struct ValidMoves {
@@ -99,4 +101,25 @@ impl Difficulty {
             Difficulty::VeryHard => Some(std::time::Duration::from_secs(5)),
         }
     }
+
+    /// Whether this difficulty level uses background pondering.
+    pub fn ponders(self) -> bool {
+        matches!(self, Difficulty::Hard | Difficulty::VeryHard)
+    }
+}
+
+/// State for background multi-ponder searches (thinking on the human's time).
+/// Active only on Hard and VeryHard difficulty.
+/// Native: ponders top 4 opponent candidate moves in parallel.
+/// WASM:   ponders top 2 candidate moves.
+#[derive(Resource, Default)]
+pub struct PonderState {
+    /// Stop flags — one per active ponder task.
+    pub stops: Vec<Arc<AtomicBool>>,
+    /// Completed ponder results keyed by the Zobrist hash of the pondered position.
+    pub results: HashMap<u64, (i32, Option<ChessMove>, Option<ChessMove>)>,
+    /// True while ponder tasks are in flight or have un-consumed results.
+    pub ponder_active: bool,
+    /// True while the main (non-ponder) search task is in flight.
+    pub main_search_active: bool,
 }

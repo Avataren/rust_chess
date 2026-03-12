@@ -1,13 +1,13 @@
 use bevy::prelude::*;
 use bevy::ecs::message::{MessageReader, MessageWriter};
-use bevy_async_task::TaskRunner;
+use bevy_async_task::TaskPool;
 use bevy_tweening::{lens::TransformPositionLens, Delay, *};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+#[cfg(target_arch = "wasm32")]
+use std::sync::Mutex;
 use std::task::Poll;
 use chess_board::ChessBoard;
-#[cfg(target_arch = "wasm32")]
-use chess_evaluation::{search_root, OpeningBook, SearchContext, TranspositionTable, ASPIRATION_DELTA, TT_SIZE};
-#[cfg(not(target_arch = "wasm32"))]
-use chess_evaluation::{iterative_deepening_root, OpeningBook};
+use chess_evaluation::{evaluate_board, iterative_deepening_root, OpeningBook};
 use chess_foundation::ChessMove;
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
@@ -16,14 +16,27 @@ use std::time::Duration;
 
 use crate::{
     board::BoardDimensions,
-    game_events::{ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
-    game_resources::{CurrentOpening, Difficulty, GameOverState, GamePhase, IsAiThinking, LastMove, OpeningBookRes, PendingGameOver, PendingMoveSound, PlayerColor},
+    game_events::{AiMoveAnimEvent, ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
+    game_resources::{
+        CurrentOpening, Difficulty, GameOverState, GamePhase, IsAiThinking, LastMove,
+        OpeningBookRes, PendingGameOver, PendingMoveSound, PlayerColor, PonderState,
+    },
     pieces::ChessPieceComponent,
     sound::{spawn_sound, SoundEffects},
     ChessBoardRes, PieceConductorRes,
 };
 
-// Function to get local position from board coordinates (col, row)
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/// How many opponent candidate positions to ponder simultaneously.
+/// Both native and WASM use rayon workers so the count only affects memory.
+#[cfg(not(target_arch = "wasm32"))]
+const PONDER_CANDIDATES: usize = 4;
+#[cfg(target_arch = "wasm32")]
+const PONDER_CANDIDATES: usize = 2;
+
+// ── Position helpers ──────────────────────────────────────────────────────────
+
 fn get_local_position_from_board_coords(
     col: u16,
     row: u16,
@@ -37,6 +50,8 @@ fn get_local_position_from_board_coords(
         1.5,
     )
 }
+
+// ── Tween completion ──────────────────────────────────────────────────────────
 
 pub fn on_tween_completed(
     mut tween_completed_events: MessageReader<AnimCompletedEvent>,
@@ -59,6 +74,59 @@ pub fn on_tween_completed(
     }
 }
 
+// ── AI piece tween — separate system to stay within Bevy's param limit ───────
+
+/// Applies the piece-movement tween for the AI's chosen move.
+pub fn apply_ai_move_animation(
+    mut anim_events: MessageReader<AiMoveAnimEvent>,
+    mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
+    mut commands: Commands,
+    board_dimensions: Res<BoardDimensions>,
+) {
+    for ev in anim_events.read() {
+        let engine_move = ev.engine_move;
+        let start_local_position = get_local_position_from_board_coords(
+            engine_move.start_square() % 8,
+            engine_move.start_square() / 8,
+            &board_dimensions,
+        );
+        let end_local_position = get_local_position_from_board_coords(
+            engine_move.target_square() % 8,
+            engine_move.target_square() / 8,
+            &board_dimensions,
+        );
+
+        if let Some((entity, _, _)) = piece_query.iter_mut().find(|(_, _, cp)| {
+            cp.col == (engine_move.start_square() % 8) as usize
+                && cp.row == 7 - (engine_move.start_square() / 8) as usize
+        }) {
+            let tween = Tween::new(
+                EaseFunction::CubicOut,
+                Duration::from_millis(300),
+                TransformPositionLens {
+                    start: start_local_position,
+                    end: end_local_position,
+                },
+            );
+            let sequence = Delay::new(Duration::from_millis(150)).then(tween);
+            commands.entity(entity).insert(TweenAnim::new(sequence));
+        } else {
+            eprintln!("No piece found at start square");
+        }
+        break;
+    }
+}
+
+// ── Search task output type ───────────────────────────────────────────────────
+
+/// Shared return type for both main search and ponder tasks.
+/// `is_ponder` distinguishes ponder results; `board_hash` is the Zobrist
+/// hash of the position that was searched (for ponder-hit matching).
+pub type SearchTaskOutput = (i32, Option<ChessMove>, Option<ChessMove>, bool, u64);
+//                          score  best_move  ponder_move  is_ponder  board_hash
+
+// ── Main search task ──────────────────────────────────────────────────────────
+
 async fn alpha_beta_task(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
@@ -66,239 +134,377 @@ async fn alpha_beta_task(
     max_depth: i32,
     is_white: bool,
     deadline: Option<web_time::Instant>,
-) -> (i32, Option<ChessMove>) {
-    // On WASM we reimplement the iterative-deepening loop here so we can yield
-    // between depth iterations, letting the browser paint frames (animated
-    // "Thinking..." indicator).  On native, the search runs on a background
-    // thread so we just call iterative_deepening_root directly.
+) -> SearchTaskOutput {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let result = iterative_deepening_root(chess_board, conductor, Some(book), max_depth, is_white, deadline, None);
-        return (result.score, result.best_move);
+        let result = iterative_deepening_root(
+            chess_board, conductor, Some(book), max_depth, is_white, deadline, None,
+        );
+        return (result.score, result.best_move, result.ponder_move, false, 0);
     }
 
     #[cfg(target_arch = "wasm32")]
     {
-        use move_generator::move_generator::get_all_legal_moves_for_color;
-
-        // Yield once so the browser paints the piece landing before we start.
-        gloo_timers::future::TimeoutFuture::new(0).await;
-
-        // Book probe
+        // Opening book fast path (no worker needed).
         if let Some((from, to)) = book.probe(chess_board) {
             let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
-            if let Some(book_move) = legal.into_iter().find(|m| m.start_square() == from && m.target_square() == to) {
-                return (0, Some(book_move));
+            if let Some(bm) = legal
+                .into_iter()
+                .find(|m| m.start_square() == from && m.target_square() == to)
+            {
+                return (0, Some(bm), None, false, 0);
             }
         }
 
-        let mut tt = TranspositionTable::new(TT_SIZE);
-        let mut ctx = SearchContext::new();
-        let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
-
-        for depth in 1..=max_depth {
-            let (prev_score, prev_move) = best;
-
-            best = if depth <= 2 {
-                search_root(chess_board, conductor, &mut tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move)
-            } else {
-                let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
-                let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
-                loop {
-                    let result = search_root(chess_board, conductor, &mut tt, &mut ctx, depth, lo, hi, is_white, prev_move);
-                    if result.0 > lo && result.0 < hi {
-                        break result;
-                    } else if result.0 <= lo {
-                        lo = i32::MIN + 1;
-                    } else {
-                        hi = i32::MAX;
-                    }
-                    if lo == i32::MIN + 1 && hi == i32::MAX {
-                        break result;
-                    }
-                }
-            };
-
+        // Run the full iterative-deepening search in a Rayon web worker so the
+        // browser's main thread is never blocked. The polling loop here yields
+        // every 5 ms and enforces the hard deadline via stop flag.
+        let stop = Arc::new(AtomicBool::new(false));
+        let result: Arc<Mutex<Option<(i32, Option<ChessMove>, Option<ChessMove>)>>> =
+            Arc::new(Mutex::new(None));
+        {
+            let stop_w = Arc::clone(&stop);
+            let res_w = Arc::clone(&result);
+            let mut board_w = chess_board.clone();
+            let conductor_w = conductor.clone();
+            let book_w = book.clone();
+            rayon::spawn(move || {
+                let r = iterative_deepening_root(
+                    &mut board_w, &conductor_w, Some(&book_w),
+                    max_depth, is_white, None, Some(stop_w),
+                );
+                *res_w.lock().unwrap() = Some((r.score, r.best_move, r.ponder_move));
+            });
+        }
+        loop {
+            gloo_timers::future::TimeoutFuture::new(5).await;
             if let Some(dl) = deadline {
-                if web_time::Instant::now() >= dl { break; }
+                if web_time::Instant::now() >= dl {
+                    stop.store(true, Ordering::Relaxed);
+                }
             }
-
-            // Yield between depths so the browser can paint a frame.
-            gloo_timers::future::TimeoutFuture::new(0).await;
+            if let Some((score, bm, pm)) = result.lock().unwrap().take() {
+                return (score, bm, pm, false, 0);
+            }
         }
-
-        best
     }
 }
 
-pub fn handle_async_moves(
-    mut task_executor: TaskRunner<(i32, Option<ChessMove>)>,
-    mut commands: Commands,
-    mut chess_board: ResMut<ChessBoardRes>,
-    board_dimensions: Res<BoardDimensions>,
-    move_generator: ResMut<PieceConductorRes>,
-    mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
-    mut chess_ew: MessageReader<ChessEvent>,
-    mut last_move: ResMut<LastMove>,
-    mut game_over_state: ResMut<GameOverState>,
-    mut pending_game_over: ResMut<PendingGameOver>,
-    player_color: Res<PlayerColor>,
-    game_phase: Res<GamePhase>,
-    opening_book: Res<OpeningBookRes>,
-    mut is_ai_thinking: ResMut<IsAiThinking>,
-    difficulty: Res<Difficulty>,
-    mut pending_move_sound: ResMut<PendingMoveSound>,
-) {
-    if task_executor.is_idle() {
-        // Task is idle — check for new chess events to start a task
-        for event in chess_ew.read() {
-            if let ChessAction::MakeMove = event.action {
-                if *game_over_state != GameOverState::Playing || *game_phase != GamePhase::Playing {
-                    break;
-                }
-                let ai_is_white = *player_color == PlayerColor::Black;
+// ── Ponder search task ────────────────────────────────────────────────────────
 
-                // If only one legal move, return it immediately (no search needed).
-                let forced = {
-                    let moves = get_all_legal_moves_for_color(
-                        &mut chess_board.chess_board,
-                        &move_generator.magic,
-                        ai_is_white,
-                    );
-                    if moves.len() == 1 { Some(moves[0]) } else { None }
-                };
+/// Thinks indefinitely on a predicted opponent position until `stop` fires.
+async fn ponder_search_task(
+    mut board: ChessBoard,
+    conductor: PieceConductor,
+    book: OpeningBook,
+    depth: i32,
+    is_white: bool,
+    stop: Arc<AtomicBool>,
+    board_hash: u64,
+) -> SearchTaskOutput {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let result = iterative_deepening_root(
+            &mut board, &conductor, Some(&book),
+            depth, is_white, None, Some(stop),
+        );
+        return (result.score, result.best_move, result.ponder_move, true, board_hash);
+    }
 
-                let mut chess_board_clone = chess_board.chess_board.clone();
-                let move_generator_clone = move_generator.magic.clone();
-                let book_clone = opening_book.book.clone();
-                let depth = difficulty.search_depth();
-                let deadline = difficulty.time_limit().map(|d| web_time::Instant::now() + d);
-                task_executor.start(async move {
-                    if let Some(m) = forced {
-                        return (0, Some(m));
-                    }
-                    alpha_beta_task(
-                        &mut chess_board_clone,
-                        &move_generator_clone,
-                        &book_clone,
-                        depth,
-                        ai_is_white,
-                        deadline,
-                    )
-                    .await
-                });
-                is_ai_thinking.0 = true;
-                break;
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Run in a Rayon web worker; poll every 5 ms, stop flag is set by
+        // launch_multi_ponder when the player makes a move.
+        let result: Arc<Mutex<Option<(i32, Option<ChessMove>, Option<ChessMove>)>>> =
+            Arc::new(Mutex::new(None));
+        {
+            let stop_w = Arc::clone(&stop);
+            let res_w = Arc::clone(&result);
+            let conductor_w = conductor.clone();
+            let book_w = book.clone();
+            rayon::spawn(move || {
+                let r = iterative_deepening_root(
+                    &mut board, &conductor_w, Some(&book_w),
+                    depth, is_white, None, Some(stop_w),
+                );
+                *res_w.lock().unwrap() = Some((r.score, r.best_move, r.ponder_move));
+            });
+        }
+        loop {
+            gloo_timers::future::TimeoutFuture::new(5).await;
+            if let Some((score, bm, pm)) = result.lock().unwrap().take() {
+                return (score, bm, pm, true, board_hash);
             }
         }
+    }
+}
+
+// ── Multi-ponder launch ───────────────────────────────────────────────────────
+
+/// Scores the opponent's legal moves by static eval, picks the top
+/// `PONDER_CANDIDATES`, and spawns one ponder search per candidate.
+fn launch_multi_ponder(
+    task_pool: &mut TaskPool<SearchTaskOutput>,
+    ponder_state: &mut PonderState,
+    board: &ChessBoard,
+    conductor: &PieceConductor,
+    book: &OpeningBook,
+    depth: i32,
+    ai_is_white: bool,
+) {
+    // Abort any existing ponder tasks and drop their receivers.
+    for s in &ponder_state.stops {
+        s.store(true, Ordering::Relaxed);
+    }
+    task_pool.forget_all();
+    ponder_state.stops.clear();
+    ponder_state.results.clear();
+    ponder_state.ponder_active = false;
+
+    let opponent_is_white = !ai_is_white;
+    let mut board_for_gen = board.clone();
+    let legal = get_all_legal_moves_for_color(&mut board_for_gen, conductor, opponent_is_white);
+    if legal.is_empty() {
         return;
     }
 
-    // Drain events while task is running to prevent buildup
-    for _ in chess_ew.read() {}
+    // Rank opponent moves by static eval (best for opponent first).
+    let mut scored: Vec<(ChessMove, i32)> = legal
+        .into_iter()
+        .map(|mut m| {
+            let mut b = board.clone();
+            b.make_move(&mut m);
+            let eval = evaluate_board(&b, conductor);
+            let opp_score = if opponent_is_white { eval } else { -eval };
+            (m, opp_score)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.truncate(PONDER_CANDIDATES);
 
-    match task_executor.poll() {
-        Poll::Pending => {
-            // println!("Alpha-beta computation in progress...");
+    for (opp_mv, _) in scored {
+        let mut ponder_board = board.clone();
+        let mut mv_c = opp_mv;
+        if !ponder_board.make_move(&mut mv_c) {
+            continue;
         }
-        Poll::Ready((score, mut best_move)) => {
-            is_ai_thinking.0 = false;
-            println!("Received score {score}");
-            let ai_is_white = *player_color == PlayerColor::Black;
-            let player_is_white = !ai_is_white;
+        let board_hash = ponder_board.current_hash();
+        let stop = Arc::new(AtomicBool::new(false));
+        ponder_state.stops.push(Arc::clone(&stop));
 
-            if best_move.is_none() {
-                let all_moves = get_all_legal_moves_for_color(
-                    &mut chess_board.chess_board,
-                    &move_generator.magic,
-                    ai_is_white,
-                );
-                if all_moves.is_empty() {
-                    // AI has no moves: player wins or stalemate (no piece animation needed)
-                    if move_generator.magic.is_king_in_check(&chess_board.chess_board, ai_is_white) {
-                        println!("Checkmate — player wins!");
-                        *game_over_state = GameOverState::PlayerWins;
-                    } else {
-                        println!("Stalemate!");
-                        *game_over_state = GameOverState::Stalemate;
-                    }
-                    return;
-                } else {
-                    best_move = Some(all_moves[0]);
-                    println!("Random move");
+        let conductor_c = conductor.clone();
+        let book_c = book.clone();
+        task_pool.spawn(async move {
+            ponder_search_task(
+                ponder_board, conductor_c, book_c, depth, ai_is_white, stop, board_hash,
+            )
+            .await
+        });
+        eprintln!("Ponder candidate hash={board_hash:#x}");
+    }
+
+    if !ponder_state.stops.is_empty() {
+        ponder_state.ponder_active = true;
+    }
+}
+
+// ── Main async-move handler ───────────────────────────────────────────────────
+// Exactly 16 system parameters (Bevy's limit).
+// Uses TaskPool so multiple ponder tasks can run concurrently.
+
+pub fn handle_async_moves(
+    mut task_pool: TaskPool<SearchTaskOutput>,         // 1
+    mut chess_board: ResMut<ChessBoardRes>,            // 2
+    _board_dimensions: Res<BoardDimensions>,           // 3
+    move_generator: ResMut<PieceConductorRes>,         // 4
+    mut chess_ew: MessageReader<ChessEvent>,           // 5
+    mut anim_ew: MessageWriter<AiMoveAnimEvent>,       // 6
+    mut last_move: ResMut<LastMove>,                   // 7
+    mut game_over_state: ResMut<GameOverState>,        // 8
+    mut pending_game_over: ResMut<PendingGameOver>,    // 9
+    player_color: Res<PlayerColor>,                    // 10
+    game_phase: Res<GamePhase>,                        // 11
+    opening_book: Res<OpeningBookRes>,                 // 12
+    mut is_ai_thinking: ResMut<IsAiThinking>,          // 13
+    difficulty: Res<Difficulty>,                       // 14
+    mut pending_move_sound: ResMut<PendingMoveSound>,  // 15
+    mut ponder_state: ResMut<PonderState>,             // 16
+) {
+    let ai_is_white = *player_color == PlayerColor::Black;
+    let player_is_white = !ai_is_white;
+
+    // ── 1. Poll pool — route results ─────────────────────────────────────────
+    // Ponder tasks go to ponder_state.results; main search result is captured.
+    let mut pending: Option<SearchTaskOutput> = None;
+    for poll_result in task_pool.iter_poll() {
+        if let Poll::Ready((score, bm, pm, is_ponder, board_hash)) = poll_result {
+            if is_ponder {
+                if ponder_state.ponder_active {
+                    ponder_state.results.insert(board_hash, (score, bm, pm));
+                    eprintln!("Ponder done hash={board_hash:#x} score={score}");
                 }
-            }
-            let mut engine_move = best_move.unwrap();
-
-            if chess_board.chess_board.make_move(&mut engine_move) {
-                last_move.start_square = Some(engine_move.start_square());
-                last_move.target_square = Some(engine_move.target_square());
-
-                let sound = if engine_move.has_flag(ChessMove::CASTLE_FLAG) {
-                    "castle.ogg"
-                } else if engine_move.capture.is_some() {
-                    "capture.ogg"
-                } else if move_generator.magic.is_king_in_check(&chess_board.chess_board, player_is_white) {
-                    "move-check.ogg"
-                } else {
-                    "notify.ogg"
-                };
-                pending_move_sound.0 = Some(sound);
-
-                // Check if the player has any legal moves after AI's move.
-                // Store result as pending — the overlay will appear after the tween finishes.
-                let player_moves = get_all_legal_moves_for_color(
-                    &mut chess_board.chess_board,
-                    &move_generator.magic,
-                    player_is_white,
-                );
-                if chess_board.chess_board.is_repetition(3) {
-                    println!("Draw by repetition!");
-                    pending_game_over.0 = Some(GameOverState::Draw);
-                } else if player_moves.is_empty() {
-                    let outcome = if move_generator.magic.is_king_in_check(&chess_board.chess_board, player_is_white) {
-                        println!("Checkmate — opponent wins!");
-                        GameOverState::OpponentWins
-                    } else {
-                        println!("Stalemate!");
-                        GameOverState::Stalemate
-                    };
-                    pending_game_over.0 = Some(outcome);
-                }
-
-                let start_local_position = get_local_position_from_board_coords(
-                    engine_move.start_square() % 8,
-                    engine_move.start_square() / 8,
-                    &board_dimensions,
-                );
-                let end_local_position = get_local_position_from_board_coords(
-                    engine_move.target_square() % 8,
-                    engine_move.target_square() / 8,
-                    &board_dimensions,
-                );
-
-                if let Some((entity, _, _)) = piece_query.iter_mut().find(|(_, _, chess_piece)| {
-                    chess_piece.col == (engine_move.start_square() % 8) as usize
-                        && chess_piece.row == 7 - (engine_move.start_square() / 8) as usize
-                }) {
-                    let tween = Tween::new(
-                        EaseFunction::CubicOut,
-                        Duration::from_millis(300),
-                        TransformPositionLens {
-                            start: start_local_position,
-                            end: end_local_position,
-                        },
-                    );
-                    let sequence = Delay::new(Duration::from_millis(150)).then(tween);
-
-                    commands.entity(entity).insert(TweenAnim::new(sequence));
-                } else {
-                    println!("No piece found at start square");
-                }
+                // else: stale result after stop — discard
+            } else if ponder_state.main_search_active {
+                ponder_state.main_search_active = false;
+                is_ai_thinking.0 = false;
+                pending = Some((score, bm, pm, false, 0));
             }
         }
     }
+
+    // ── 2. If main search is in flight, drain events and wait ────────────────
+    if ponder_state.main_search_active {
+        for _ in chess_ew.read() {}
+        return;
+    }
+
+    // ── 3. Process player move events (if no result yet from ponder hit) ─────
+    if pending.is_none() {
+        for event in chess_ew.read() {
+            if let ChessAction::MakeMove = event.action {
+                if *game_over_state != GameOverState::Playing
+                    || *game_phase != GamePhase::Playing
+                {
+                    break;
+                }
+
+                // Stop all ponder tasks and drop their receivers.
+                for s in &ponder_state.stops {
+                    s.store(true, Ordering::Relaxed);
+                }
+                task_pool.forget_all();
+                ponder_state.stops.clear();
+                ponder_state.ponder_active = false;
+
+                // Ponder hit? Check if a completed result covers this position.
+                let current_hash = chess_board.chess_board.current_hash();
+                let ponder_hit = ponder_state.results.remove(&current_hash);
+                ponder_state.results.clear();
+
+                if let Some((score, bm, pm)) = ponder_hit {
+                    eprintln!("Ponder hit! hash={current_hash:#x} score={score}");
+                    pending = Some((score, bm, pm, false, 0));
+                } else {
+                    // No hit — start fresh main search.
+                    let forced = {
+                        let moves = get_all_legal_moves_for_color(
+                            &mut chess_board.chess_board,
+                            &move_generator.magic,
+                            ai_is_white,
+                        );
+                        if moves.len() == 1 { Some(moves[0]) } else { None }
+                    };
+
+                    let mut board_c = chess_board.chess_board.clone();
+                    let conductor_c = move_generator.magic.clone();
+                    let book_c = opening_book.book.clone();
+                    let depth = difficulty.search_depth();
+                    let deadline =
+                        difficulty.time_limit().map(|d| web_time::Instant::now() + d);
+
+                    task_pool.spawn(async move {
+                        if let Some(m) = forced {
+                            return (0, Some(m), None, false, 0);
+                        }
+                        alpha_beta_task(
+                            &mut board_c, &conductor_c, &book_c,
+                            depth, ai_is_white, deadline,
+                        )
+                        .await
+                    });
+                    ponder_state.main_search_active = true;
+                    is_ai_thinking.0 = true;
+                }
+                break;
+            }
+        }
+
+        if pending.is_none() {
+            return;
+        }
+    }
+
+    // ── 4. Apply AI move ──────────────────────────────────────────────────────
+    let (score, mut best_move, _ponder_move, _, _) = pending.unwrap();
+    eprintln!("AI result: score={score}");
+
+    if best_move.is_none() {
+        let all_moves = get_all_legal_moves_for_color(
+            &mut chess_board.chess_board, &move_generator.magic, ai_is_white,
+        );
+        if all_moves.is_empty() {
+            *game_over_state =
+                if move_generator.magic.is_king_in_check(&chess_board.chess_board, ai_is_white) {
+                    eprintln!("Checkmate — player wins!");
+                    GameOverState::PlayerWins
+                } else {
+                    eprintln!("Stalemate!");
+                    GameOverState::Stalemate
+                };
+            return;
+        } else {
+            best_move = Some(all_moves[0]);
+        }
+    }
+    let mut engine_move = best_move.unwrap();
+
+    if chess_board.chess_board.make_move(&mut engine_move) {
+        last_move.start_square = Some(engine_move.start_square());
+        last_move.target_square = Some(engine_move.target_square());
+
+        let sound = if engine_move.has_flag(ChessMove::CASTLE_FLAG) {
+            "castle.ogg"
+        } else if engine_move.capture.is_some() {
+            "capture.ogg"
+        } else if move_generator
+            .magic
+            .is_king_in_check(&chess_board.chess_board, player_is_white)
+        {
+            "move-check.ogg"
+        } else {
+            "notify.ogg"
+        };
+        pending_move_sound.0 = Some(sound);
+
+        let player_moves = get_all_legal_moves_for_color(
+            &mut chess_board.chess_board, &move_generator.magic, player_is_white,
+        );
+        if chess_board.chess_board.is_repetition(3) {
+            eprintln!("Draw by repetition!");
+            pending_game_over.0 = Some(GameOverState::Draw);
+        } else if player_moves.is_empty() {
+            let outcome =
+                if move_generator.magic.is_king_in_check(&chess_board.chess_board, player_is_white) {
+                    eprintln!("Checkmate — opponent wins!");
+                    GameOverState::OpponentWins
+                } else {
+                    eprintln!("Stalemate!");
+                    GameOverState::Stalemate
+                };
+            pending_game_over.0 = Some(outcome);
+        }
+
+        anim_ew.write(AiMoveAnimEvent { engine_move });
+
+        // ── Launch multi-ponder for the next half-move ────────────────────────
+        if difficulty.ponders()
+            && pending_game_over.0.is_none()
+            && *game_over_state == GameOverState::Playing
+        {
+            launch_multi_ponder(
+                &mut task_pool,
+                &mut ponder_state,
+                &chess_board.chess_board,
+                &move_generator.magic,
+                &opening_book.book,
+                difficulty.search_depth(),
+                ai_is_white,
+            );
+        }
+    }
 }
+
+// ── Non-search chess event handler ───────────────────────────────────────────
 
 pub fn handle_chess_events(
     mut chess_ew: MessageReader<ChessEvent>,
@@ -309,16 +515,31 @@ pub fn handle_chess_events(
     mut pending_game_over: ResMut<PendingGameOver>,
     mut game_phase: ResMut<GamePhase>,
     mut current_opening: ResMut<CurrentOpening>,
+    mut ponder_state: ResMut<PonderState>,
 ) {
     for event in chess_ew.read() {
         match event.action {
             ChessAction::Undo => {
-                println!("Undoing move");
+                eprintln!("Undoing move");
+                for s in &ponder_state.stops {
+                    s.store(true, Ordering::Relaxed);
+                }
+                ponder_state.stops.clear();
+                ponder_state.results.clear();
+                ponder_state.ponder_active = false;
+                ponder_state.main_search_active = false;
                 chess_board.chess_board.undo_move();
                 refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
             }
             ChessAction::Restart => {
-                println!("Returning to start screen");
+                eprintln!("Returning to start screen");
+                for s in &ponder_state.stops {
+                    s.store(true, Ordering::Relaxed);
+                }
+                ponder_state.stops.clear();
+                ponder_state.results.clear();
+                ponder_state.ponder_active = false;
+                ponder_state.main_search_active = false;
                 chess_board.chess_board = chess_board::ChessBoard::new();
                 *game_over_state = GameOverState::Playing;
                 pending_game_over.0 = None;

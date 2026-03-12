@@ -29,3 +29,4 @@ getrandom = { version = "0.2", features = ["js"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
 bevy = { version = "0.18", default-features = false, features = ["webgl2"] }
 wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"] }
+rayon = "1.8"

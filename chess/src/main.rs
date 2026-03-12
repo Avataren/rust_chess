@@ -26,7 +26,7 @@ use embed_plugin::EmbeddedAssetPlugin;
 use game_events::{
    RefreshPiecesFromBoardEvent,
 };
-use game_resources::{CurrentOpening, Difficulty, GameOverState, GamePhase, IsAiThinking, OpeningBookRes, PendingGameOver, PendingMoveSound, PlayerColor};
+use game_resources::{CurrentOpening, Difficulty, GameOverState, GamePhase, IsAiThinking, OpeningBookRes, PendingGameOver, PendingMoveSound, PlayerColor, PonderState};
 use input_plugin::ChessInputPlugin;
 use move_generator::piece_conductor::PieceConductor;
 use preload_assets_plugin::PreloadAssetsPlugin;
@@ -147,6 +147,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(IsAiThinking::default());
     commands.insert_resource(PendingMoveSound::default());
     commands.insert_resource(Difficulty::default());
+    commands.insert_resource(PonderState::default());
     commands.insert_resource(ResolutionInfo {
         width: 1280.0,
         height: 1080.0,

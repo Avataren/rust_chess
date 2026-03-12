@@ -116,20 +116,22 @@ fn parse_go(tokens: &[&str], is_white: bool, move_number: usize) -> GoParams {
     let mut btime: Option<u64> = None;
     let mut winc: u64 = 0;
     let mut binc: u64 = 0;
+    let mut movestogo: Option<u64> = None;
     let mut is_ponder = false;
 
     let mut i = 0;
     while i < tokens.len() {
         match tokens[i] {
-            "depth"    => { max_depth  = tokens.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(64); i += 2; }
-            "movetime" => { movetime_ms = tokens.get(i+1).and_then(|s| s.parse().ok()); i += 2; }
-            "wtime"    => { wtime = tokens.get(i+1).and_then(|s| s.parse().ok()); i += 2; }
-            "btime"    => { btime = tokens.get(i+1).and_then(|s| s.parse().ok()); i += 2; }
-            "winc"     => { winc  = tokens.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 2; }
-            "binc"     => { binc  = tokens.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 2; }
-            "ponder"   => { is_ponder = true; i += 1; }
-            "infinite" => { i += 1; } // max_depth=64, no deadline — stop signal controls it
-            _          => { i += 1; }
+            "depth"     => { max_depth  = tokens.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(64); i += 2; }
+            "movetime"  => { movetime_ms = tokens.get(i+1).and_then(|s| s.parse().ok()); i += 2; }
+            "wtime"     => { wtime = tokens.get(i+1).and_then(|s| s.parse().ok()); i += 2; }
+            "btime"     => { btime = tokens.get(i+1).and_then(|s| s.parse().ok()); i += 2; }
+            "winc"      => { winc  = tokens.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 2; }
+            "binc"      => { binc  = tokens.get(i+1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 2; }
+            "movestogo" => { movestogo = tokens.get(i+1).and_then(|s| s.parse().ok()); i += 2; }
+            "ponder"    => { is_ponder = true; i += 1; }
+            "infinite"  => { i += 1; } // max_depth=64, no deadline — stop signal controls it
+            _           => { i += 1; }
         }
     }
 
@@ -148,22 +150,43 @@ fn parse_go(tokens: &[&str], is_white: bool, move_number: usize) -> GoParams {
     // Game-phase-aware time management from clock info
     let (remaining, inc) = if is_white { (wtime, winc) } else { (btime, binc) };
     if let Some(rem) = remaining {
-        // Phase-dependent base allocation
-        let base = if move_number <= 10 {
-            // Opening: book moves are instant, save time
-            rem / 40 + inc * 3 / 4
-        } else if move_number <= 30 {
-            // Midgame: critical decisions, spend more
-            rem / 20 + inc * 9 / 10
+        // Estimate moves remaining for our side
+        let moves_remaining: u64 = if let Some(mtg) = movestogo {
+            mtg.max(1)
         } else {
-            // Endgame: positions simpler, moderate budget
-            rem / 30 + inc * 4 / 5
+            let estimated_total: u64 = 42;
+            estimated_total.saturating_sub(move_number as u64).max(8)
         };
 
-        // Safety cap: never use more than 1/5 of remaining time
-        let soft_ms = base.min(rem / 5).max(50);
-        // Hard limit: 3x soft but at most 1/3 of remaining
-        let hard_ms = (soft_ms * 3).min(rem / 3).max(soft_ms);
+        // Base: equitable share of clock + 80% of increment
+        let base = rem / moves_remaining + inc * 8 / 10;
+
+        // Time-control-aware soft/hard multipliers and clock-percentage caps.
+        // (soft_num/soft_den, hard_num/hard_den, cap_pct of rem)
+        let (soft_num, soft_den, hard_num, hard_den, cap_pct): (u64, u64, u64, u64, u64) =
+            if rem < 10_000 && inc == 0 {
+                // No increment, flagging danger
+                (1, 20, 1, 10, 5)
+            } else if rem < 10_000 {
+                // Has increment: use most of one increment per move
+                (1, 4, 1, 2, 8)
+            } else if rem < 60_000 {
+                // Bullet (10s–1min)
+                (1, 2, 3, 4, 8)
+            } else if rem < 300_000 {
+                // Blitz (1–5 min)
+                (3, 4, 5, 4, 10)
+            } else {
+                // Rapid/Classical (5+ min)
+                (1, 1, 3, 2, 12)
+            };
+
+        let soft_ms = (base * soft_num / soft_den)
+            .min(rem * cap_pct / 100)
+            .max(50);
+        let hard_ms = (base * hard_num / hard_den)
+            .min(rem * cap_pct * 2 / 100)
+            .max(soft_ms);
 
         let now = Instant::now();
         GoParams {

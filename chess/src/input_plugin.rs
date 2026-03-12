@@ -3,7 +3,8 @@ use bevy::prelude::*;
 use crate::{
     chess_event_handler,
     game_events::{
-        ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent, RefreshPiecesFromBoardEvent,
+        AiMoveAnimEvent, ChessEvent, DragPieceEvent, DropPieceEvent, PickUpPieceEvent,
+        RefreshPiecesFromBoardEvent,
     },
     keyboard_input, piece_picker, pieces,
 };
@@ -13,7 +14,7 @@ pub struct ChessInputPlugin;
 impl Plugin for ChessInputPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<ChessEvent>()
-            .add_message::<ChessEvent>()
+            .add_message::<AiMoveAnimEvent>()
             .add_message::<PickUpPieceEvent>()
             .add_message::<DragPieceEvent>()
             .add_message::<DropPieceEvent>()
@@ -37,6 +38,7 @@ impl Plugin for ChessInputPlugin {
                     piece_picker::hide_debug_on_drop,
                     pieces::spawn_chess_pieces,
                     chess_event_handler::handle_async_moves,
+                    chess_event_handler::apply_ai_move_animation,
                 )
                     .chain(),
             )

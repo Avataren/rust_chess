@@ -259,7 +259,12 @@ pub fn alpha_beta(
     mut beta: i32,
     is_white: bool,
     null_move_allowed: bool,
+    stop: Option<Arc<AtomicBool>>,
 ) -> (i32, Option<ChessMove>) {
+    // Abort immediately if the hard deadline fired.
+    if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
+        return (alpha, None);
+    }
     // Compute check status early — needed for check extension before depth-0.
     let in_check = conductor.is_king_in_check(chess_board, is_white);
 
@@ -312,7 +317,7 @@ pub fn alpha_beta(
         let null_score = alpha_beta(
             chess_board, conductor, tt, ctx,
             depth - 1 - r, ply + 1, alpha, beta, !is_white,
-            false,
+            false, stop.clone(),
         ).0;
         chess_board.undo_null_move();
 
@@ -368,22 +373,22 @@ pub fn alpha_beta(
             } else if move_index == 0 {
                 // PV node: full window search for first move.
                 alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, alpha, beta, false, true).0
+                    depth - 1, ply + 1, alpha, beta, false, true, stop.clone()).0
             } else if can_reduce {
                 // LMR + PVS: reduced null-window search first.
                 let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 2, ply + 1, alpha, alpha + 1, false, true).0;
+                    depth - 2, ply + 1, alpha, alpha + 1, false, true, stop.clone()).0;
                 if reduced > alpha && reduced < beta {
                     // Re-search at full depth, full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, false, true).0
+                        depth - 1, ply + 1, alpha, beta, false, true, stop.clone()).0
                 } else if reduced > alpha {
                     // Re-search at full depth, null window — then widen if needed.
                     let score = alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, alpha + 1, false, true).0;
+                        depth - 1, ply + 1, alpha, alpha + 1, false, true, stop.clone()).0;
                     if score > alpha && score < beta {
                         alpha_beta(chess_board, conductor, tt, ctx,
-                            depth - 1, ply + 1, alpha, beta, false, true).0
+                            depth - 1, ply + 1, alpha, beta, false, true, stop.clone()).0
                     } else {
                         score
                     }
@@ -393,11 +398,11 @@ pub fn alpha_beta(
             } else {
                 // PVS: null-window search for non-PV moves.
                 let score = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, alpha, alpha + 1, false, true).0;
+                    depth - 1, ply + 1, alpha, alpha + 1, false, true, stop.clone()).0;
                 if score > alpha && score < beta {
                     // Fail high — re-search with full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, false, true).0
+                        depth - 1, ply + 1, alpha, beta, false, true, stop.clone()).0
                 } else {
                     score
                 }
@@ -445,22 +450,22 @@ pub fn alpha_beta(
             } else if move_index == 0 {
                 // PV node: full window search for first move.
                 alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, alpha, beta, true, true).0
+                    depth - 1, ply + 1, alpha, beta, true, true, stop.clone()).0
             } else if can_reduce {
                 // LMR + PVS: reduced null-window search first.
                 let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 2, ply + 1, beta - 1, beta, true, true).0;
+                    depth - 2, ply + 1, beta - 1, beta, true, true, stop.clone()).0;
                 if reduced < beta && reduced > alpha {
                     // Re-search at full depth, full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, true, true).0
+                        depth - 1, ply + 1, alpha, beta, true, true, stop.clone()).0
                 } else if reduced < beta {
                     // Re-search at full depth, null window — then widen if needed.
                     let score = alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, beta - 1, beta, true, true).0;
+                        depth - 1, ply + 1, beta - 1, beta, true, true, stop.clone()).0;
                     if score < beta && score > alpha {
                         alpha_beta(chess_board, conductor, tt, ctx,
-                            depth - 1, ply + 1, alpha, beta, true, true).0
+                            depth - 1, ply + 1, alpha, beta, true, true, stop.clone()).0
                     } else {
                         score
                     }
@@ -470,11 +475,11 @@ pub fn alpha_beta(
             } else {
                 // PVS: null-window search for non-PV moves.
                 let score = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, beta - 1, beta, true, true).0;
+                    depth - 1, ply + 1, beta - 1, beta, true, true, stop.clone()).0;
                 if score < beta && score > alpha {
                     // Fail low — re-search with full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, true, true).0
+                        depth - 1, ply + 1, alpha, beta, true, true, stop.clone()).0
                 } else {
                     score
                 }
@@ -528,6 +533,7 @@ pub fn search_root(
     beta: i32,
     is_white: bool,
     prev_best: Option<ChessMove>,
+    stop: Option<Arc<AtomicBool>>,
 ) -> (i32, Option<ChessMove>) {
     let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
     if legal_moves.is_empty() {
@@ -541,16 +547,21 @@ pub fn search_root(
     // Each root move is evaluated independently on its own board clone with a
     // fresh per-thread TT and SearchContext.
     if depth >= 3 {
+        let stop_par = stop.clone();
         let results: Vec<(i32, ChessMove)> = legal_moves
             .into_par_iter()
-            .map(|mut chess_move| {
+            .map(move |mut chess_move| {
+                if stop_par.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
+                    // Return sentinel: aborted moves are filtered out by caller
+                    return (if is_white { i32::MIN + 2 } else { i32::MAX - 1 }, chess_move);
+                }
                 let mut board = chess_board.clone();
                 let mut local_tt = TranspositionTable::new(PARALLEL_TT_SIZE);
                 let mut local_ctx = SearchContext::new();
                 board.make_move(&mut chess_move);
                 let eval = alpha_beta(
                     &mut board, conductor, &mut local_tt, &mut local_ctx,
-                    depth - 1, 1, alpha, beta, !is_white, true,
+                    depth - 1, 1, alpha, beta, !is_white, true, stop_par.clone(),
                 ).0;
                 (eval, chess_move)
             })
@@ -575,7 +586,7 @@ pub fn search_root(
     for mut chess_move in legal_moves {
         chess_board.make_move(&mut chess_move);
         let (eval, _) = alpha_beta(
-            chess_board, conductor, tt, ctx, depth - 1, 1, alpha, beta, !is_white, true,
+            chess_board, conductor, tt, ctx, depth - 1, 1, alpha, beta, !is_white, true, stop.clone(),
         );
         chess_board.undo_move();
 
@@ -626,7 +637,7 @@ pub fn alpha_beta_root(
     }
     let mut tt = TranspositionTable::new(TT_SIZE);
     let mut ctx = SearchContext::new();
-    search_root(chess_board, conductor, &mut tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, None)
+    search_root(chess_board, conductor, &mut tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, None, None)
 }
 
 /// Result of an iterative-deepening search.
@@ -639,7 +650,7 @@ pub struct SearchResult {
 
 /// Extract the opponent's predicted reply from the TT by making the best move
 /// and probing.  Falls back to a quick depth-1 search if the TT has no entry.
-fn extract_ponder_move(
+pub fn extract_ponder_move(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
     tt: &mut TranspositionTable,
@@ -664,7 +675,7 @@ fn extract_ponder_move(
         let mut ctx = SearchContext::new();
         let (_, fallback_move) = alpha_beta(
             chess_board, conductor, tt, &mut ctx,
-            2, 1, i32::MIN + 1, i32::MAX, opponent_white, true,
+            2, 1, i32::MIN + 1, i32::MAX, opponent_white, true, None,
         );
         fallback_move
     } else {
@@ -735,14 +746,14 @@ pub fn iterative_deepening_root(
 
         let result = if depth <= 2 {
             // Full window for shallow depths — aspirating an unknown score is useless.
-            search_root(chess_board, conductor, &mut tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move)
+            search_root(chess_board, conductor, &mut tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move, stop.clone())
         } else {
             // Narrow aspiration window around previous score.  Widen one side on
             // failure and retry until the result lands inside the window.
             let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
             let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
             loop {
-                let result = search_root(chess_board, conductor, &mut tt, &mut ctx, depth, lo, hi, is_white, prev_move);
+                let result = search_root(chess_board, conductor, &mut tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone());
                 if result.0 > lo && result.0 < hi {
                     break result;
                 } else if result.0 <= lo {
@@ -930,7 +941,7 @@ mod tests {
 
         let mut tt = TranspositionTable::new(1 << 16);
         let mut ctx = SearchContext::new();
-        let (ab_score, _) = alpha_beta(&mut board, &c, &mut tt, &mut ctx, 2, 0, i32::MIN + 1, i32::MAX, true, true);
+        let (ab_score, _) = alpha_beta(&mut board, &c, &mut tt, &mut ctx, 2, 0, i32::MIN + 1, i32::MAX, true, true, None);
 
         assert_eq!(
             root_score, ab_score,
@@ -1158,7 +1169,7 @@ mod tests {
         assert!(moves.is_empty(), "Black should have no legal moves (stalemate)");
         let mut tt = TranspositionTable::new(1 << 16);
         let mut ctx = SearchContext::new();
-        let (score, _) = alpha_beta(&mut board, &c, &mut tt, &mut ctx, 2, 0, i32::MIN + 1, i32::MAX, false, true);
+        let (score, _) = alpha_beta(&mut board, &c, &mut tt, &mut ctx, 2, 0, i32::MIN + 1, i32::MAX, false, true, None);
         assert_eq!(score, 0, "Stalemate must evaluate to 0 (draw), got {score}");
     }
 
@@ -1187,7 +1198,7 @@ mod tests {
         let c = conductor();
         let mut tt = TranspositionTable::new(TT_SIZE);
         let mut ctx = SearchContext::new();
-        let (score, mv) = search_root(&mut board, &c, &mut tt, &mut ctx, 4, -50, 50, false, None);
+        let (score, mv) = search_root(&mut board, &c, &mut tt, &mut ctx, 4, -50, 50, false, None, None);
         assert!(score < -200 || score <= -50,
             "Black should win material or fail-low, got {score}");
         if score > -50 && score < 50 {
@@ -1228,11 +1239,11 @@ mod tests {
 
         let mut tt1 = TranspositionTable::new(TT_SIZE);
         let mut ctx1 = SearchContext::new();
-        let (score_full, mv_full) = search_root(&mut board, &c, &mut tt1, &mut ctx1, 4, i32::MIN + 1, i32::MAX, true, None);
+        let (score_full, mv_full) = search_root(&mut board, &c, &mut tt1, &mut ctx1, 4, i32::MIN + 1, i32::MAX, true, None, None);
 
         let mut tt2 = TranspositionTable::new(TT_SIZE);
         let mut ctx2 = SearchContext::new();
-        let (score_asp, _) = search_root(&mut board, &c, &mut tt2, &mut ctx2, 4, -50, 50, true, None);
+        let (score_asp, _) = search_root(&mut board, &c, &mut tt2, &mut ctx2, 4, -50, 50, true, None, None);
 
         let m = mv_full.expect("Full window must return a move");
         assert!(score_full > 200, "White should win material, got {score_full}");
