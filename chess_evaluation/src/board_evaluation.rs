@@ -126,12 +126,12 @@ fn mop_up(
     }
 
     let (corner_push, proximity) = if material_score > 0 {
-        let corner_push = king_center_distance(black_king_sq) * 10;
-        let proximity = (14 - manhattan(white_king_sq, black_king_sq)) * 4;
+        let corner_push = king_center_distance(black_king_sq) * 20;
+        let proximity = (14 - manhattan(white_king_sq, black_king_sq)) * 8;
         (corner_push, proximity)
     } else {
-        let corner_push = king_center_distance(white_king_sq) * 10;
-        let proximity = (14 - manhattan(black_king_sq, white_king_sq)) * 4;
+        let corner_push = king_center_distance(white_king_sq) * 20;
+        let proximity = (14 - manhattan(black_king_sq, white_king_sq)) * 8;
         (-(corner_push), -(proximity))
     };
 
@@ -296,6 +296,12 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
     let n = count(black & rooks);   mg -= n * MG_ROOK_VALUE;   eg -= n * EG_ROOK_VALUE;
     let n = count(black & queens);  mg -= n * MG_QUEEN_VALUE;  eg -= n * EG_QUEEN_VALUE;
 
+    // Safety: if a king is missing (null-move search artifacts),
+    // return raw material score to avoid out-of-bounds panics.
+    if white_king_sq >= 64 || black_king_sq >= 64 {
+        return (mg * mg_phase + eg * eg_phase) / 24;
+    }
+
     // --- White PSTs ---
     for_each_sq(white & pawns, |sq| {
         mg += mg_pawn_table(sq, true);
@@ -389,7 +395,7 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
             // King proximity: reward our king near our passer, penalise enemy king near it
             let friendly_dist = manhattan(white_king_sq, sq);
             let enemy_dist = manhattan(black_king_sq, sq);
-            let king_bonus = (7 - friendly_dist) * KING_ESCORT_PASSER
+            let king_bonus = (7 - friendly_dist).max(0) * KING_ESCORT_PASSER
                            + enemy_dist * KING_BLOCK_PASSER;
 
             // Rook behind passer (same file, lower rank for white)
@@ -400,7 +406,7 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
             if white_rooks_bb & behind_mask != 0 { rook_bonus += ROOK_BEHIND_PASSER; }
             if black_rooks_bb & behind_mask != 0 { rook_bonus -= ROOK_BEHIND_PASSER / 2; }
 
-            score += base + (king_bonus + rook_bonus) * eg_weight / 256;
+            score += base + (king_bonus + rook_bonus).max(0) * eg_weight / 256;
         }
     });
     for_each_sq(black & pawns, |sq| {
@@ -409,7 +415,7 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
 
             let friendly_dist = manhattan(black_king_sq, sq);
             let enemy_dist = manhattan(white_king_sq, sq);
-            let king_bonus = (7 - friendly_dist) * KING_ESCORT_PASSER
+            let king_bonus = (7 - friendly_dist).max(0) * KING_ESCORT_PASSER
                            + enemy_dist * KING_BLOCK_PASSER;
 
             // Rook behind passer (same file, higher rank for black)
@@ -420,7 +426,7 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
             if black_rooks_bb & behind_mask != 0 { rook_bonus += ROOK_BEHIND_PASSER; }
             if white_rooks_bb & behind_mask != 0 { rook_bonus -= ROOK_BEHIND_PASSER / 2; }
 
-            score -= base + (king_bonus + rook_bonus) * eg_weight / 256;
+            score -= base + (king_bonus + rook_bonus).max(0) * eg_weight / 256;
         }
     });
 

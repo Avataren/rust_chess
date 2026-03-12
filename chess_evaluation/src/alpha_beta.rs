@@ -42,9 +42,6 @@ pub const MAX_PLY: usize = 64;
 pub struct SearchContext {
     killers: [[Option<ChessMove>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
-    nodes: u64,
-    stop: Option<Arc<AtomicBool>>,
-    deadline: Option<Instant>,
 }
 
 impl SearchContext {
@@ -52,35 +49,7 @@ impl SearchContext {
         Self {
             killers: [[None; 2]; MAX_PLY],
             history: [[0; 64]; 64],
-            nodes: 0,
-            stop: None,
-            deadline: None,
         }
-    }
-
-    pub fn with_stop_and_deadline(stop: Arc<AtomicBool>, deadline: Option<Instant>) -> Self {
-        Self {
-            killers: [[None; 2]; MAX_PLY],
-            history: [[0; 64]; 64],
-            nodes: 0,
-            stop: Some(stop),
-            deadline,
-        }
-    }
-
-    /// Check every 4096 nodes whether the stop flag or deadline has been hit.
-    #[inline]
-    pub fn should_stop(&mut self) -> bool {
-        self.nodes += 1;
-        if self.nodes & 4095 == 0 {
-            if let Some(ref s) = self.stop {
-                if s.load(Ordering::Relaxed) { return true; }
-            }
-            if let Some(dl) = self.deadline {
-                if Instant::now() >= dl { return true; }
-            }
-        }
-        false
     }
 
     /// Halve all history scores between ID iterations so that shallower
@@ -291,9 +260,6 @@ pub fn alpha_beta(
     is_white: bool,
     null_move_allowed: bool,
 ) -> (i32, Option<ChessMove>) {
-    if ctx.should_stop() {
-        return (evaluate_board(chess_board, conductor), None);
-    }
     if depth == 0 {
         return (quiescence(chess_board, conductor, alpha, beta, is_white, 4), None);
     }
@@ -566,17 +532,12 @@ pub fn search_root(
     // Each root move is evaluated independently on its own board clone with a
     // fresh per-thread TT and SearchContext.
     if depth >= 3 {
-        let stop = ctx.stop.clone();
-        let dl = ctx.deadline;
         let results: Vec<(i32, ChessMove)> = legal_moves
             .into_par_iter()
             .map(|mut chess_move| {
                 let mut board = chess_board.clone();
                 let mut local_tt = TranspositionTable::new(PARALLEL_TT_SIZE);
-                let mut local_ctx = match &stop {
-                    Some(s) => SearchContext::with_stop_and_deadline(Arc::clone(s), dl),
-                    None => SearchContext::new(),
-                };
+                let mut local_ctx = SearchContext::new();
                 board.make_move(&mut chess_move);
                 let eval = alpha_beta(
                     &mut board, conductor, &mut local_tt, &mut local_ctx,
@@ -691,10 +652,7 @@ pub fn iterative_deepening_root(
     }
 
     let mut tt = TranspositionTable::new(TT_SIZE);
-    let mut ctx = match stop.as_ref() {
-        Some(s) => SearchContext::with_stop_and_deadline(Arc::clone(s), deadline),
-        None => SearchContext::new(),
-    };
+    let mut ctx = SearchContext::new();
     let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
 
     for depth in 1..=max_depth {
@@ -730,23 +688,14 @@ pub fn iterative_deepening_root(
             }
         };
 
-        // If stop was triggered mid-iteration, the result is unreliable —
-        // keep the last fully completed iteration's result.
         if let Some(ref s) = stop {
             if s.load(Ordering::Relaxed) { break; }
         }
+        if let Some(dl) = deadline {
+            if Instant::now() >= dl { break; }
+        }
 
         best = result;
-
-        if let Some(dl) = deadline {
-            let now = Instant::now();
-            if now >= dl { break; }
-            // Time estimation: each depth typically takes 3-5x longer than
-            // the previous. Don't start the next depth if likely to overshoot.
-            let iter_elapsed = now.duration_since(iter_start);
-            let time_left = dl.duration_since(now);
-            if iter_elapsed * 3 > time_left { break; }
-        }
     }
 
     best
@@ -1205,5 +1154,210 @@ mod tests {
         assert!(score_asp >= 50 || score_asp <= -50,
             "Aspiration should fail, got {score_asp}");
         let _ = m;
+    }
+
+    // -----------------------------------------------------------------------
+    // Mate-in-1 detection
+    // -----------------------------------------------------------------------
+
+    /// White must find mate-in-1 and return a mate score at all depths.
+    #[test]
+    fn white_finds_mate_in_1_all_depths() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
+        let c = conductor();
+
+        for depth in 2..=6 {
+            let (score, mv) = alpha_beta_root(&mut board, &c, None, depth, true);
+            assert!(mv.is_some(), "depth {depth}: must return a move");
+            assert!(score >= 999_000,
+                "depth {depth}: mate score expected, got {score}");
+        }
+    }
+
+    /// Black must find mate-in-1 and return a mate score at all depths.
+    #[test]
+    fn black_finds_mate_in_1_all_depths() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("8/8/8/8/8/1q6/8/K1k5 b - - 0 1");
+        let c = conductor();
+
+        for depth in 2..=6 {
+            let (score, mv) = alpha_beta_root(&mut board, &c, None, depth, false);
+            assert!(mv.is_some(), "depth {depth}: must return a move");
+            assert!(score <= -999_000,
+                "depth {depth}: mate score expected, got {score}");
+        }
+    }
+
+    /// Mate-in-1 must return a mate score through iterative deepening too.
+    #[test]
+    fn id_finds_mate_in_1_all_depths() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
+        let c = conductor();
+
+        for max_depth in 2..=6 {
+            let (score, mv) = iterative_deepening_root(
+                &mut board, &c, None, max_depth, true, None, None,
+            );
+            assert!(mv.is_some(), "ID depth {max_depth}: must return a move");
+            assert!(score >= 999_000,
+                "ID depth {max_depth}: mate score expected, got {score}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Search integrity: stop flag must not corrupt results
+    // -----------------------------------------------------------------------
+
+    /// A search that completes without the stop flag must produce the same
+    /// result whether or not a (non-triggered) stop flag is attached.
+    #[test]
+    fn stop_flag_untriggered_does_not_affect_result() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let c = conductor();
+
+        let (score_no_flag, _) = iterative_deepening_root(
+            &mut board, &c, None, 4, true, None, None,
+        );
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let (score_with_flag, _) = iterative_deepening_root(
+            &mut board, &c, None, 4, true, None, Some(stop),
+        );
+
+        assert_eq!(score_no_flag, score_with_flag,
+            "Untriggered stop flag must not change the result: no_flag={score_no_flag}, with_flag={score_with_flag}");
+    }
+
+    /// A search with a generous deadline must find the same result as one
+    /// without any deadline.
+    #[test]
+    fn generous_deadline_does_not_affect_result() {
+        use std::time::Duration;
+
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let c = conductor();
+
+        let (score_no_dl, _) = iterative_deepening_root(
+            &mut board, &c, None, 4, true, None, None,
+        );
+
+        let deadline = Some(Instant::now() + Duration::from_secs(60));
+        let (score_with_dl, _) = iterative_deepening_root(
+            &mut board, &c, None, 4, true, deadline, None,
+        );
+
+        assert_eq!(score_no_dl, score_with_dl,
+            "Generous deadline must not change result: no_dl={score_no_dl}, with_dl={score_with_dl}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Mop-up: winning side drives toward checkmate
+    // -----------------------------------------------------------------------
+
+    /// In K+Q vs K, the evaluation must prefer positions where the losing
+    /// king is pushed to the edge and the winning king is close.
+    #[test]
+    fn mop_up_prefers_corner_king() {
+        let c = conductor();
+
+        // Losing king on edge (a1)
+        let mut board_edge = ChessBoard::new();
+        board_edge.set_from_fen("8/8/8/8/4K3/8/8/k4Q2 w - - 0 1");
+        let score_edge = evaluate_board(&board_edge, &c);
+
+        // Losing king in center (e5)
+        let mut board_center = ChessBoard::new();
+        board_center.set_from_fen("8/8/8/4k3/4K3/8/8/5Q2 w - - 0 1");
+        let score_center = evaluate_board(&board_center, &c);
+
+        assert!(score_edge > score_center,
+            "Mop-up must prefer losing king on edge ({score_edge}) over center ({score_center})");
+    }
+
+    /// In K+Q vs K, the winning king being close to the losing king
+    /// must score higher than being far away.
+    #[test]
+    fn mop_up_prefers_king_proximity() {
+        let c = conductor();
+
+        // Winning king close (d2), losing king on edge (a1)
+        let mut board_close = ChessBoard::new();
+        board_close.set_from_fen("8/8/8/8/8/8/3K4/k4Q2 w - - 0 1");
+        let score_close = evaluate_board(&board_close, &c);
+
+        // Winning king far (h8), losing king on edge (a1)
+        let mut board_far = ChessBoard::new();
+        board_far.set_from_fen("7K/8/8/8/8/8/8/k4Q2 w - - 0 1");
+        let score_far = evaluate_board(&board_far, &c);
+
+        assert!(score_close > score_far,
+            "Mop-up must prefer winning king close ({score_close}) over far ({score_far})");
+    }
+
+    /// In a K+Q vs K endgame, the engine should make progress toward
+    /// checkmate rather than shuffling. After 4 plies of best play,
+    /// the eval should not decrease.
+    #[test]
+    fn mop_up_makes_progress() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("8/8/8/4k3/8/8/8/4KQ2 w - - 0 1");
+        let c = conductor();
+
+        let initial_score = evaluate_board(&board, &c);
+        let (search_score, mv) = iterative_deepening_root(
+            &mut board, &c, None, 4, true, None, None,
+        );
+
+        assert!(mv.is_some(), "Engine must return a move");
+        assert!(search_score >= initial_score,
+            "Engine should make progress: initial={initial_score}, search={search_score}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Passed pawn evaluation
+    // -----------------------------------------------------------------------
+
+    /// A passed pawn on a higher rank must score higher than one on a lower rank.
+    #[test]
+    fn passed_pawn_rank_bonus_increases() {
+        let c = conductor();
+
+        // White passed pawn on rank 5 (d5)
+        let mut board_r5 = ChessBoard::new();
+        board_r5.set_from_fen("8/8/8/3P4/8/8/8/4K2k w - - 0 1");
+        let score_r5 = evaluate_board(&board_r5, &c);
+
+        // White passed pawn on rank 7 (d7)
+        let mut board_r7 = ChessBoard::new();
+        board_r7.set_from_fen("8/3P4/8/8/8/8/8/4K2k w - - 0 1");
+        let score_r7 = evaluate_board(&board_r7, &c);
+
+        assert!(score_r7 > score_r5,
+            "Rank 7 passer ({score_r7}) must score higher than rank 5 ({score_r5})");
+    }
+
+    /// A passed pawn must never be valued less than a non-passed pawn,
+    /// regardless of king positions.
+    #[test]
+    fn passed_pawn_bonus_never_negative() {
+        let c = conductor();
+
+        // Passed pawn with kings far away
+        let mut board_passed = ChessBoard::new();
+        board_passed.set_from_fen("7k/8/8/3P4/8/8/8/K7 w - - 0 1");
+        let score_passed = evaluate_board(&board_passed, &c);
+
+        // Same position but pawn is blocked (not passed)
+        let mut board_blocked = ChessBoard::new();
+        board_blocked.set_from_fen("7k/8/3p4/3P4/8/8/8/K7 w - - 0 1");
+        let score_blocked = evaluate_board(&board_blocked, &c);
+
+        assert!(score_passed > score_blocked,
+            "Passed pawn ({score_passed}) must score higher than blocked ({score_blocked})");
     }
 }
