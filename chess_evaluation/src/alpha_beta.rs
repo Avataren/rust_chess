@@ -260,6 +260,14 @@ pub fn alpha_beta(
     is_white: bool,
     null_move_allowed: bool,
 ) -> (i32, Option<ChessMove>) {
+    // Compute check status early — needed for check extension before depth-0.
+    let in_check = conductor.is_king_in_check(chess_board, is_white);
+
+    // Check extension: give one extra ply when in check to avoid
+    // horizon-effect misevaluations of checks, captures, and mates.
+    let extension = if in_check && ply < MAX_PLY - 2 { 1 } else { 0 };
+    let depth = depth + extension;
+
     if depth == 0 {
         return (quiescence(chess_board, conductor, alpha, beta, is_white, 4), None);
     }
@@ -292,9 +300,6 @@ pub fn alpha_beta(
     } else {
         None
     };
-
-    // Compute once; reused by both NMP and LMR.
-    let in_check = conductor.is_king_in_check(chess_board, is_white);
 
     // --- Null Move Pruning ---
     if null_move_allowed

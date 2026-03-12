@@ -25,7 +25,7 @@ run_endgame() {
     local score_line
     score_line=$(echo "$output" | grep "score:" | tail -1)
     local score
-    score=$(echo "$score_line" | grep -oP '[\d.]+%' | head -1)
+    score=$(echo "$score_line" | grep -oE '[0-9.]+%' | head -1)
     printf "  %-40s %s\n" "$name" "$score"
 }
 

@@ -58,38 +58,56 @@ fn parse_uci_move(uci: &str, legal: &[ChessMove]) -> Option<ChessMove> {
 
 // ── Position command ─────────────────────────────────────────────────────────
 
-fn apply_position(board: &mut ChessBoard, conductor: &PieceConductor, tokens: &[&str]) {
+/// Apply a UCI position command and return the full-move number (1-based).
+fn apply_position(board: &mut ChessBoard, conductor: &PieceConductor, tokens: &[&str]) -> usize {
     let mut idx = 0;
+    let mut fen_fullmove: usize = 1;
     if tokens.get(idx) == Some(&"startpos") {
         *board = ChessBoard::new();
         idx += 1;
     } else if tokens.get(idx) == Some(&"fen") {
         idx += 1;
         let end = tokens[idx..].iter().position(|&t| t == "moves").unwrap_or(tokens.len() - idx);
-        board.set_from_fen(&tokens[idx..idx + end].join(" "));
+        let fen_str = tokens[idx..idx + end].join(" ");
+        // Parse fullmove number from FEN (6th field)
+        let parts: Vec<&str> = fen_str.split_whitespace().collect();
+        if parts.len() >= 6 {
+            fen_fullmove = parts[5].parse().unwrap_or(1);
+        }
+        board.set_from_fen(&fen_str);
         idx += end;
     }
 
+    let mut move_count = 0usize;
     if tokens.get(idx) == Some(&"moves") {
         for uci in &tokens[idx + 1..] {
             let is_white = board.is_white_active();
             let legal = get_all_legal_moves_for_color(board, conductor, is_white);
             if let Some(mut mv) = parse_uci_move(uci, &legal) {
                 board.make_move(&mut mv);
+                move_count += 1;
             }
         }
     }
+
+    // Each pair of half-moves is one full move
+    fen_fullmove + move_count / 2
 }
 
 // ── Go command parsing ───────────────────────────────────────────────────────
 
 struct GoParams {
     max_depth: i32,
-    movetime_ms: Option<u64>,
+    /// Soft deadline: iterative deepening checks this to decide whether to
+    /// start another iteration.
+    soft_deadline: Option<Instant>,
+    /// Hard deadline: a background timer fires the stop flag at this point.
+    hard_deadline: Option<Instant>,
+    /// Whether this is a ponder search (think on opponent's time).
     is_ponder: bool,
 }
 
-fn parse_go(tokens: &[&str], is_white: bool) -> GoParams {
+fn parse_go(tokens: &[&str], is_white: bool, move_number: usize) -> GoParams {
     let mut max_depth: i32 = 64;
     let mut movetime_ms: Option<u64> = None;
     let mut wtime: Option<u64> = None;
@@ -113,34 +131,86 @@ fn parse_go(tokens: &[&str], is_white: bool) -> GoParams {
         }
     }
 
-    // Derive movetime from clock if not given explicitly
-    if movetime_ms.is_none() {
-        let (remaining, inc) = if is_white { (wtime, winc) } else { (btime, binc) };
-        if let Some(rem) = remaining {
-            let think = if rem < 15_000 {
-                // Emergency (<15s): move very fast
-                (rem / 60).saturating_add(inc * 6 / 10).max(50)
-            } else if rem < 60_000 {
-                // Low time (<60s): conservative
-                (rem / 40).saturating_add(inc * 7 / 10).max(100)
-            } else {
-                // Normal play: ~3% of remaining + 80% of increment
-                // Cap at 1/6 of remaining to prevent blundering the clock
-                let base = (rem / 35).saturating_add(inc * 4 / 5);
-                base.min(rem / 6).max(100)
-            };
-            movetime_ms = Some(think);
-        }
+    // Explicit movetime: use it directly (self-play, analysis, etc.)
+    if let Some(ms) = movetime_ms {
+        let now = Instant::now();
+        return GoParams {
+            max_depth,
+            soft_deadline: Some(now + Duration::from_millis(ms)),
+            hard_deadline: Some(now + Duration::from_millis(ms)),
+            is_ponder,
+        };
     }
 
-    GoParams {
-        max_depth,
-        movetime_ms,
-        is_ponder,
+    // Game-phase-aware time management from clock info
+    let (remaining, inc) = if is_white { (wtime, winc) } else { (btime, binc) };
+    if let Some(rem) = remaining {
+        // Phase-dependent base allocation
+        let base = if move_number <= 10 {
+            // Opening: book moves are instant, save time
+            rem / 40 + inc * 3 / 4
+        } else if move_number <= 30 {
+            // Midgame: critical decisions, spend more
+            rem / 20 + inc * 9 / 10
+        } else {
+            // Endgame: positions simpler, moderate budget
+            rem / 30 + inc * 4 / 5
+        };
+
+        // Safety cap: never use more than 1/5 of remaining time
+        let soft_ms = base.min(rem / 5).max(50);
+        // Hard limit: 3x soft but at most 1/3 of remaining
+        let hard_ms = (soft_ms * 3).min(rem / 3).max(soft_ms);
+
+        let now = Instant::now();
+        GoParams {
+            max_depth,
+            soft_deadline: Some(now + Duration::from_millis(soft_ms)),
+            hard_deadline: Some(now + Duration::from_millis(hard_ms)),
+            is_ponder,
+        }
+    } else {
+        GoParams { max_depth, soft_deadline: None, hard_deadline: None, is_ponder }
     }
 }
 
 // ── Search thread ────────────────────────────────────────────────────────────
+
+/// Create an isolated stop flag for a search, with a hard-deadline timer
+/// and a propagator that bridges an external stop signal.
+fn make_search_stop(
+    ext_stop: &Arc<AtomicBool>,
+    hard_deadline: Option<Instant>,
+) -> Arc<AtomicBool> {
+    let search_stop = Arc::new(AtomicBool::new(false));
+
+    // Hard-deadline timer
+    if let Some(hard) = hard_deadline {
+        let stop_c = Arc::clone(&search_stop);
+        thread::spawn(move || {
+            let remaining = hard.saturating_duration_since(Instant::now());
+            if !remaining.is_zero() {
+                thread::sleep(remaining);
+            }
+            stop_c.store(true, Ordering::Relaxed);
+        });
+    }
+
+    // Propagate external stop into search_stop
+    let ext = Arc::clone(ext_stop);
+    let prop = Arc::clone(&search_stop);
+    thread::spawn(move || {
+        while !prop.load(Ordering::Relaxed) {
+            if ext.load(Ordering::Relaxed) {
+                prop.store(true, Ordering::Relaxed);
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    });
+
+    search_stop
+}
 
 fn search_and_respond(
     mut board: ChessBoard,
@@ -150,11 +220,14 @@ fn search_and_respond(
     stop: Arc<AtomicBool>,
     is_white: bool,
 ) {
-    let deadline = if params.is_ponder {
-        None // no deadline during ponder — wait for ponderhit or stop
+    let search_stop = if params.is_ponder {
+        // Ponder: no hard deadline, just propagate external stop
+        make_search_stop(&stop, None)
     } else {
-        params.movetime_ms.map(|ms| Instant::now() + Duration::from_millis(ms))
+        make_search_stop(&stop, params.hard_deadline)
     };
+
+    let soft_deadline = if params.is_ponder { None } else { params.soft_deadline };
 
     let t0 = Instant::now();
     let (score, best) = iterative_deepening_root(
@@ -163,8 +236,8 @@ fn search_and_respond(
         Some(&book),
         params.max_depth,
         is_white,
-        deadline,
-        Some(stop),
+        soft_deadline,
+        Some(search_stop),
     );
     let ms = t0.elapsed().as_millis();
     let mv_str = best.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
@@ -179,11 +252,12 @@ fn main() {
     let conductor = PieceConductor::new();
     let book = OpeningBook::build(&conductor);
     let mut board = ChessBoard::new();
+    let mut move_number: usize = 1;
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let mut search_handle: Option<thread::JoinHandle<()>> = None;
     let mut pondering = false;
-    let mut ponder_movetime_ms: Option<u64> = None;
+    let mut ponder_params: Option<GoParams> = None;
 
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
@@ -209,9 +283,10 @@ fn main() {
                 stop_flag.store(false, Ordering::Relaxed);
                 pondering = false;
                 board = ChessBoard::new();
+                move_number = 1;
             }
             "position" => {
-                apply_position(&mut board, &conductor, &tokens[1..]);
+                move_number = apply_position(&mut board, &conductor, &tokens[1..]);
             }
             "go" => {
                 // Stop any previous search
@@ -222,10 +297,18 @@ fn main() {
                 stop_flag.store(false, Ordering::Relaxed);
 
                 let is_white = board.is_white_active();
-                let params = parse_go(&tokens[1..], is_white);
+                let params = parse_go(&tokens[1..], is_white, move_number);
 
                 pondering = params.is_ponder;
-                ponder_movetime_ms = params.movetime_ms;
+                // Save time params for ponderhit
+                if pondering {
+                    ponder_params = Some(GoParams {
+                        max_depth: params.max_depth,
+                        soft_deadline: params.soft_deadline,
+                        hard_deadline: params.hard_deadline,
+                        is_ponder: false,
+                    });
+                }
 
                 let board_c     = board.clone();
                 let conductor_c = conductor.clone();
@@ -240,13 +323,20 @@ fn main() {
                 if pondering {
                     pondering = false;
                     // Opponent played the expected move — start the real clock.
-                    // Spawn a timer that will stop the search after the allocated time.
-                    if let Some(ms) = ponder_movetime_ms {
-                        let stop_c = Arc::clone(&stop_flag);
-                        thread::spawn(move || {
-                            thread::sleep(Duration::from_millis(ms));
-                            stop_c.store(true, Ordering::Relaxed);
-                        });
+                    // Stop the ponder search and let it output its result; the
+                    // ponder search ran with no deadline so its result is the
+                    // best it found.  Spawn a timer for the allocated time.
+                    if let Some(pp) = ponder_params.take() {
+                        if let Some(hard) = pp.hard_deadline {
+                            let stop_c = Arc::clone(&stop_flag);
+                            thread::spawn(move || {
+                                let remaining = hard.saturating_duration_since(Instant::now());
+                                if !remaining.is_zero() {
+                                    thread::sleep(remaining);
+                                }
+                                stop_c.store(true, Ordering::Relaxed);
+                            });
+                        }
                     }
                 }
             }
