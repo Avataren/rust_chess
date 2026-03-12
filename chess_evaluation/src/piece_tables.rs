@@ -253,7 +253,8 @@ const EG_KING: [i32; 64] = [
 
 // ── Passed-pawn bonus (rank-indexed, white perspective) ───────────────────────
 
-const PASSED_PAWN_BONUS: [i32; 8] = [0, 0, 10, 20, 35, 60, 100, 0];
+const PASSED_PAWN_BONUS_MG: [i32; 8] = [0, 0,  5, 15, 25,  45,  70, 0];
+const PASSED_PAWN_BONUS_EG: [i32; 8] = [0, 0, 20, 40, 65, 105, 160, 0];
 
 // ── Index helper ──────────────────────────────────────────────────────────────
 
@@ -308,10 +309,21 @@ pub fn is_passed_pawn(square: usize, enemy_pawns_bb: u64, is_white: bool) -> boo
     (enemy_pawns_bb & mask) == 0
 }
 
-/// Rank-scaled bonus for a passed pawn.
-pub fn passed_pawn_bonus(square: usize, is_white: bool) -> i32 {
+/// Middlegame rank-scaled bonus for a passed pawn.
+pub fn passed_pawn_bonus_mg(square: usize, is_white: bool) -> i32 {
     let rank = if is_white { square / 8 } else { 7 - square / 8 };
-    PASSED_PAWN_BONUS[rank]
+    PASSED_PAWN_BONUS_MG[rank]
+}
+
+/// Endgame rank-scaled bonus for a passed pawn.
+pub fn passed_pawn_bonus_eg(square: usize, is_white: bool) -> i32 {
+    let rank = if is_white { square / 8 } else { 7 - square / 8 };
+    PASSED_PAWN_BONUS_EG[rank]
+}
+
+/// Rank-scaled bonus for a passed pawn (backward-compat alias: returns EG value).
+pub fn passed_pawn_bonus(square: usize, is_white: bool) -> i32 {
+    passed_pawn_bonus_eg(square, is_white)
 }
 
 // ── Backward-compatible aliases (used by lib.rs re-exports) ───────────────────

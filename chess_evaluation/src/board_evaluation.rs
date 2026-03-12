@@ -5,7 +5,7 @@ use move_generator::piece_conductor::PieceConductor;
 use crate::piece_tables::{
     eg_bishop_table, eg_king_table, eg_knight_table, eg_pawn_table, eg_queen_table,
     eg_rook_table, is_passed_pawn, mg_bishop_table, mg_king_table, mg_knight_table,
-    mg_pawn_table, mg_queen_table, mg_rook_table, passed_pawn_bonus,
+    mg_pawn_table, mg_queen_table, mg_rook_table, passed_pawn_bonus_eg, passed_pawn_bonus_mg,
 };
 
 // PeSTO tapered piece values
@@ -31,6 +31,14 @@ const MG_ROOK_OPEN_FILE:      i32 = 20;
 const EG_ROOK_OPEN_FILE:      i32 = 15;
 const MG_ROOK_SEMI_OPEN_FILE: i32 = 10;
 const EG_ROOK_SEMI_OPEN_FILE: i32 = 8;
+
+// Stockfish-style king proximity: enemy king far = bonus, own king far = penalty.
+// Rank weight: 5*rank - 13 (clamped ≥ 0), so ranks 0-2 contribute nothing.
+// Asymmetric weights: enemy distance matters ~2× more than friendly (SF uses 4.75:2).
+const PASSER_KING_ENEMY_WT:  i32 = 2; // cp per unit of enemy king distance (×rank_weight)
+const PASSER_KING_FRIEND_WT: i32 = 1; // cp per unit of friendly king distance (×rank_weight)
+
+const ROOK_BEHIND_PASSER_EG: i32 = 20;
 
 // King safety — pawn shield (only when castled) + attack counting.
 const KING_SHIELD_MISSING:  i32 = 15;
@@ -92,6 +100,13 @@ fn manhattan(sq1: usize, sq2: usize) -> i32 {
     let r2 = (sq2 / 8) as i32;
     let f2 = (sq2 % 8) as i32;
     (r1 - r2).abs() + (f1 - f2).abs()
+}
+
+/// Chebyshev distance between two squares (king metric: max of rank/file deltas).
+fn chebyshev(sq1: usize, sq2: usize) -> i32 {
+    let r1 = (sq1 / 8) as i32; let f1 = (sq1 % 8) as i32;
+    let r2 = (sq2 / 8) as i32; let f2 = (sq2 % 8) as i32;
+    (r1 - r2).abs().max((f1 - f2).abs())
 }
 
 /// Manhattan distance of a king from the nearest centre square (d4/d5/e4/e5).
@@ -365,6 +380,39 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
         }
     });
 
+    // --- Rook behind passed pawn (EG) ---
+    for_each_sq(white & rooks, |sq| {
+        let file = sq % 8;
+        let rank = sq / 8;
+        // Squares on same file with higher rank (ahead for white)
+        let above = 1u64.wrapping_shl((rank as u32 + 1) * 8).wrapping_sub(1);
+        let ahead_mask = FILE_MASKS[file] & !above;
+        let mut ahead_pawns = white_pawns_bb & ahead_mask;
+        while ahead_pawns != 0 {
+            let pawn_sq = ahead_pawns.trailing_zeros() as usize;
+            ahead_pawns &= ahead_pawns - 1;
+            if is_passed_pawn(pawn_sq, black_pawns_bb, true) {
+                eg += ROOK_BEHIND_PASSER_EG;
+                break;
+            }
+        }
+    });
+    for_each_sq(black & rooks, |sq| {
+        let file = sq % 8;
+        let rank = sq / 8;
+        // Squares on same file with lower rank (ahead for black)
+        let below_mask = FILE_MASKS[file] & ((1u64 << (rank * 8)).wrapping_sub(1));
+        let mut ahead_pawns = black_pawns_bb & below_mask;
+        while ahead_pawns != 0 {
+            let pawn_sq = ahead_pawns.trailing_zeros() as usize;
+            ahead_pawns &= ahead_pawns - 1;
+            if is_passed_pawn(pawn_sq, white_pawns_bb, false) {
+                eg -= ROOK_BEHIND_PASSER_EG;
+                break;
+            }
+        }
+    });
+
     // --- Tapered blend ---
     let mut score = (mg * mg_phase + eg * eg_phase) / 24;
 
@@ -378,15 +426,39 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
     score += mop_up(material_score, white_king_sq, black_king_sq, mg_phase);
 
 
-    // --- Passed pawns (applied post-blend; important in endgame) ---
+    // --- Passed pawns (tapered bonus + rank-weighted king proximity) ---
     for_each_sq(white & pawns, |sq| {
         if is_passed_pawn(sq, black_pawns_bb, true) {
-            score += passed_pawn_bonus(sq, true);
+            let bonus = (passed_pawn_bonus_mg(sq, true) * mg_phase
+                       + passed_pawn_bonus_eg(sq, true) * eg_phase) / 24;
+            score += bonus;
+            // Rank weight: 0 for ranks 0-2, grows with rank (Stockfish: 5r-13).
+            let rank_weight = (5 * (sq / 8) as i32 - 13).max(0);
+            if rank_weight > 0 {
+                let friendly_dist = chebyshev(sq, white_king_sq).min(5);
+                let enemy_dist    = chebyshev(sq, black_king_sq).min(5);
+                let proximity = (enemy_dist * PASSER_KING_ENEMY_WT
+                               - friendly_dist * PASSER_KING_FRIEND_WT)
+                               * rank_weight * eg_phase / 24;
+                score += proximity;
+            }
         }
     });
     for_each_sq(black & pawns, |sq| {
         if is_passed_pawn(sq, white_pawns_bb, false) {
-            score -= passed_pawn_bonus(sq, false);
+            let bonus = (passed_pawn_bonus_mg(sq, false) * mg_phase
+                       + passed_pawn_bonus_eg(sq, false) * eg_phase) / 24;
+            score -= bonus;
+            let black_rank = 7 - sq / 8; // relative rank from black's perspective
+            let rank_weight = (5 * black_rank as i32 - 13).max(0);
+            if rank_weight > 0 {
+                let friendly_dist = chebyshev(sq, black_king_sq).min(5);
+                let enemy_dist    = chebyshev(sq, white_king_sq).min(5);
+                let proximity = (enemy_dist * PASSER_KING_ENEMY_WT
+                               - friendly_dist * PASSER_KING_FRIEND_WT)
+                               * rank_weight * eg_phase / 24;
+                score -= proximity;
+            }
         }
     });
 
