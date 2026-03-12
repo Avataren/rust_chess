@@ -73,7 +73,8 @@ async fn alpha_beta_task(
     // thread so we just call iterative_deepening_root directly.
     #[cfg(not(target_arch = "wasm32"))]
     {
-        return iterative_deepening_root(chess_board, conductor, Some(book), max_depth, is_white, deadline, None);
+        let result = iterative_deepening_root(chess_board, conductor, Some(book), max_depth, is_white, deadline, None);
+        return (result.score, result.best_move);
     }
 
     #[cfg(target_arch = "wasm32")]

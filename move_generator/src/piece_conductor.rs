@@ -772,14 +772,13 @@ mod tests {
             let mut chess_board = ChessBoard::new();
             chess_board.clear();
             let magic = PieceConductor::new();
-            let is_white = false;
 
-            // Generate the threat map for the square
-            chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Queen, is_white);
+            // Place black pieces, then generate_threat_map with is_white=true
+            // (which computes attacks FROM black = enemy of white).
+            chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Queen, false);
             let mut threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                // relevant_blockers,
-                is_white,
+                true,
             );
             println!("Threat map:");
             threat_map.print_bitboard();
@@ -793,12 +792,11 @@ mod tests {
             chess_board.set_piece_at_square(
                 34,
                 chess_foundation::piece::PieceType::Queen,
-                is_white,
+                false,
             );
             threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                // relevant_blockers,
-                is_white,
+                true,
             );
             println!("Threat map:");
             threat_map.print_bitboard();
@@ -814,18 +812,16 @@ mod tests {
             let mut chess_board = ChessBoard::new();
             chess_board.clear();
             let magic = PieceConductor::new();
-            let is_white = false;
 
-            // Generate the threat map for the square
+            // Place black pieces, generate_threat_map with is_white=true
             chess_board.set_piece_at_square(
                 0,
                 chess_foundation::piece::PieceType::Bishop,
-                is_white,
+                false,
             );
             let mut threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                // relevant_blockers,
-                is_white,
+                true,
             );
             println!("Threat map:");
             threat_map.print_bitboard();
@@ -839,17 +835,16 @@ mod tests {
             chess_board.set_piece_at_square(
                 34,
                 chess_foundation::piece::PieceType::Bishop,
-                is_white,
+                false,
             );
             chess_board.set_piece_at_square(
                 36,
                 chess_foundation::piece::PieceType::Bishop,
-                is_white,
+                false,
             );
             threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                // relevant_blockers,
-                is_white,
+                true,
             );
             println!("Threat map:");
             threat_map.print_bitboard();
@@ -865,14 +860,12 @@ mod tests {
             let mut chess_board = ChessBoard::new();
             chess_board.clear();
             let magic = PieceConductor::new();
-            let is_white = false;
 
-            // Generate the threat map for the square
-            chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Rook, is_white);
+            // Place black pieces, generate_threat_map with is_white=true
+            chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Rook, false);
             let mut threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                // relevant_blockers,
-                is_white,
+                true,
             );
             println!("Threat map:");
             threat_map.print_bitboard();
@@ -883,12 +876,11 @@ mod tests {
             );
             // test for a different square
             chess_board.clear();
-            chess_board.set_piece_at_square(63, chess_foundation::piece::PieceType::Rook, is_white);
-            chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Rook, is_white);
+            chess_board.set_piece_at_square(63, chess_foundation::piece::PieceType::Rook, false);
+            chess_board.set_piece_at_square(0, chess_foundation::piece::PieceType::Rook, false);
             threat_map = magic.generate_threat_map(
                 &mut chess_board,
-                // relevant_blockers,
-                is_white,
+                true,
             );
             println!("Threat map:");
             threat_map.print_bitboard();

@@ -629,6 +629,62 @@ pub fn alpha_beta_root(
     search_root(chess_board, conductor, &mut tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, None)
 }
 
+/// Result of an iterative-deepening search.
+pub struct SearchResult {
+    pub score: i32,
+    pub best_move: Option<ChessMove>,
+    /// The predicted opponent reply (PV[1]).  Used for pondering.
+    pub ponder_move: Option<ChessMove>,
+}
+
+/// Extract the opponent's predicted reply from the TT by making the best move
+/// and probing.  Falls back to a quick depth-1 search if the TT has no entry.
+fn extract_ponder_move(
+    chess_board: &mut ChessBoard,
+    conductor: &PieceConductor,
+    tt: &mut TranspositionTable,
+    best_move: ChessMove,
+    is_white: bool,
+) -> Option<ChessMove> {
+    let mut mv = best_move;
+    chess_board.make_move(&mut mv);
+
+    let opponent_white = !is_white;
+    let hash = chess_board.current_hash();
+
+    // Try TT first
+    let ponder = if let Some(entry) = tt.probe(hash) {
+        entry.best_move
+    } else {
+        None
+    };
+
+    // Fall back to a quick depth-2 search if TT miss
+    let ponder = if ponder.is_none() {
+        let mut ctx = SearchContext::new();
+        let (_, fallback_move) = alpha_beta(
+            chess_board, conductor, tt, &mut ctx,
+            2, 1, i32::MIN + 1, i32::MAX, opponent_white, true,
+        );
+        fallback_move
+    } else {
+        ponder
+    };
+
+    // Validate: the ponder move must be legal
+    let ponder = ponder.and_then(|pm| {
+        let legal = get_all_legal_moves_for_color(chess_board, conductor, opponent_white);
+        if legal.iter().any(|m| m.start_square() == pm.start_square() && m.target_square() == pm.target_square()) {
+            Some(pm)
+        } else {
+            None
+        }
+    });
+
+    chess_board.undo_move();
+    ponder
+}
+
 /// Iterative-deepening root search.  Searches depth 1, 2, …, max_depth,
 /// reusing the same TT and SearchContext across iterations so that shallower
 /// results guide deeper ones.  History scores are halved between iterations
@@ -638,6 +694,9 @@ pub fn alpha_beta_root(
 /// If `deadline` is `Some`, the loop stops after the first completed iteration
 /// that exceeds the deadline.  The result of the last *fully completed*
 /// iteration is always returned, so the move is never half-searched.
+///
+/// Returns a `SearchResult` containing score, best move, and predicted
+/// opponent reply (ponder move) extracted from the TT.
 pub fn iterative_deepening_root(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
@@ -646,7 +705,7 @@ pub fn iterative_deepening_root(
     is_white: bool,
     deadline: Option<Instant>,
     stop: Option<Arc<AtomicBool>>,
-) -> (i32, Option<ChessMove>) {
+) -> SearchResult {
     if let Some(book) = book {
         if let Some((from, to)) = book.probe(chess_board) {
             let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
@@ -655,7 +714,7 @@ pub fn iterative_deepening_root(
                 .find(|m| m.start_square() == from && m.target_square() == to)
             {
                 eprintln!("Book move: {}", book_move.to_san_simple());
-                return (0, Some(book_move));
+                return SearchResult { score: 0, best_move: Some(book_move), ponder_move: None };
             }
         }
     }
@@ -711,7 +770,16 @@ pub fn iterative_deepening_root(
         }
     }
 
-    best
+    // Extract the ponder move from the TT
+    let ponder_move = best.1.and_then(|bm| {
+        extract_ponder_move(chess_board, conductor, &mut tt, bm, is_white)
+    });
+
+    SearchResult {
+        score: best.0,
+        best_move: best.1,
+        ponder_move,
+    }
 }
 
 #[cfg(test)]
@@ -897,8 +965,8 @@ mod tests {
     fn id_returns_a_move_from_starting_position() {
         let mut board = ChessBoard::new();
         let c = conductor();
-        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 3, true, None, None);
-        assert!(mv.is_some(), "ID must return a move from the starting position");
+        let r = iterative_deepening_root(&mut board, &c, None, 3, true, None, None);
+        assert!(r.best_move.is_some(), "ID must return a move from the starting position");
     }
 
     /// ID at max_depth=N must produce the same score as a single-depth search
@@ -908,7 +976,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
-        let (id_score, _) = iterative_deepening_root(&mut board, &c, None, 3, true, None, None);
+        let id_score = iterative_deepening_root(&mut board, &c, None, 3, true, None, None).score;
         let (ab_score, _) = alpha_beta_root(&mut board, &c, None, 3, true);
         assert_eq!(id_score, ab_score,
             "ID and fixed-depth must agree: id={id_score}, ab={ab_score}");
@@ -919,7 +987,7 @@ mod tests {
         let mut board = ChessBoard::new();
         let hash_before = board.current_hash();
         let c = conductor();
-        iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
+        let _ = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
         assert_eq!(board.current_hash(), hash_before,
             "ID must not leave the board in a modified state");
     }
@@ -930,11 +998,11 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
-        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 2, true, None, None);
-        let m = mv.expect("ID must find a move");
+        let r = iterative_deepening_root(&mut board, &c, None, 2, true, None, None);
+        let m = r.best_move.expect("ID must find a move");
         assert_eq!(m.start_square(), 27);
         assert_eq!(m.target_square(), 35);
-        assert!(score > 800, "got {score}");
+        assert!(r.score > 800, "got {}", r.score);
     }
 
     /// Black side: ID must find the forced capture (exercises the minimising
@@ -944,11 +1012,11 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 b - - 0 1");
         let c = conductor();
-        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 2, false, None, None);
-        let m = mv.expect("ID must find a move for black");
+        let r = iterative_deepening_root(&mut board, &c, None, 2, false, None, None);
+        let m = r.best_move.expect("ID must find a move for black");
         assert_eq!(m.start_square(), 35);
         assert_eq!(m.target_square(), 27);
-        assert!(score < -800, "got {score}");
+        assert!(r.score < -800, "got {}", r.score);
     }
 
     /// ID must find checkmate-in-one for white across multiple depth iterations.
@@ -957,8 +1025,8 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
         let c = conductor();
-        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 2, true, None, None);
-        let m = mv.expect("ID must find a move");
+        let r = iterative_deepening_root(&mut board, &c, None, 2, true, None, None);
+        let m = r.best_move.expect("ID must find a move");
         let mut board_after = board.clone();
         let mut mv_copy = m;
         board_after.make_move(&mut mv_copy);
@@ -972,8 +1040,8 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("8/8/8/8/8/1q6/8/K1k5 b - - 0 1");
         let c = conductor();
-        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 2, false, None, None);
-        let m = mv.expect("ID must find a move");
+        let r = iterative_deepening_root(&mut board, &c, None, 2, false, None, None);
+        let m = r.best_move.expect("ID must find a move");
         let mut board_after = board.clone();
         let mut mv_copy = m;
         board_after.make_move(&mut mv_copy);
@@ -989,9 +1057,9 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let hash_before = board.current_hash();
         let c = conductor();
-        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
-        assert!(mv.is_some(), "ID must return a move at depth 4");
-        assert!(score > 800, "ID with NMP/LMR must still reflect a queen-up advantage, got {score}");
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
+        assert!(r.best_move.is_some(), "ID must return a move at depth 4");
+        assert!(r.score > 800, "ID with NMP/LMR must still reflect a queen-up advantage, got {}", r.score);
         assert_eq!(board.current_hash(), hash_before, "Board must be clean after search");
     }
 
@@ -1126,10 +1194,10 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("3qk3/8/8/8/8/2N5/8/3QK3 w - - 0 1");
         let c = conductor();
-        let (score, mv) = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
-        let m = mv.expect("Must return a move");
-        assert!(score > -200,
-            "White should not blunder a piece, score {score}");
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
+        let m = r.best_move.expect("Must return a move");
+        assert!(r.score > -200,
+            "White should not blunder a piece, score {}", r.score);
         let _ = m;
     }
 
@@ -1138,8 +1206,8 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/8/1b6/8/3N4/4K3 w - - 0 1");
         let c = conductor();
-        let (_, mv) = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
-        let m = mv.expect("Must return a move");
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
+        let m = r.best_move.expect("Must return a move");
         let legal = get_all_legal_moves_for_color(&mut board, &c, true);
         assert!(legal.iter().any(|lm| lm.start_square() == m.start_square() && lm.target_square() == m.target_square()),
             "Engine must return a legal move");
