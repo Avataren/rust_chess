@@ -688,14 +688,18 @@ pub fn iterative_deepening_root(
             }
         };
 
+        // Stop flag means the iteration may have been interrupted mid-search
+        // (e.g. UCI "stop" command) — discard the unreliable result.
         if let Some(ref s) = stop {
             if s.load(Ordering::Relaxed) { break; }
         }
+
+        // Iteration completed cleanly — save it before checking deadline.
+        best = result;
+
         if let Some(dl) = deadline {
             if Instant::now() >= dl { break; }
         }
-
-        best = result;
     }
 
     best
@@ -1253,6 +1257,31 @@ mod tests {
 
         assert_eq!(score_no_dl, score_with_dl,
             "Generous deadline must not change result: no_dl={score_no_dl}, with_dl={score_with_dl}");
+    }
+
+    /// A tight deadline must still use the last COMPLETED iteration, not
+    /// discard it. The score from ID with a deadline must match the score
+    /// from at least depth 1 (never return the initial sentinel value).
+    #[test]
+    fn tight_deadline_uses_last_completed_depth() {
+        use std::time::Duration;
+
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let c = conductor();
+
+        // With a very tight deadline, the engine should still complete
+        // at least depth 1-2 and return a sensible result.
+        let deadline = Some(Instant::now() + Duration::from_millis(5));
+        let (score, mv) = iterative_deepening_root(
+            &mut board, &c, None, 64, true, deadline, None,
+        );
+
+        assert!(mv.is_some(),
+            "Must return a move even with tight deadline");
+        // White has a hanging queen to capture — score must be positive
+        assert!(score > 0,
+            "Tight deadline must still use completed depth result, got {score}");
     }
 
     // -----------------------------------------------------------------------
