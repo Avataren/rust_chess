@@ -157,7 +157,7 @@ impl PieceConductor {
     ) -> Vec<ChessMove> {
         let magic_index = Self::rook_magic_index(square as usize, chess_board.get_all_pieces());
         let mut moves_bitboard = self.rook_table[square as usize][magic_index] & !relevant_blockers;
-        let mut move_list = Vec::new();
+        let mut move_list = Vec::with_capacity(14);
         while !moves_bitboard.is_empty() {
             let target_square = moves_bitboard.pop_lsb();
             move_list.push(ChessMove::new(square, target_square as u16));
@@ -171,7 +171,7 @@ impl PieceConductor {
         is_white: bool,
         chess_board: &ChessBoard,
     ) -> Vec<ChessMove> {
-        let mut move_list = Vec::new();
+        let mut move_list = Vec::with_capacity(4);
 
         // Calculate rank and file for the pawn
         let rank = square >> 3;
@@ -278,44 +278,25 @@ impl PieceConductor {
             }
         }
 
-        //check if any moves are promotions
+        // Expand promotion moves in-place without an intermediate allocation.
         let promotion_rank = if is_white { 7 } else { 0 };
-        //for cm in move_list.iter_mut() {
-        let promotion_moves = move_list
-            .iter()
-            .filter(|cm| cm.target_square() >> 3 == promotion_rank)
-            .cloned()
-            .collect::<Vec<ChessMove>>();
-
-        if promotion_moves.len() > 0 {
-            move_list.clear();
-        }
-
-        for cm in promotion_moves {
-            move_list.push(ChessMove::new_capture_with_flag(
-                cm.start_square(),
-                cm.capture,
-                cm.target_square(),
-                ChessMove::PROMOTE_TO_QUEEN_FLAG,
-            ));
-            move_list.push(ChessMove::new_capture_with_flag(
-                cm.start_square(),
-                cm.capture,
-                cm.target_square(),
-                ChessMove::PROMOTE_TO_ROOK_FLAG,
-            ));
-            move_list.push(ChessMove::new_capture_with_flag(
-                cm.start_square(),
-                cm.capture,
-                cm.target_square(),
-                ChessMove::PROMOTE_TO_BISHOP_FLAG,
-            ));
-            move_list.push(ChessMove::new_capture_with_flag(
-                cm.start_square(),
-                cm.capture,
-                cm.target_square(),
-                ChessMove::PROMOTE_TO_KNIGHT_FLAG,
-            ));
+        if move_list.iter().any(|cm| cm.target_square() >> 3 == promotion_rank) {
+            let orig = std::mem::take(&mut move_list);
+            move_list = Vec::with_capacity(orig.len() * 4);
+            for cm in orig {
+                if cm.target_square() >> 3 == promotion_rank {
+                    for flag in [
+                        ChessMove::PROMOTE_TO_QUEEN_FLAG,
+                        ChessMove::PROMOTE_TO_ROOK_FLAG,
+                        ChessMove::PROMOTE_TO_BISHOP_FLAG,
+                        ChessMove::PROMOTE_TO_KNIGHT_FLAG,
+                    ] {
+                        move_list.push(ChessMove::new_capture_with_flag(
+                            cm.start_square(), cm.capture, cm.target_square(), flag,
+                        ));
+                    }
+                }
+            }
         }
 
         move_list
@@ -380,7 +361,7 @@ impl PieceConductor {
         let magic_index = Self::bishop_magic_index(square as usize, chess_board.get_all_pieces());
         let mut moves_bitboard =
             self.bishop_table[square as usize][magic_index] & !relevant_blockers;
-        let mut move_list = Vec::new();
+        let mut move_list = Vec::with_capacity(13);
         while !moves_bitboard.is_empty() {
             let target_square = moves_bitboard.pop_lsb();
             move_list.push(ChessMove::new(square, target_square as u16));
@@ -395,7 +376,7 @@ impl PieceConductor {
     ) -> Vec<ChessMove> {
         let knight_moves_bitboard = self.knight_lut[square as usize];
         let valid_moves_bitboard = knight_moves_bitboard & !friendly_pieces_bitboard;
-        let mut move_list = Vec::new();
+        let mut move_list = Vec::with_capacity(8);
 
         let mut moves_bitboard = valid_moves_bitboard;
         while !moves_bitboard.is_empty() {
@@ -415,7 +396,7 @@ impl PieceConductor {
     ) -> Vec<ChessMove> {
         let king_moves_bitboard = self.king_lut[square as usize];
         let valid_moves_bitboard = king_moves_bitboard & !friendly_pieces_bb;
-        let mut move_list = Vec::new();
+        let mut move_list = Vec::with_capacity(10);
 
         let mut moves_bitboard = valid_moves_bitboard;
         while !moves_bitboard.is_empty() {
