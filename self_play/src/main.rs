@@ -4,11 +4,13 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use chess_board::ChessBoard;
+use chess_evaluation::{evaluate_board, iterative_deepening_root, SearchResult};
 use chess_foundation::{piece::PieceType, ChessMove};
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
@@ -172,37 +174,151 @@ impl Engine {
         }
     }
 
-    /// Start pondering: send position (with predicted move appended) and
-    /// `go ponder movetime N` so the engine knows how long to search after ponderhit.
-    fn start_ponder(&mut self, position_cmd: &str, movetime_ms: u64) {
-        self.send(position_cmd);
-        self.send(&format!("go ponder movetime {}", movetime_ms));
-    }
-
-    /// Signal ponderhit — opponent played the predicted move. The engine
-    /// continues its search for movetime_ms more, preserving all TT state.
-    /// Returns (bestmove, ponder_move) from the continued search.
-    fn ponderhit(&mut self, movetime_ms: u64) -> (Option<String>, Option<String>) {
-        self.send("ponderhit");
-        match self.wait_for("bestmove", Duration::from_millis(movetime_ms + 10_000)) {
-            Some(line) => Self::parse_bestmove(&line),
-            None => (None, None),
-        }
-    }
-
-    /// Stop a search and wait for bestmove + readyok sync.
-    fn stop_and_sync(&mut self) {
-        self.send("stop");
-        let _ = self.wait_for("bestmove", Duration::from_secs(10));
-        self.send("isready");
-        let _ = self.wait_for("readyok", Duration::from_secs(10));
-    }
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
         let _ = writeln!(self.stdin, "quit");
         let _ = self.child.wait();
+    }
+}
+
+// ── Multi-ponder ─────────────────────────────────────────────────────────────
+
+/// How many opponent candidate moves to ponder in parallel.
+const PONDER_CANDIDATES: usize = 4;
+
+struct PonderThread {
+    /// UCI string of the opponent move (for matching).
+    opponent_uci: String,
+    stop: Arc<AtomicBool>,
+    handle: JoinHandle<SearchResult>,
+}
+
+struct MultiPonder {
+    threads: Vec<PonderThread>,
+}
+
+impl MultiPonder {
+    /// Start pondering the top N opponent candidate moves.
+    /// `board` is the position AFTER our move was played.
+    /// `is_white` is the color that will move next (our color, after opponent replies).
+    fn start(
+        board: &ChessBoard,
+        conductor: &PieceConductor,
+        is_white_next: bool,
+        n: usize,
+    ) -> Self {
+        let opponent_white = !is_white_next;
+        let mut board_for_gen = board.clone();
+        let legal = get_all_legal_moves_for_color(&mut board_for_gen, conductor, opponent_white);
+
+        if legal.is_empty() {
+            return MultiPonder { threads: Vec::new() };
+        }
+
+        // Rank opponent moves: play each, evaluate from opponent's perspective,
+        // pick the best N for the opponent.
+        let mut scored: Vec<(ChessMove, i32)> = legal
+            .into_iter()
+            .map(|mut m| {
+                let mut b = board.clone();
+                b.make_move(&mut m);
+                let eval = evaluate_board(&b, conductor);
+                // Opponent wants low score if white_next, high if black_next
+                let opponent_score = if opponent_white { eval } else { -eval };
+                (m, opponent_score)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.cmp(&a.1)); // best for opponent first
+        scored.truncate(n);
+
+        let threads: Vec<PonderThread> = scored
+            .into_iter()
+            .map(|(opp_mv, _score)| {
+                let uci = mv_to_uci(opp_mv);
+                let stop = Arc::new(AtomicBool::new(false));
+
+                // Set up board: apply opponent's move, then search for our reply
+                let mut board_c = board.clone();
+                let mut mv_c = opp_mv;
+                board_c.make_move(&mut mv_c);
+
+                let cond_c = conductor.clone();
+                let stop_c = Arc::clone(&stop);
+                let handle = thread::spawn(move || {
+                    iterative_deepening_root(
+                        &mut board_c,
+                        &cond_c,
+                        None, // no opening book for ponder
+                        64,
+                        is_white_next,
+                        None, // no deadline — stopped by flag
+                        Some(stop_c),
+                    )
+                });
+
+                PonderThread {
+                    opponent_uci: uci,
+                    stop,
+                    handle,
+                }
+            })
+            .collect();
+
+        MultiPonder { threads }
+    }
+
+    /// Check if any ponder thread matches the opponent's actual move.
+    /// Stops all threads. Returns the SearchResult if there was a hit.
+    fn resolve(self, actual_move: &str, movetime_ms: u64) -> Option<SearchResult> {
+        // Find the matching thread (if any)
+        let mut hit_idx = None;
+        for (i, t) in self.threads.iter().enumerate() {
+            if t.opponent_uci == actual_move {
+                hit_idx = Some(i);
+            } else {
+                // Stop non-matching threads immediately
+                t.stop.store(true, Ordering::Release);
+            }
+        }
+
+        if let Some(idx) = hit_idx {
+            // Let the matching thread continue for movetime_ms more
+            let hit_stop = Arc::clone(&self.threads[idx].stop);
+            let deadline = Instant::now() + Duration::from_millis(movetime_ms);
+
+            // Wait for deadline or external conditions
+            while Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(2));
+            }
+            hit_stop.store(true, Ordering::Release);
+        }
+
+        // Collect all results
+        let mut hit_result = None;
+        for (i, t) in self.threads.into_iter().enumerate() {
+            let result = t.handle.join().unwrap_or(SearchResult {
+                score: 0,
+                best_move: None,
+                ponder_move: None,
+            });
+            if hit_idx == Some(i) {
+                hit_result = Some(result);
+            }
+        }
+        hit_result
+    }
+
+    /// Stop all threads without waiting for results.
+    fn stop_all(self) {
+        for t in &self.threads {
+            t.stop.store(true, Ordering::Release);
+        }
+        for t in self.threads {
+            let _ = t.handle.join();
+        }
     }
 }
 
@@ -229,7 +345,7 @@ fn play_game(
     conductor: &PieceConductor,
     start_fen: Option<&str>,
     ponder: bool,
-) -> (GameResult, String) {
+) -> (GameResult, String, u32, u32) {  // result, reason, ponder_hits, ponder_attempts
     let mut board = if let Some(fen) = start_fen {
         let mut b = ChessBoard::new();
         b.set_from_fen(fen);
@@ -246,15 +362,14 @@ fn play_game(
     engine1.new_game();
     engine2.new_game();
 
-    // Per-engine ponder state: the move the engine predicted its opponent would play.
-    // When set, that engine is currently in `go ponder` mode.
-    let mut e1_predicted: Option<String> = None;
-    let mut e2_predicted: Option<String> = None;
+    // Multi-ponder state for engine1: pondering top N opponent candidate moves.
+    let mut active_ponder: Option<MultiPonder> = None;
+    let mut ponder_hits: u32 = 0;
+    let mut ponder_attempts: u32 = 0;
 
-    macro_rules! stop_all_ponder {
-        () => {
-            if e1_predicted.take().is_some() { engine1.stop_and_sync(); }
-            if e2_predicted.take().is_some() { engine2.stop_and_sync(); }
+    macro_rules! game_return {
+        ($result:expr, $reason:expr) => {
+            return ($result, $reason, ponder_hits, ponder_attempts)
         };
     }
 
@@ -265,28 +380,28 @@ fn play_game(
         let legal = get_all_legal_moves_for_color(&mut board, conductor, is_white);
 
         if legal.is_empty() {
-            stop_all_ponder!();
-            return if conductor.is_king_in_check(&board, is_white) {
+            if let Some(p) = active_ponder.take() { p.stop_all(); }
+            if conductor.is_king_in_check(&board, is_white) {
                 if is_white {
-                    (if engine1_is_white { GameResult::Engine2Wins } else { GameResult::Engine1Wins },
-                     "checkmate".to_string())
+                    game_return!(if engine1_is_white { GameResult::Engine2Wins } else { GameResult::Engine1Wins },
+                         "checkmate".to_string());
                 } else {
-                    (if engine1_is_white { GameResult::Engine1Wins } else { GameResult::Engine2Wins },
-                     "checkmate".to_string())
+                    game_return!(if engine1_is_white { GameResult::Engine1Wins } else { GameResult::Engine2Wins },
+                         "checkmate".to_string());
                 }
             } else {
-                (GameResult::Draw, "stalemate".to_string())
-            };
+                game_return!(GameResult::Draw, "stalemate".to_string());
+            }
         }
 
         if board.is_repetition(3) {
-            stop_all_ponder!();
-            return (GameResult::Draw, "repetition".to_string());
+            if let Some(p) = active_ponder.take() { p.stop_all(); }
+            game_return!(GameResult::Draw, "repetition".to_string());
         }
 
         if no_progress >= FIFTY_MOVE_PLIES {
-            stop_all_ponder!();
-            return (GameResult::Draw, "50-move rule".to_string());
+            if let Some(p) = active_ponder.take() { p.stop_all(); }
+            game_return!(GameResult::Draw, "50-move rule".to_string());
         }
 
         // ── Build position command ──
@@ -304,47 +419,45 @@ fn play_game(
         // ── Ask the right engine ──
         let ask_engine1 = is_white == engine1_is_white;
 
-        let (uci_str, ponder_mv) = {
-            let (active, predicted) = if ask_engine1 {
-                (&mut *engine1, &mut e1_predicted)
+        // Check multi-ponder hit for engine1
+        let ponder_result = if ask_engine1 {
+            if let Some(mp) = active_ponder.take() {
+                ponder_attempts += 1;
+                let last_move = move_list.last().map(|s| s.as_str()).unwrap_or("");
+                let result = mp.resolve(last_move, movetime_ms);
+                if result.is_some() { ponder_hits += 1; }
+                result
             } else {
-                (&mut *engine2, &mut e2_predicted)
-            };
-
-            if let Some(pred) = predicted.take() {
-                // This engine was pondering. Check if opponent's last move matches.
-                let last_move = move_list.last().map(|s| s.as_str());
-                if last_move == Some(pred.as_str()) {
-                    // Ponder hit! Send ponderhit — the engine continues its
-                    // search for movetime_ms more with all TT state preserved.
-                    let (mv, pmv) = active.ponderhit(movetime_ms);
-                    if mv.is_some() {
-                        (mv, pmv)
-                    } else {
-                        // Ponderhit returned no move — fall back to normal search.
-                        active.stop_and_sync();
-                        active.best_move(&position_cmd, movetime_ms)
-                    }
-                } else {
-                    // Ponder miss — discard and do normal search.
-                    active.stop_and_sync();
-                    active.best_move(&position_cmd, movetime_ms)
-                }
-            } else {
-                // Not pondering — normal search.
-                active.best_move(&position_cmd, movetime_ms)
+                None
             }
+        } else {
+            None
+        };
+
+        let uci_str = if let Some(ref result) = ponder_result {
+            // Ponder hit! Use the result directly.
+            result.best_move.map(|m| mv_to_uci(m))
+        } else {
+            // No ponder hit — ask the engine via UCI as usual.
+            // If engine1 had a ponder running that missed, it was already
+            // stopped by resolve() above (which stops all threads).
+            let (mv, _) = if ask_engine1 {
+                engine1.best_move(&position_cmd, movetime_ms)
+            } else {
+                engine2.best_move(&position_cmd, movetime_ms)
+            };
+            mv
         };
 
         let Some(uci_str) = uci_str else {
-            stop_all_ponder!();
-            return (GameResult::Draw, "engine returned no move".to_string());
+            if let Some(p) = active_ponder.take() { p.stop_all(); }
+            game_return!(GameResult::Draw, "engine returned no move".to_string());
         };
 
         // ── Apply move ──
         let Some(mut chess_move) = parse_uci_move(&uci_str, &legal) else {
-            stop_all_ponder!();
-            return (GameResult::Draw, format!("illegal move '{}'", uci_str));
+            if let Some(p) = active_ponder.take() { p.stop_all(); }
+            game_return!(GameResult::Draw, format!("illegal move '{}'", uci_str));
         };
         let is_pawn = chess_move.chess_piece.map_or(false, |p| p.piece_type() == PieceType::Pawn);
         if is_pawn || chess_move.capture.is_some() {
@@ -356,23 +469,21 @@ fn play_game(
         board.make_move(&mut chess_move);
         move_list.push(mv_to_uci(chess_move));
 
-        // ── Start pondering for engine1 only (engine2 never ponders) ──
+        // ── Start multi-ponder for engine1 after it moves ──
         if ponder && ask_engine1 {
-            if let Some(ponder_target) = ponder_mv {
-                let ponder_position = format!(
-                    "{} moves {} {}",
-                    position_base,
-                    move_list.join(" "),
-                    ponder_target
-                );
-                engine1.start_ponder(&ponder_position, movetime_ms);
-                e1_predicted = Some(ponder_target);
-            }
+            // board is now the position after engine1's move.
+            // Ponder the opponent's top N candidate replies.
+            active_ponder = Some(MultiPonder::start(
+                &board,
+                conductor,
+                engine1_is_white, // engine1's color = the side that will move after opponent
+                PONDER_CANDIDATES,
+            ));
         }
     }
 
-    stop_all_ponder!();
-    (GameResult::Draw, "move limit".to_string())
+    if let Some(p) = active_ponder.take() { p.stop_all(); }
+    (GameResult::Draw, "move limit".to_string(), ponder_hits, ponder_attempts)
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -453,6 +564,8 @@ fn main() {
     let mut e1_wins = 0u32;
     let mut e2_wins = 0u32;
     let mut draws = 0u32;
+    let mut total_hits = 0u32;
+    let mut total_attempts = 0u32;
 
     for game_num in 0..num_games {
         let engine1_is_white = game_num % 2 == 0;
@@ -470,8 +583,11 @@ fn main() {
         );
         let _ = std::io::stdout().flush();
 
-        let (result, reason) =
+        let (result, reason, hits, attempts) =
             play_game(&mut engine1, &mut engine2, movetime_ms, engine1_is_white, &conductor, start_fen.as_deref(), ponder);
+
+        total_hits += hits;
+        total_attempts += attempts;
 
         match result {
             GameResult::Engine1Wins => {
@@ -491,7 +607,11 @@ fn main() {
         // Running score after each game
         let played = (e1_wins + e2_wins + draws) as f64;
         let score = (e1_wins as f64 + draws as f64 * 0.5) / played * 100.0;
+        let hit_rate = if total_attempts > 0 { total_hits as f64 / total_attempts as f64 * 100.0 } else { 0.0 };
         print!("       Score so far: {e1_wins}W / {draws}D / {e2_wins}L  ({score:.1}%)");
+        if ponder && total_attempts > 0 {
+            print!("  ponder: {total_hits}/{total_attempts} ({hit_rate:.0}%)");
+        }
         println!();
     }
 
