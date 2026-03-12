@@ -85,15 +85,6 @@ fn for_each_sq(mut bb: Bitboard, mut f: impl FnMut(usize)) {
     }
 }
 
-/// Manhattan distance of a king from the nearest centre square (d4/d5/e4/e5).
-fn king_center_distance(sq: usize) -> i32 {
-    let rank = (sq / 8) as i32;
-    let file = (sq % 8) as i32;
-    let rank_dist = (rank - 3).abs().min((rank - 4).abs());
-    let file_dist = (file - 3).abs().min((file - 4).abs());
-    rank_dist + file_dist
-}
-
 /// Manhattan distance between two squares (max 14).
 fn manhattan(sq1: usize, sq2: usize) -> i32 {
     let r1 = (sq1 / 8) as i32;
@@ -101,6 +92,15 @@ fn manhattan(sq1: usize, sq2: usize) -> i32 {
     let r2 = (sq2 / 8) as i32;
     let f2 = (sq2 % 8) as i32;
     (r1 - r2).abs() + (f1 - f2).abs()
+}
+
+/// Manhattan distance of a king from the nearest centre square (d4/d5/e4/e5).
+fn king_center_distance(sq: usize) -> i32 {
+    let rank = (sq / 8) as i32;
+    let file = (sq % 8) as i32;
+    let rank_dist = (rank - 3).abs().min((rank - 4).abs());
+    let file_dist = (file - 3).abs().min((file - 4).abs());
+    rank_dist + file_dist
 }
 
 /// Mop-up bonus: drive the losing king to a corner in winning endgames.
@@ -267,8 +267,14 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
     let white_pawns_bb = (white & pawns).0;
     let black_pawns_bb = (black & pawns).0;
 
-    let white_king_sq = (white & kings).0.trailing_zeros() as usize;
-    let black_king_sq = (black & kings).0.trailing_zeros() as usize;
+    let white_king_bb = (white & kings).0;
+    let black_king_bb = (black & kings).0;
+    // Guard: if a king is missing (should not happen in legal chess), bail early.
+    if white_king_bb == 0 || black_king_bb == 0 {
+        return 0;
+    }
+    let white_king_sq = white_king_bb.trailing_zeros() as usize;
+    let black_king_sq = black_king_bb.trailing_zeros() as usize;
 
     let mut mg = 0i32;
     let mut eg = 0i32;
@@ -370,6 +376,7 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
         + count(white & rooks)   * MG_ROOK_VALUE   - count(black & rooks)   * MG_ROOK_VALUE
         + count(white & queens)  * MG_QUEEN_VALUE  - count(black & queens)  * MG_QUEEN_VALUE;
     score += mop_up(material_score, white_king_sq, black_king_sq, mg_phase);
+
 
     // --- Passed pawns (applied post-blend; important in endgame) ---
     for_each_sq(white & pawns, |sq| {

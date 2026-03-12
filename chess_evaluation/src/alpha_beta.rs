@@ -320,7 +320,11 @@ pub fn alpha_beta(
     if legal_moves.is_empty() {
         if in_check {
             // Checkmate: worst possible for the side to move.
-            return if is_white { (-1_000_000, None) } else { (1_000_000, None) };
+            // Subtract ply so the engine prefers shorter mates (mate-in-1
+            // scores higher than mate-in-10).  The ply offset is small
+            // enough that any checkmate still dominates non-mate scores.
+            let ply_i32 = ply as i32;
+            return if is_white { (-1_000_000 + ply_i32, None) } else { (1_000_000 - ply_i32, None) };
         } else {
             // Stalemate: draw.
             return (0, None);

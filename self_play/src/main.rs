@@ -188,16 +188,26 @@ fn play_game(
     movetime_ms: u64,
     engine1_is_white: bool,
     conductor: &PieceConductor,
+    start_fen: Option<&str>,
 ) -> (GameResult, String) {
-    let mut board = ChessBoard::new();
+    let mut board = if let Some(fen) = start_fen {
+        let mut b = ChessBoard::new();
+        b.set_from_fen(fen);
+        b
+    } else {
+        ChessBoard::new()
+    };
     let mut move_list: Vec<String> = Vec::new();
     let mut no_progress: u32 = 0; // half-moves since last pawn push or capture
+
+    // Determine which color moves first based on the FEN active color.
+    let first_is_white = board.is_white_active();
 
     engine1.new_game();
     engine2.new_game();
 
     for ply in 0..MAX_PLIES {
-        let is_white = ply % 2 == 0;
+        let is_white = if first_is_white { ply % 2 == 0 } else { ply % 2 != 0 };
 
         // ── Termination checks ──
         let legal = get_all_legal_moves_for_color(&mut board, conductor, is_white);
@@ -226,10 +236,15 @@ fn play_game(
         }
 
         // ── Build position command ──
-        let position_cmd = if move_list.is_empty() {
-            "position startpos".to_string()
+        let position_base = if let Some(fen) = start_fen {
+            format!("position fen {}", fen)
         } else {
-            format!("position startpos moves {}", move_list.join(" "))
+            "position startpos".to_string()
+        };
+        let position_cmd = if move_list.is_empty() {
+            position_base
+        } else {
+            format!("{} moves {}", position_base, move_list.join(" "))
         };
 
         // ── Ask the right engine ──
@@ -274,6 +289,7 @@ fn main() {
     let mut engine2_path: Option<String> = None;
     let mut num_games: usize = 20;
     let mut movetime_ms: u64 = 100;
+    let mut start_fen: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -284,6 +300,10 @@ fn main() {
             }
             "--movetime" => {
                 movetime_ms = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(100);
+                i += 2;
+            }
+            "--fen" => {
+                start_fen = args.get(i + 1).map(|s| s.to_string());
                 i += 2;
             }
             s if !s.starts_with("--") && engine1_path.is_none() => {
@@ -320,6 +340,9 @@ fn main() {
     println!("Engine 2 : {}", e2_name);
     println!("Games    : {}", num_games);
     println!("Movetime : {} ms", movetime_ms);
+    if let Some(ref fen) = start_fen {
+        println!("Start FEN: {}", fen);
+    }
     println!("{}", "─".repeat(60));
 
     let mut e1_wins = 0u32;
@@ -343,7 +366,7 @@ fn main() {
         let _ = std::io::stdout().flush();
 
         let (result, reason) =
-            play_game(&mut engine1, &mut engine2, movetime_ms, engine1_is_white, &conductor);
+            play_game(&mut engine1, &mut engine2, movetime_ms, engine1_is_white, &conductor, start_fen.as_deref());
 
         match result {
             GameResult::Engine1Wins => {
