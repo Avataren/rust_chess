@@ -11,15 +11,46 @@ pub enum TtFlag {
 /// A 3-gen-old depth-12 entry becomes depth-0, replaceable by any new entry.
 const AGE_COST: i32 = 4;
 
+/// A transposition table entry — 24 bytes.
+///
+/// The best move is stored as a raw `u16` (the `move_value` field of
+/// `ChessMove`) rather than `Option<ChessMove>`.  `Option<ChessMove>` costs
+/// 8 bytes because `ChessMove` has no niche; a bare `u16` costs 2 bytes and
+/// the sentinel value 0 (a1→a1, never a legal move) represents "no move".
+/// This compacts the entry from 32 → 24 bytes, giving 33% more TT capacity
+/// for the same memory budget.
 #[derive(Clone, Copy)]
 pub struct TtEntry {
-    pub hash: u64,
-    pub depth: i32,
-    pub score: i32,
-    pub flag: TtFlag,
-    pub best_move: Option<ChessMove>,
+    pub hash:       u64,
+    pub depth:      i32,
+    pub score:      i32,
+    pub flag:       TtFlag,
     /// Search generation that wrote this entry.
     pub generation: u8,
+    /// Packed move: bits[5:0]=start, bits[11:6]=target, bits[15:12]=flag.
+    /// 0 means no best move recorded.
+    best_move_raw:  u16,
+}
+
+impl TtEntry {
+    /// Decode the stored move.  Returns `None` when no best move was recorded.
+    ///
+    /// The reconstructed `ChessMove` contains only start/target/flag — the
+    /// `chess_piece` and `capture` fields are `None`.  Callers that need the
+    /// full move (e.g. for make_move) should match it against the legal-move
+    /// list, which already populates those fields.
+    #[inline]
+    pub fn best_move(&self) -> Option<ChessMove> {
+        if self.best_move_raw == 0 {
+            None
+        } else {
+            Some(ChessMove::new_with_flag(
+                self.best_move_raw & 0x003F,         // bits 5:0  — start square
+                (self.best_move_raw >> 6) & 0x003F,  // bits 11:6 — target square
+                self.best_move_raw >> 12,             // bits 15:12 — move flag
+            ))
+        }
+    }
 }
 
 impl Default for TtEntry {
@@ -29,8 +60,8 @@ impl Default for TtEntry {
             depth: 0,
             score: 0,
             flag: TtFlag::Exact,
-            best_move: None,
             generation: 0,
+            best_move_raw: 0,
         }
     }
 }
@@ -98,8 +129,9 @@ impl TranspositionTable {
         // the new entry's depth beats the age-adjusted existing depth.
         if existing.hash == 0 || existing.hash != hash || depth >= existing_eff {
             self.table[idx] = TtEntry {
-                hash, depth, score, flag, best_move,
+                hash, depth, score, flag,
                 generation: self.generation,
+                best_move_raw: best_move.map_or(0, |m| m.value()),
             };
         }
     }
@@ -123,7 +155,7 @@ mod tests {
         assert_eq!(entry.depth, 3);
         assert_eq!(entry.score, 100);
         assert_eq!(entry.flag, TtFlag::Exact);
-        assert!(entry.best_move.is_none());
+        assert!(entry.best_move().is_none());
     }
 
     #[test]
@@ -178,7 +210,7 @@ mod tests {
         let mv = ChessMove::new(0, 16); // a1 → a3
         tt.store(55, 4, 150, TtFlag::Exact, Some(mv));
         let entry = tt.probe(55).expect("should find entry");
-        let stored = entry.best_move.expect("best_move should be stored");
+        let stored = entry.best_move().expect("best_move should be stored");
         assert_eq!(stored.start_square(), 0);
         assert_eq!(stored.target_square(), 16);
     }
@@ -258,7 +290,7 @@ mod tests {
 
         // Entry must still be probed (not auto-evicted — eviction only happens on store).
         let entry = tt.probe(77).expect("stale entry should still be visible via probe");
-        assert_eq!(entry.best_move.unwrap().start_square(), 4,
+        assert_eq!(entry.best_move().unwrap().start_square(), 4,
             "stale entry's best_move should still be accessible for move ordering");
     }
 

@@ -17,7 +17,7 @@ use crate::{
 };
 
 /// Shared TT for the sequential path and ID iterations.
-pub const TT_SIZE: usize = 1 << 20; // 1M entries ≈ 32 MB
+pub const TT_SIZE: usize = 1 << 22; // 4M entries × 24 B = 96 MB
 
 /// Per-thread TT for parallel root search.  Sub-trees from a single root move
 /// rarely exceed ~500K unique positions, so 256K entries suffices while keeping
@@ -317,7 +317,7 @@ pub fn alpha_beta(
     let tt_move: Option<ChessMove> = if let Some(entry) = tt.probe(hash) {
         if entry.depth >= depth {
             match entry.flag {
-                TtFlag::Exact => return (entry.score, entry.best_move),
+                TtFlag::Exact => return (entry.score, entry.best_move()),
                 TtFlag::LowerBound => {
                     if entry.score > alpha {
                         alpha = entry.score;
@@ -330,10 +330,10 @@ pub fn alpha_beta(
                 }
             }
             if alpha >= beta {
-                return (entry.score, entry.best_move);
+                return (entry.score, entry.best_move());
             }
         }
-        entry.best_move
+        entry.best_move()
     } else {
         None
     };
@@ -735,7 +735,7 @@ pub fn extract_ponder_move(
 
     // Try TT first
     let ponder = if let Some(entry) = tt.probe(hash) {
-        entry.best_move
+        entry.best_move()
     } else {
         None
     };
