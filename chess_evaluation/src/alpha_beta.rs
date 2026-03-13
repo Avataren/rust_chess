@@ -210,7 +210,7 @@ fn order_moves(
     // Partition into captures/promotions vs quiet, scoring captures by SEE.
     let mut good_captures: Vec<(i32, ChessMove)> = Vec::with_capacity(moves.len());
     let mut bad_captures:  Vec<(i32, ChessMove)> = Vec::with_capacity(4);
-    let mut quiets = Vec::with_capacity(moves.len());
+    let mut quiets: Vec<ChessMove> = Vec::with_capacity(moves.len());
 
     for m in moves.drain(..) {
         if m.capture.is_some() || m.is_promotion() {
@@ -233,7 +233,7 @@ fn order_moves(
     bad_captures.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
     // Extract killer moves from quiets, preserving killer priority order.
-    let mut killer_entries = Vec::new();
+    let mut killer_entries: Vec<ChessMove> = Vec::new();
     for killer in killers.iter().flatten() {
         if let Some(pos) = quiets.iter().position(|m| {
             m.start_square() == killer.start_square()

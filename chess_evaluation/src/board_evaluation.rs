@@ -51,12 +51,16 @@ const MG_KNIGHT_OUTPOST: i32 = 30;
 const EG_KNIGHT_OUTPOST: i32 = 20;
 
 // Piece mobility weights (cp per reachable square).
-// Conservative values — high weights caused material sacrifices for open lines
-// in prior tests.  Queens excluded (too volatile; their mobility tracks open
-// files which are already rewarded by the rook-open-file bonus).
-const KNIGHT_MOBILITY_WEIGHT: i32 = 4; // max 32cp per knight — meaningful signal
-const BISHOP_MOBILITY_WEIGHT: i32 = 3; // max ~39cp — clamped by mg_phase fade
-const ROOK_MOBILITY_WEIGHT:   i32 = 1; // max ~14cp — kept small to avoid over-valuing open files
+// Calibrated against SF14 MobilityBonus tables (averaged over typical square counts):
+//   Knight: max ~37cp MG (8 sq), Bishop: max ~96cp MG (13 sq), Rook: max ~67cp MG (14 sq)
+//   Queen:  max ~119cp MG (27 sq) — included here with a modest per-square weight.
+// The per-square weights deliberately undercut SF14's peaks: SF uses non-linear
+// tables where the bonus saturates; our linear approximation needs a lower slope
+// to avoid over-rewarding maximum mobility.
+const KNIGHT_MOBILITY_WEIGHT: i32 = 4; // ~32cp at 8 squares
+const BISHOP_MOBILITY_WEIGHT: i32 = 3; // ~39cp at 13 squares
+const ROOK_MOBILITY_WEIGHT:   i32 = 2; // ~28cp at 14 squares (was 1; SF14 rook peaks at 67)
+const QUEEN_MOBILITY_WEIGHT:  i32 = 2; // ~54cp at 27 squares — conservative to avoid instability
 
 // King safety — pawn shield (only when castled) + attack counting.
 const KING_SHIELD_MISSING:  i32 = 15;
@@ -69,14 +73,15 @@ const ROOK_ATTACK_WEIGHT:   i32 = 3;
 const QUEEN_ATTACK_WEIGHT:  i32 = 5;
 
 /// Non-linear safety penalty indexed by total attack weight.
-/// Ramps slowly for 1–2 minor pieces, steeply once queen + support arrive.
+/// Approximates SF14's quadratic king-danger curve (danger² / 4096).
+/// Ramps slowly for a lone minor piece, steeply when queen + support arrives.
 /// Values in centipawns, applied to MG score only.
 #[rustfmt::skip]
 const SAFETY_TABLE: [i32; 20] = [
 //   0    1    2    3    4    5    6    7    8    9
-     0,   0,   1,   3,   6,  12,  20,  30,  43,  58,
+     0,   0,   4,  14,  32,  62, 100, 155, 222, 300,
 //  10   11   12   13   14   15   16   17   18   19
-    75,  95, 117, 141, 168, 197, 228, 261, 296, 333,
+   390, 490, 590, 685, 770, 845, 905, 955, 995, 1025,
 ];
 
 const FILE_MASKS: [u64; 8] = [
@@ -189,6 +194,7 @@ fn mobility_score(
     knights: Bitboard,
     bishops: Bitboard,
     rooks:   Bitboard,
+    queens:  Bitboard,
     own_pieces: Bitboard,
     occupied:   Bitboard,
     enemy_pawn_attacks: u64,
@@ -212,8 +218,14 @@ fn mobility_score(
         score += attacks.count_ones() as i32 * ROOK_MOBILITY_WEIGHT;
     });
 
-    // Queens excluded: open-file / open-diagonal value is already captured by
-    // rook-open-file and bishop PSTs.  Adding queen mobility caused instability.
+    // Queen mobility: conservative weight (2cp/sq) to capture activity bonus
+    // while avoiding the instability that heavier weights caused previously.
+    for_each_sq(queens, |sq| {
+        let rook_part   = conductor.get_rook_attacks(sq, Bitboard(0), occupied).0 & safe;
+        let bishop_part = conductor.get_bishop_attacks(sq, Bitboard(0), occupied).0 & safe;
+        let attacks = rook_part | bishop_part;
+        score += attacks.count_ones() as i32 * QUEEN_MOBILITY_WEIGHT;
+    });
 
     score
 }
@@ -489,8 +501,9 @@ fn king_attack_penalty(
         }
     });
 
-    // A lone attacker rarely constitutes a real threat.
-    if attacker_count < 2 {
+    // Zero attackers = no danger. Even a single attacker can be significant
+    // (e.g. queen near exposed king) so don't suppress it.
+    if attacker_count == 0 {
         return 0;
     }
 
@@ -707,13 +720,13 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
 
     let white_mob = mobility_score(
         conductor,
-        white & knights, white & bishops, white & rooks,
+        white & knights, white & bishops, white & rooks, white & queens,
         white, occupied,
         black_pawn_atk, // exclude squares attacked by black pawns
     );
     let black_mob = mobility_score(
         conductor,
-        black & knights, black & bishops, black & rooks,
+        black & knights, black & bishops, black & rooks, black & queens,
         black, occupied,
         white_pawn_atk, // exclude squares attacked by white pawns
     );
