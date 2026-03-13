@@ -7,6 +7,10 @@ pub enum TtFlag {
     UpperBound,
 }
 
+/// How much effective depth to subtract per generation gap.
+/// A 3-gen-old depth-12 entry becomes depth-0, replaceable by any new entry.
+const AGE_COST: i32 = 4;
+
 #[derive(Clone, Copy)]
 pub struct TtEntry {
     pub hash: u64,
@@ -14,6 +18,8 @@ pub struct TtEntry {
     pub score: i32,
     pub flag: TtFlag,
     pub best_move: Option<ChessMove>,
+    /// Search generation that wrote this entry.
+    pub generation: u8,
 }
 
 impl Default for TtEntry {
@@ -24,6 +30,7 @@ impl Default for TtEntry {
             score: 0,
             flag: TtFlag::Exact,
             best_move: None,
+            generation: 0,
         }
     }
 }
@@ -31,6 +38,8 @@ impl Default for TtEntry {
 pub struct TranspositionTable {
     table: Vec<TtEntry>,
     size: usize,
+    /// Current search generation.  Incremented once per move via `new_search()`.
+    generation: u8,
 }
 
 impl TranspositionTable {
@@ -38,7 +47,21 @@ impl TranspositionTable {
         Self {
             table: vec![TtEntry::default(); size],
             size,
+            generation: 0,
         }
+    }
+
+    /// Advance the generation counter.  Call once before each new root search
+    /// (i.e. each move).  Old entries remain in the table for move-ordering
+    /// but are replaced more eagerly than fresh ones.
+    pub fn new_search(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// How many generations old is this entry?
+    #[inline]
+    fn age_of(&self, entry: &TtEntry) -> i32 {
+        self.generation.wrapping_sub(entry.generation) as i32
     }
 
     pub fn probe(&self, hash: u64) -> Option<&TtEntry> {
@@ -51,7 +74,13 @@ impl TranspositionTable {
         }
     }
 
-    /// Store an entry. Replaces if empty, same position, or new depth is deeper.
+    /// Store an entry using a generation-aware replacement policy.
+    ///
+    /// Replacement priority (lower effective depth = replaced first):
+    ///   effective_depth = stored_depth - age * AGE_COST
+    ///
+    /// This means old entries (from previous moves) are evicted even when
+    /// they are deep, preventing stale analysis from poisoning new searches.
     pub fn store(
         &mut self,
         hash: u64,
@@ -62,10 +91,16 @@ impl TranspositionTable {
     ) {
         let idx = (hash as usize) % self.size;
         let existing = &self.table[idx];
-        // Replace if: slot is empty, hash collision (different position), or same position
-        // with a deeper (or equal) search.  Never overwrite a deeper entry for the same position.
-        if existing.hash == 0 || existing.hash != hash || depth >= existing.depth {
-            self.table[idx] = TtEntry { hash, depth, score, flag, best_move };
+        let age = self.age_of(existing);
+        // Effective depth of the existing entry, penalised by age.
+        let existing_eff = existing.depth - age * AGE_COST;
+        // Replace if: slot is empty, hash collision (different position), or
+        // the new entry's depth beats the age-adjusted existing depth.
+        if existing.hash == 0 || existing.hash != hash || depth >= existing_eff {
+            self.table[idx] = TtEntry {
+                hash, depth, score, flag, best_move,
+                generation: self.generation,
+            };
         }
     }
 }

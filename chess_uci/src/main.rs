@@ -4,8 +4,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use std::sync::Mutex;
+
 use chess_board::ChessBoard;
-use chess_evaluation::{iterative_deepening_root, OpeningBook};
+use chess_evaluation::{iterative_deepening_root_with_tt, OpeningBook, TranspositionTable, TT_SIZE};
 use chess_foundation::{piece::PieceType, ChessMove};
 use move_generator::{move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor};
 
@@ -247,14 +249,18 @@ fn search_and_respond(
     params: GoParams,
     stop: Arc<AtomicBool>,
     is_white: bool,
+    tt: Arc<Mutex<TranspositionTable>>,
 ) {
     let search_stop = make_search_stop(&stop, params.hard_deadline);
 
     let t0 = Instant::now();
-    let result = iterative_deepening_root(
+    let mut tt = tt.lock().unwrap();
+    tt.new_search();
+    let result = iterative_deepening_root_with_tt(
         &mut board,
         &conductor,
         Some(&book),
+        &mut tt,
         params.max_depth,
         is_white,
         params.soft_deadline,
@@ -286,6 +292,7 @@ fn ponder_and_respond(
     stop: Arc<AtomicBool>,
     ponderhit: Arc<AtomicBool>,
     is_white: bool,
+    tt: Arc<Mutex<TranspositionTable>>,
 ) {
     let search_stop = Arc::new(AtomicBool::new(false));
 
@@ -336,10 +343,13 @@ fn ponder_and_respond(
     }
 
     let t0 = Instant::now();
-    let result = iterative_deepening_root(
+    let mut tt = tt.lock().unwrap();
+    tt.new_search();
+    let result = iterative_deepening_root_with_tt(
         &mut board,
         &conductor,
         Some(&book),
+        &mut tt,
         params.max_depth,
         is_white,
         None, // no soft deadline — stop flag controls everything
@@ -365,6 +375,11 @@ fn main() {
     let book = OpeningBook::build(&conductor);
     let mut board = ChessBoard::new();
     let mut move_number: usize = 1;
+
+    // Persistent TT: survives across moves so the engine reuses prior search
+    // analysis.  `new_search()` is called before each search to age old entries.
+    // Cleared on `ucinewgame`.
+    let tt: Arc<Mutex<TranspositionTable>> = Arc::new(Mutex::new(TranspositionTable::new(TT_SIZE)));
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let ponderhit_flag = Arc::new(AtomicBool::new(false));
@@ -394,6 +409,8 @@ fn main() {
                 stop_flag.store(false, Ordering::Release);
                 board = ChessBoard::new();
                 move_number = 1;
+                // Clear TT: new game → old analysis is irrelevant.
+                *tt.lock().unwrap() = TranspositionTable::new(TT_SIZE);
             }
             "position" => {
                 move_number = apply_position(&mut board, &conductor, &tokens[1..]);
@@ -414,16 +431,17 @@ fn main() {
                 let conductor_c = conductor.clone();
                 let book_c      = book.clone();
                 let stop_c      = Arc::clone(&stop_flag);
+                let tt_c        = Arc::clone(&tt);
 
                 if is_ponder {
                     ponderhit_flag.store(false, Ordering::Release);
                     let ponder_c = Arc::clone(&ponderhit_flag);
                     search_handle = Some(thread::spawn(move || {
-                        ponder_and_respond(board_c, conductor_c, book_c, params, stop_c, ponder_c, is_white);
+                        ponder_and_respond(board_c, conductor_c, book_c, params, stop_c, ponder_c, is_white, tt_c);
                     }));
                 } else {
                     search_handle = Some(thread::spawn(move || {
-                        search_and_respond(board_c, conductor_c, book_c, params, stop_c, is_white);
+                        search_and_respond(board_c, conductor_c, book_c, params, stop_c, is_white, tt_c);
                     }));
                 }
             }

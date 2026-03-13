@@ -9,6 +9,7 @@ pub use board_evaluation::evaluate_board;
 pub use alpha_beta::alpha_beta;
 pub use alpha_beta::alpha_beta_root;
 pub use alpha_beta::iterative_deepening_root;
+pub use alpha_beta::iterative_deepening_root_with_tt;
 pub use alpha_beta::search_root;
 pub use alpha_beta::{ASPIRATION_DELTA, TT_SIZE, SearchContext, SearchResult};
 pub use alpha_beta::extract_ponder_move;

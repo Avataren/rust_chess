@@ -801,11 +801,40 @@ pub fn iterative_deepening_root(
     }
 
     let mut tt = TranspositionTable::new(TT_SIZE);
+    iterative_deepening_root_with_tt(chess_board, conductor, book, &mut tt, max_depth, is_white, deadline, stop)
+}
+
+/// Like `iterative_deepening_root` but accepts an external `TranspositionTable`
+/// so the caller can persist it across moves.  The caller should call
+/// `tt.new_search()` before each invocation to age old entries.
+pub fn iterative_deepening_root_with_tt(
+    chess_board: &mut ChessBoard,
+    conductor: &PieceConductor,
+    book: Option<&OpeningBook>,
+    tt: &mut TranspositionTable,
+    max_depth: i32,
+    is_white: bool,
+    deadline: Option<Instant>,
+    stop: Option<Arc<AtomicBool>>,
+) -> SearchResult {
+    if let Some(book) = book {
+        if let Some((from, to)) = book.probe(chess_board) {
+            let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+            if let Some(book_move) = legal
+                .into_iter()
+                .find(|m| m.start_square() == from && m.target_square() == to)
+            {
+                eprintln!("Book move: {}", book_move.to_san_simple());
+                return SearchResult { score: 0, best_move: Some(book_move), ponder_move: None };
+            }
+        }
+    }
+
     let mut ctx = SearchContext::new();
     let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
 
     for depth in 1..=max_depth {
-        let iter_start = Instant::now();
+        let _iter_start = Instant::now();
         let (prev_score, prev_move) = best;
 
         // Age history at the start of each new iteration (skip depth 1 — nothing
@@ -816,14 +845,14 @@ pub fn iterative_deepening_root(
 
         let result = if depth <= 2 {
             // Full window for shallow depths — aspirating an unknown score is useless.
-            search_root(chess_board, conductor, &mut tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move, stop.clone())
+            search_root(chess_board, conductor, tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move, stop.clone())
         } else {
             // Narrow aspiration window around previous score.  Widen one side on
             // failure and retry until the result lands inside the window.
             let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
             let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
             loop {
-                let result = search_root(chess_board, conductor, &mut tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone());
+                let result = search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone());
                 if result.0 > lo && result.0 < hi {
                     break result;
                 } else if result.0 <= lo {
@@ -860,7 +889,7 @@ pub fn iterative_deepening_root(
 
     // Extract the ponder move from the TT
     let ponder_move = best.1.and_then(|bm| {
-        extract_ponder_move(chess_board, conductor, &mut tt, bm, is_white)
+        extract_ponder_move(chess_board, conductor, tt, bm, is_white)
     });
 
     SearchResult {
