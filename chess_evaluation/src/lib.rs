@@ -2,6 +2,7 @@ pub mod alpha_beta;
 pub mod board_evaluation;
 pub mod opening_book;
 pub mod piece_tables;
+pub mod see;
 pub mod transposition_table;
 
 pub use board_evaluation::evaluate_board;

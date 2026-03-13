@@ -110,3 +110,42 @@ Changes:
   or stand_pat - piece_value - 200cp >= beta (black).
 - TT in qsearch was tested but REMOVED: caused 70% NPS regression due to cache thrashing
   at the millions-of-nodes/s qsearch rate. Delta pruning kept; TT discarded.
+
+---
+
+## chunk4 — RFP/futility threshold tuning (2026-03-13)
+
+total_nodes=5,304,764 (+9% vs chunk3)  avg_nps=832,250  total_ms=6,374
+Self-play vs chunk3 (no ponder): **51.2%** (17W/7D/16L, 40 games, 200ms/move) — neutral
+Changes: RFP margin 100→75*depth, RFP depth ≤6→≤9, futility extended to depth ≤3 (200*depth formula).
+
+---
+
+## chunk5 — SEE move ordering + qsearch pruning (2026-03-13)
+
+```
+Position                            Nodes         ms          NPS
+------------------------------------------------------------------
+After 1.e4                         269607        461       584830
+Ruy Lopez setup                    269959        434       622025
+Italian Game                       693956       1238       560546
+Tactical – Sacrifice               581039        921       630878
+Open file tension                  351800        387       909043
+Complex middle                     728574       1315       554048
+Central tension                    530400        653       812251
+K+P endgame                          5122          2      2561000
+Pawn race                            5480          1      5480000
+KR vs Kr                           162859         54      3015907
+Active rook                         31258         14      2232714
+Q vs passers                        18046          6      3007666
+------------------------------------------------------------------
+TOTAL / AVG NPS                   3648100       5486       664983
+```
+
+total_nodes=3,648,100 (-31% vs chunk4)  avg_nps=664,983 (-20% vs chunk4)  total_ms=5,486 (-14% vs chunk4)
+Self-play vs chunk4 (no ponder): **61.3%** (21W/7D/12L, 40 games, 200ms/move)
+Changes:
+- SEE (Static Exchange Evaluation) in see.rs: full exchange simulation using LVA loop + X-ray.
+- order_moves: captures sorted by SEE score (winning/even first, losing last) instead of MVV only.
+- qsearch: SEE < 0 pruning replaces delta pruning (skips clearly losing captures).
+- 9 SEE unit tests covering: undefended pieces, defended pieces, equal exchanges, X-ray, symmetry.

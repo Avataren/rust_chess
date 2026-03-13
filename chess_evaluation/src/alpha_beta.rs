@@ -12,6 +12,7 @@ use web_time::Instant;
 use crate::{
     evaluate_board,
     opening_book::OpeningBook,
+    see::{see, attackers_of},
     transposition_table::{TranspositionTable, TtFlag},
 };
 
@@ -83,31 +84,15 @@ impl SearchContext {
     }
 }
 
-// ── Quiescence helpers ────────────────────────────────────────────────────────
-
-/// Approximate centipawn value of the piece captured by a move.
-/// Used for delta pruning: skip captures that cannot possibly raise alpha.
-#[inline]
-fn capture_approx_value(mv: &ChessMove) -> i32 {
-    use chess_foundation::piece::PieceType;
-    match mv.capture.map(|p| p.piece_type()) {
-        Some(PieceType::Pawn)   =>  100,
-        Some(PieceType::Knight) =>  300,
-        Some(PieceType::Bishop) =>  300,
-        Some(PieceType::Rook)   =>  500,
-        Some(PieceType::Queen)  => 1000,
-        _                       =>    0,
-    }
-}
-
 // ── Quiescence search ─────────────────────────────────────────────────────────
 
 /// Continues searching capture-only moves after the main search depth is
 /// exhausted, so we never evaluate a position mid-capture-sequence.
 /// This eliminates the horizon effect that causes higher depths to play worse.
 ///
-/// Delta pruning: skip individual captures that cannot raise alpha even with
-/// an extra 200cp margin (avoids wasted make/undo cycles in the hot path).
+/// SEE pruning: skip captures where SEE < 0 (clearly losing exchanges).
+/// This is strictly more accurate than the previous delta-pruning heuristic
+/// and correctly handles defended pieces without needing an arbitrary margin.
 /// TT is intentionally NOT used here: qsearch runs at millions of nodes/s and
 /// TT lookups/stores at that frequency cause cache thrashing that slows the
 /// overall search more than the TT hits save.
@@ -127,11 +112,9 @@ fn quiescence(
     let stand_pat = evaluate_board(chess_board, conductor);
 
     // Fail-soft quiescence: return the actual best score found, not alpha/beta.
-    // This ensures the root can distinguish between a genuine best-score and a
-    // fail-low that merely equals the accumulated alpha from a sibling search.
     if is_white {
         if stand_pat >= beta {
-            return stand_pat; // fail-soft: return actual value
+            return stand_pat;
         }
         let mut best = stand_pat;
         if stand_pat > alpha {
@@ -142,9 +125,12 @@ fn quiescence(
         captures.sort();
 
         for mut chess_move in captures {
-            // Delta pruning: skip capture if even gaining this piece + 200cp margin
-            // cannot raise alpha.
-            if stand_pat + capture_approx_value(&chess_move) + 200 <= alpha {
+            // SEE pruning: skip losing captures (SEE < 0).
+            // More accurate than delta pruning — correctly handles all defended pieces.
+            if see(chess_board, conductor,
+                   chess_move.start_square() as usize,
+                   chess_move.target_square() as usize,
+                   is_white) < 0 {
                 continue;
             }
 
@@ -152,20 +138,14 @@ fn quiescence(
             let eval = quiescence(chess_board, conductor, alpha, beta, false, qdepth - 1, nodes);
             chess_board.undo_move();
 
-            if eval >= beta {
-                return eval; // fail-soft
-            }
-            if eval > best {
-                best = eval;
-            }
-            if eval > alpha {
-                alpha = eval;
-            }
+            if eval >= beta { return eval; }
+            if eval > best  { best = eval; }
+            if eval > alpha { alpha = eval; }
         }
         best
     } else {
         if stand_pat <= alpha {
-            return stand_pat; // fail-soft
+            return stand_pat;
         }
         let mut best = stand_pat;
         if stand_pat < beta {
@@ -176,8 +156,11 @@ fn quiescence(
         captures.sort();
 
         for mut chess_move in captures {
-            // Delta pruning for black: skip if gaining this piece + margin won't beat beta.
-            if stand_pat - capture_approx_value(&chess_move) - 200 >= beta {
+            // SEE pruning: skip losing captures.
+            if see(chess_board, conductor,
+                   chess_move.start_square() as usize,
+                   chess_move.target_square() as usize,
+                   is_white) < 0 {
                 continue;
             }
 
@@ -185,15 +168,9 @@ fn quiescence(
             let eval = quiescence(chess_board, conductor, alpha, beta, true, qdepth - 1, nodes);
             chess_board.undo_move();
 
-            if eval <= alpha {
-                return eval; // fail-soft
-            }
-            if eval < best {
-                best = eval;
-            }
-            if eval < beta {
-                beta = eval;
-            }
+            if eval <= alpha { return eval; }
+            if eval < best   { best = eval; }
+            if eval < beta   { beta = eval; }
         }
         best
     }
@@ -203,14 +180,21 @@ fn quiescence(
 
 /// Order moves for best-first search:
 ///   1. TT / PV move (if present)
-///   2. Captures + non-capture promotions (sorted by MVV-LVA via `Ord`)
+///   2. Winning/even captures (SEE ≥ 0), sorted by SEE score descending
 ///   3. Killer moves (quiet moves that caused β-cutoffs at this ply)
 ///   4. Remaining quiet moves, sorted by history score (descending)
+///   5. Losing captures (SEE < 0), sorted by SEE score descending
+///
+/// Separating losing captures from killers/history-sorted quiets is important:
+/// a quiet killer or well-history-scored move is usually better than a losing exchange.
 fn order_moves(
     moves: &mut Vec<ChessMove>,
     tt_move: Option<ChessMove>,
     killers: &[Option<ChessMove>; 2],
     history: &[[i32; 64]; 64],
+    board: &ChessBoard,
+    conductor: &PieceConductor,
+    is_white: bool,
 ) {
     // Pull out the TT move first.
     let tt_entry = tt_move.and_then(|tt_m| {
@@ -223,20 +207,30 @@ fn order_moves(
             .map(|i| moves.swap_remove(i))
     });
 
-    // Partition remaining moves into captures/promotions vs quiet.
-    let mut captures = Vec::with_capacity(moves.len());
+    // Partition into captures/promotions vs quiet, scoring captures by SEE.
+    let mut good_captures: Vec<(i32, ChessMove)> = Vec::with_capacity(moves.len());
+    let mut bad_captures:  Vec<(i32, ChessMove)> = Vec::with_capacity(4);
     let mut quiets = Vec::with_capacity(moves.len());
+
     for m in moves.drain(..) {
         if m.capture.is_some() || m.is_promotion() {
-            captures.push(m);
+            let score = see(board, conductor,
+                            m.start_square() as usize,
+                            m.target_square() as usize,
+                            is_white);
+            if score >= 0 {
+                good_captures.push((score, m));
+            } else {
+                bad_captures.push((score, m));
+            }
         } else {
             quiets.push(m);
         }
     }
 
-    // Sort captures best-first (existing MVV-LVA Ord, `.reverse()` inside Ord
-    // already ensures `sort()` gives highest-value captures first).
-    captures.sort();
+    // Sort by SEE score descending (highest gain first).
+    good_captures.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    bad_captures.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
     // Extract killer moves from quiets, preserving killer priority order.
     let mut killer_entries = Vec::new();
@@ -255,13 +249,14 @@ fn order_moves(
             .cmp(&history[a.start_square() as usize][a.target_square() as usize])
     });
 
-    // Reassemble: TT move → captures → killers → history-sorted quiets.
+    // Reassemble: TT move → good captures (SEE≥0) → killers → history quiets → bad captures.
     if let Some(tt_m) = tt_entry {
         moves.push(tt_m);
     }
-    moves.extend(captures);
+    moves.extend(good_captures.into_iter().map(|(_, m)| m));
     moves.extend(killer_entries);
     moves.extend(quiets);
+    moves.extend(bad_captures.into_iter().map(|(_, m)| m));
 }
 
 // ── Zugzwang guard ────────────────────────────────────────────────────────────
@@ -413,7 +408,7 @@ pub fn alpha_beta(
     // `killers` (which is a field borrow) has ended.
     let history: &[[i32; 64]; 64] = unsafe { &*history_ptr };
 
-    order_moves(&mut legal_moves, tt_move, killers, history);
+    order_moves(&mut legal_moves, tt_move, killers, history, chess_board, conductor, is_white);
     // `killers` borrow of ctx ends here (it is not used again below).
 
     let mut best_move: Option<ChessMove> = None;
@@ -615,7 +610,8 @@ pub fn search_root(
     }
     // Order: prev_best first (PV move from previous ID iteration), then
     // killers at ply 0 (usually empty), then history-scored quiets.
-    order_moves(&mut legal_moves, prev_best, &ctx.killers[0], &ctx.history);
+    order_moves(&mut legal_moves, prev_best, &ctx.killers[0], &ctx.history,
+                chess_board, conductor, is_white);
 
     // --- Parallel root search (depth >= 3, native only) ---
     // Each root move is evaluated independently on its own board clone with a
