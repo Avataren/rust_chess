@@ -191,4 +191,101 @@ mod tests {
         tt.store(1, 1, 0, TtFlag::Exact, None);
         assert!(tt.probe(1).is_some());
     }
+
+    // ── Generation / aging ───────────────────────────────────────────────────
+
+    #[test]
+    fn new_search_increments_generation() {
+        let mut tt = TranspositionTable::new(1024);
+        // Store an entry at generation 0.
+        tt.store(1, 5, 100, TtFlag::Exact, None);
+        assert_eq!(tt.probe(1).unwrap().generation, 0);
+
+        tt.new_search();
+        // Store another entry at generation 1.
+        tt.store(2, 5, 200, TtFlag::Exact, None);
+        assert_eq!(tt.probe(2).unwrap().generation, 1);
+
+        // Original entry still visible (different hash).
+        assert_eq!(tt.probe(1).unwrap().generation, 0);
+    }
+
+    #[test]
+    fn fresh_shallow_entry_evicts_stale_deep_entry() {
+        // AGE_COST = 4, so after 3 new_search() calls the old entry at depth 10
+        // has effective_depth = 10 - 3*4 = -2, which any new entry (depth >= -2) beats.
+        let mut tt = TranspositionTable::new(1024);
+        tt.store(42, 10, 999, TtFlag::Exact, None); // deep, generation 0
+
+        tt.new_search(); // generation 1
+        tt.new_search(); // generation 2
+        tt.new_search(); // generation 3  →  effective_depth = 10 - 12 = -2
+
+        // A shallow depth-1 entry (>= -2) should now evict the old one.
+        tt.store(42, 1, 42, TtFlag::Exact, None);
+        let entry = tt.probe(42).expect("should find entry");
+        assert_eq!(entry.depth, 1, "fresh shallow entry should have evicted stale deep entry");
+        assert_eq!(entry.score, 42);
+        assert_eq!(entry.generation, 3);
+    }
+
+    #[test]
+    fn fresh_shallow_does_not_evict_recent_deep_entry() {
+        // After only 1 new_search(), a depth-10 entry has effective_depth = 10 - 4 = 6.
+        // A depth-5 entry (< 6) must NOT evict it.
+        let mut tt = TranspositionTable::new(1024);
+        tt.store(42, 10, 999, TtFlag::Exact, None); // deep, generation 0
+
+        tt.new_search(); // generation 1  →  effective_depth = 10 - 4 = 6
+
+        tt.store(42, 5, 42, TtFlag::Exact, None); // depth 5 < 6, should not replace
+        let entry = tt.probe(42).expect("should find entry");
+        assert_eq!(entry.depth, 10, "recent deep entry should survive a shallower store");
+        assert_eq!(entry.score, 999);
+    }
+
+    #[test]
+    fn probe_returns_stale_entry_for_move_ordering() {
+        // Old entries should still be retrievable via probe (used for move ordering)
+        // even after several new_search() calls — only store() applies the eviction logic.
+        let mut tt = TranspositionTable::new(1024);
+        let mv = ChessMove::new(4, 20); // e1 → e3 (arbitrary)
+        tt.store(77, 8, 300, TtFlag::Exact, Some(mv));
+
+        tt.new_search();
+        tt.new_search();
+        tt.new_search();
+
+        // Entry must still be probed (not auto-evicted — eviction only happens on store).
+        let entry = tt.probe(77).expect("stale entry should still be visible via probe");
+        assert_eq!(entry.best_move.unwrap().start_square(), 4,
+            "stale entry's best_move should still be accessible for move ordering");
+    }
+
+    #[test]
+    fn generation_wraps_without_panic() {
+        // Advance through all 256 generations and verify the table still works.
+        let mut tt = TranspositionTable::new(1024);
+        for _ in 0..255 {
+            tt.new_search();
+        }
+        // Now at generation 255; one more wraps to 0.
+        tt.new_search();
+        tt.store(1, 3, 50, TtFlag::Exact, None);
+        let entry = tt.probe(1).expect("should find entry after wrap-around");
+        assert_eq!(entry.generation, 0);
+        assert_eq!(entry.score, 50);
+    }
+
+    #[test]
+    fn same_generation_depth_rule_still_applies() {
+        // Within the same generation, the old depth-beats-shallower rule holds.
+        let mut tt = TranspositionTable::new(1024);
+        tt.new_search(); // generation 1
+        tt.store(42, 8, 100, TtFlag::Exact, None);
+        tt.store(42, 3, 200, TtFlag::Exact, None); // shallower, same gen — must not replace
+        let entry = tt.probe(42).expect("should find entry");
+        assert_eq!(entry.depth, 8, "deeper same-gen entry must not be overwritten by shallower");
+        assert_eq!(entry.score, 100);
+    }
 }
