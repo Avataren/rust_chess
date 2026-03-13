@@ -347,7 +347,7 @@ pub fn alpha_beta(
     // Computed once and reused by RFP and futility pruning below.
     // Skipped when in check (pruning is unsound under forced moves) or at
     // high depths where the cost is negligible vs. search time.
-    let static_eval: Option<i32> = if !in_check && depth <= 8 {
+    let static_eval: Option<i32> = if !in_check && depth <= 9 {
         Some(evaluate_board(chess_board, conductor))
     } else {
         None
@@ -356,10 +356,12 @@ pub fn alpha_beta(
     // --- Reverse Futility Pruning (RFP / "static NMP") ---
     // If our static eval already beats beta by a depth-scaled margin we
     // can expect a refutation, so cut off without searching.
-    // Only at shallow depth (≤ 6), not in check, not at root (ply > 0).
+    // Stockfish uses ~77*depth at depth<16; we use 75*depth at depth≤9
+    // (conservative first extension beyond the original ≤6 cap).
+    // Not at root (ply>0), not in check, skip near mate scores.
     if let Some(se) = static_eval {
-        if depth <= 6 && null_move_allowed && ply > 0 {
-            let margin = 100 * depth;
+        if depth <= 9 && null_move_allowed && ply > 0 {
+            let margin = 75 * depth;
             if is_white && se - margin >= beta  { return (se, None); }
             if !is_white && se + margin <= alpha { return (se, None); }
         }
@@ -422,11 +424,13 @@ pub fn alpha_beta(
             let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
 
             // --- Futility pruning ---
-            // At depth 1–2, skip quiet moves whose static eval + a margin
+            // At depth 1–3, skip quiet moves whose static eval + a margin
             // cannot possibly raise alpha.  Never prune the first move (PV).
+            // Margin scales with depth (Stockfish uses ~120*lmrDepth; we use
+            // 200*depth): d1=200, d2=400, d3=600.
             if move_index > 0 && is_quiet && !in_check {
                 if let Some(se) = static_eval {
-                    let margin = if depth == 1 { 200 } else if depth == 2 { 400 } else { 0 };
+                    let margin = if depth <= 3 { 200 * depth } else { 0 };
                     if margin > 0 && se + margin <= alpha {
                         continue;
                     }
@@ -506,9 +510,10 @@ pub fn alpha_beta(
             let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
 
             // --- Futility pruning ---
+            // Symmetric to white branch: d1=200, d2=400, d3=600.
             if move_index > 0 && is_quiet && !in_check {
                 if let Some(se) = static_eval {
-                    let margin = if depth == 1 { 200 } else if depth == 2 { 400 } else { 0 };
+                    let margin = if depth <= 3 { 200 * depth } else { 0 };
                     if margin > 0 && se - margin >= beta {
                         continue;
                     }
