@@ -43,6 +43,9 @@ pub const MAX_PLY: usize = 64;
 pub struct SearchContext {
     killers: [[Option<ChessMove>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
+    /// Total nodes visited (alpha_beta + quiescence calls).  Incremented at
+    /// the top of each call.  Useful for NPS benchmarking.
+    pub nodes: u64,
 }
 
 impl SearchContext {
@@ -50,6 +53,7 @@ impl SearchContext {
         Self {
             killers: [[None; 2]; MAX_PLY],
             history: [[0; 64]; 64],
+            nodes: 0,
         }
     }
 
@@ -79,11 +83,34 @@ impl SearchContext {
     }
 }
 
+// ── Quiescence helpers ────────────────────────────────────────────────────────
+
+/// Approximate centipawn value of the piece captured by a move.
+/// Used for delta pruning: skip captures that cannot possibly raise alpha.
+#[inline]
+fn capture_approx_value(mv: &ChessMove) -> i32 {
+    use chess_foundation::piece::PieceType;
+    match mv.capture.map(|p| p.piece_type()) {
+        Some(PieceType::Pawn)   =>  100,
+        Some(PieceType::Knight) =>  300,
+        Some(PieceType::Bishop) =>  300,
+        Some(PieceType::Rook)   =>  500,
+        Some(PieceType::Queen)  => 1000,
+        _                       =>    0,
+    }
+}
+
 // ── Quiescence search ─────────────────────────────────────────────────────────
 
 /// Continues searching capture-only moves after the main search depth is
 /// exhausted, so we never evaluate a position mid-capture-sequence.
 /// This eliminates the horizon effect that causes higher depths to play worse.
+///
+/// Delta pruning: skip individual captures that cannot raise alpha even with
+/// an extra 200cp margin (avoids wasted make/undo cycles in the hot path).
+/// TT is intentionally NOT used here: qsearch runs at millions of nodes/s and
+/// TT lookups/stores at that frequency cause cache thrashing that slows the
+/// overall search more than the TT hits save.
 fn quiescence(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
@@ -91,7 +118,9 @@ fn quiescence(
     mut beta: i32,
     is_white: bool,
     qdepth: i32,
+    nodes: &mut u64,
 ) -> i32 {
+    *nodes += 1;
     if qdepth == 0 {
         return evaluate_board(chess_board, conductor);
     }
@@ -113,8 +142,14 @@ fn quiescence(
         captures.sort();
 
         for mut chess_move in captures {
+            // Delta pruning: skip capture if even gaining this piece + 200cp margin
+            // cannot raise alpha.
+            if stand_pat + capture_approx_value(&chess_move) + 200 <= alpha {
+                continue;
+            }
+
             chess_board.make_move(&mut chess_move);
-            let eval = quiescence(chess_board, conductor, alpha, beta, false, qdepth - 1);
+            let eval = quiescence(chess_board, conductor, alpha, beta, false, qdepth - 1, nodes);
             chess_board.undo_move();
 
             if eval >= beta {
@@ -141,8 +176,13 @@ fn quiescence(
         captures.sort();
 
         for mut chess_move in captures {
+            // Delta pruning for black: skip if gaining this piece + margin won't beat beta.
+            if stand_pat - capture_approx_value(&chess_move) - 200 >= beta {
+                continue;
+            }
+
             chess_board.make_move(&mut chess_move);
-            let eval = quiescence(chess_board, conductor, alpha, beta, true, qdepth - 1);
+            let eval = quiescence(chess_board, conductor, alpha, beta, true, qdepth - 1, nodes);
             chess_board.undo_move();
 
             if eval <= alpha {
@@ -260,6 +300,8 @@ pub fn alpha_beta(
     if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
         return (alpha, None);
     }
+    ctx.nodes += 1;
+
     // Compute check status early — needed for check extension before depth-0.
     let in_check = conductor.is_king_in_check(chess_board, is_white);
 
@@ -269,7 +311,7 @@ pub fn alpha_beta(
     let depth = depth + extension;
 
     if depth == 0 {
-        return (quiescence(chess_board, conductor, alpha, beta, is_white, 4), None);
+        return (quiescence(chess_board, conductor, alpha, beta, is_white, 4, &mut ctx.nodes), None);
     }
 
     let hash = chess_board.current_hash();
@@ -300,6 +342,28 @@ pub fn alpha_beta(
     } else {
         None
     };
+
+    // --- Static eval for shallow pruning ---
+    // Computed once and reused by RFP and futility pruning below.
+    // Skipped when in check (pruning is unsound under forced moves) or at
+    // high depths where the cost is negligible vs. search time.
+    let static_eval: Option<i32> = if !in_check && depth <= 8 {
+        Some(evaluate_board(chess_board, conductor))
+    } else {
+        None
+    };
+
+    // --- Reverse Futility Pruning (RFP / "static NMP") ---
+    // If our static eval already beats beta by a depth-scaled margin we
+    // can expect a refutation, so cut off without searching.
+    // Only at shallow depth (≤ 6), not in check, not at root (ply > 0).
+    if let Some(se) = static_eval {
+        if depth <= 6 && null_move_allowed && ply > 0 {
+            let margin = 100 * depth;
+            if is_white && se - margin >= beta  { return (se, None); }
+            if !is_white && se + margin <= alpha { return (se, None); }
+        }
+    }
 
     // --- Null Move Pruning ---
     if null_move_allowed
@@ -355,13 +419,30 @@ pub fn alpha_beta(
     if is_white {
         let mut max_eval = i32::MIN;
         for (move_index, mut chess_move) in legal_moves.into_iter().enumerate() {
+            let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
+
+            // --- Futility pruning ---
+            // At depth 1–2, skip quiet moves whose static eval + a margin
+            // cannot possibly raise alpha.  Never prune the first move (PV).
+            if move_index > 0 && is_quiet && !in_check {
+                if let Some(se) = static_eval {
+                    let margin = if depth == 1 { 200 } else if depth == 2 { 400 } else { 0 };
+                    if margin > 0 && se + margin <= alpha {
+                        continue;
+                    }
+                }
+            }
+
             chess_board.make_move(&mut chess_move);
 
-            let can_reduce = move_index >= 2
-                && depth >= 3
-                && chess_move.capture.is_none()
-                && !chess_move.is_promotion()
-                && !in_check;
+            // LMR reduction: R grows with depth and move index.
+            // Formula: R = floor(ln(depth) * ln(move_index+1) / 1.5), capped.
+            let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
+                let r = ((depth as f64).ln() * ((move_index + 1) as f64).ln() / 1.5) as i32;
+                r.max(1).min(depth - 1)
+            } else {
+                0
+            };
 
             let eval = if chess_board.is_repetition(2) {
                 0 // draw by repetition
@@ -369,24 +450,14 @@ pub fn alpha_beta(
                 // PV node: full window search for first move.
                 alpha_beta(chess_board, conductor, tt, ctx,
                     depth - 1, ply + 1, alpha, beta, false, true, stop.clone()).0
-            } else if can_reduce {
-                // LMR + PVS: reduced null-window search first.
+            } else if lmr_r > 0 {
+                // LMR: reduced null-window search.
                 let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 2, ply + 1, alpha, alpha + 1, false, true, stop.clone()).0;
-                if reduced > alpha && reduced < beta {
-                    // Re-search at full depth, full window.
+                    depth - 1 - lmr_r, ply + 1, alpha, alpha + 1, false, true, stop.clone()).0;
+                if reduced > alpha {
+                    // Reduced search beat alpha — re-search at full depth, full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
                         depth - 1, ply + 1, alpha, beta, false, true, stop.clone()).0
-                } else if reduced > alpha {
-                    // Re-search at full depth, null window — then widen if needed.
-                    let score = alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, alpha + 1, false, true, stop.clone()).0;
-                    if score > alpha && score < beta {
-                        alpha_beta(chess_board, conductor, tt, ctx,
-                            depth - 1, ply + 1, alpha, beta, false, true, stop.clone()).0
-                    } else {
-                        score
-                    }
                 } else {
                     reduced
                 }
@@ -432,13 +503,26 @@ pub fn alpha_beta(
     } else {
         let mut min_eval = i32::MAX;
         for (move_index, mut chess_move) in legal_moves.into_iter().enumerate() {
+            let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
+
+            // --- Futility pruning ---
+            if move_index > 0 && is_quiet && !in_check {
+                if let Some(se) = static_eval {
+                    let margin = if depth == 1 { 200 } else if depth == 2 { 400 } else { 0 };
+                    if margin > 0 && se - margin >= beta {
+                        continue;
+                    }
+                }
+            }
+
             chess_board.make_move(&mut chess_move);
 
-            let can_reduce = move_index >= 2
-                && depth >= 3
-                && chess_move.capture.is_none()
-                && !chess_move.is_promotion()
-                && !in_check;
+            let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
+                let r = ((depth as f64).ln() * ((move_index + 1) as f64).ln() / 1.5) as i32;
+                r.max(1).min(depth - 1)
+            } else {
+                0
+            };
 
             let eval = if chess_board.is_repetition(2) {
                 0 // draw by repetition
@@ -446,24 +530,14 @@ pub fn alpha_beta(
                 // PV node: full window search for first move.
                 alpha_beta(chess_board, conductor, tt, ctx,
                     depth - 1, ply + 1, alpha, beta, true, true, stop.clone()).0
-            } else if can_reduce {
-                // LMR + PVS: reduced null-window search first.
+            } else if lmr_r > 0 {
+                // LMR: reduced null-window search.
                 let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 2, ply + 1, beta - 1, beta, true, true, stop.clone()).0;
-                if reduced < beta && reduced > alpha {
-                    // Re-search at full depth, full window.
+                    depth - 1 - lmr_r, ply + 1, beta - 1, beta, true, true, stop.clone()).0;
+                if reduced < beta {
+                    // Reduced search beat beta — re-search at full depth, full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
                         depth - 1, ply + 1, alpha, beta, true, true, stop.clone()).0
-                } else if reduced < beta {
-                    // Re-search at full depth, null window — then widen if needed.
-                    let score = alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, beta - 1, beta, true, true, stop.clone()).0;
-                    if score < beta && score > alpha {
-                        alpha_beta(chess_board, conductor, tt, ctx,
-                            depth - 1, ply + 1, alpha, beta, true, true, stop.clone()).0
-                    } else {
-                        score
-                    }
                 } else {
                     reduced
                 }
@@ -1569,5 +1643,91 @@ mod tests {
 
         assert!(score_passed > score_blocked,
             "Passed pawn ({score_passed}) must score higher than blocked ({score_blocked})");
+    }
+
+    // -----------------------------------------------------------------------
+    // Chunk 1: Futility / RFP / aggressive LMR correctness
+    // -----------------------------------------------------------------------
+
+    /// Futility pruning must not prevent finding a winning capture at depth 1.
+    /// Position: White queen on d4, black queen on d5 (undefended).
+    /// Futility kicks in for quiet moves but captures must always be searched.
+    #[test]
+    fn futility_does_not_prune_winning_capture() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let c = conductor();
+        // depth=1 is exactly when futility is active.
+        let (score, mv) = alpha_beta_root(&mut board, &c, None, 1, true);
+        let m = mv.expect("Must find a move at depth 1");
+        assert_eq!((m.start_square(), m.target_square()), (27, 35),
+            "Must capture the queen even at depth=1: got ({}, {})",
+            m.start_square(), m.target_square());
+        assert!(score > 800, "Score must reflect queen win, got {score}");
+    }
+
+    /// RFP must not prune checkmates: a position that is in check cannot
+    /// be cut off by static eval.
+    #[test]
+    fn rfp_does_not_prune_when_in_check() {
+        // White king on e1 is in check from black rook on e8.
+        // White must escape (only move: Ke2/Kd1/Kf1/etc.) — RFP must not fire.
+        let mut board = ChessBoard::new();
+        board.set_from_fen("k3r3/8/8/8/8/8/8/4K3 w - - 0 1");
+        let c = conductor();
+        let (_, mv) = alpha_beta_root(&mut board, &c, None, 3, true);
+        assert!(mv.is_some(), "Must find an evasion move — RFP must not fire when in check");
+    }
+
+    /// Aggressive LMR must not reduce first move (PV node).
+    /// The mate-in-1 position requires the first move to be searched fully.
+    #[test]
+    fn lmr_does_not_reduce_first_move() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
+        let c = conductor();
+        // If LMR incorrectly reduces move_index=0, the mate score would be lost.
+        let (score, mv) = alpha_beta_root(&mut board, &c, None, 3, true);
+        assert!(mv.is_some(), "Must return a move");
+        assert!(score >= 999_000, "Mate-in-1 score must survive LMR, got {score}");
+    }
+
+    /// With aggressive LMR the engine must still find a mate-in-2.
+    /// Ruy Lopez: Scholar's mate threat — Qxf7#.
+    #[test]
+    fn lmr_finds_mate_in_2() {
+        // Classical scholars mate setup — white plays Qxf7#
+        let mut board = ChessBoard::new();
+        board.set_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4");
+        let c = conductor();
+        let (score, mv) = alpha_beta_root(&mut board, &c, None, 4, true);
+        let m = mv.expect("Must find a move");
+        // Qxf7+ should be the best move (from h5=39 to f7=53)
+        assert_eq!((m.start_square(), m.target_square()), (39, 53),
+            "Must find Qxf7+, got ({}, {})", m.start_square(), m.target_square());
+        let _ = score;
+    }
+
+    /// Node counter must be non-zero after a search.
+    #[test]
+    fn node_counter_increments() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let c = conductor();
+        let mut tt = TranspositionTable::new(1 << 16);
+        let mut ctx = SearchContext::new();
+        alpha_beta(&mut board, &c, &mut tt, &mut ctx, 4, 0, i32::MIN + 1, i32::MAX, true, true, None);
+        assert!(ctx.nodes > 0, "Node counter must be > 0 after search, got {}", ctx.nodes);
+    }
+
+    /// Board state must be clean after depth-6 search (RFP + futility + aggressive LMR all active).
+    #[test]
+    fn board_clean_after_depth_6_with_all_pruning() {
+        let mut board = ChessBoard::new();
+        let hash_before = board.current_hash();
+        let c = conductor();
+        alpha_beta_root(&mut board, &c, None, 6, true);
+        assert_eq!(board.current_hash(), hash_before,
+            "Board must be clean after depth-6 search with all pruning active");
     }
 }
