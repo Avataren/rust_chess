@@ -19,10 +19,12 @@ use crate::{
 /// Shared TT for the sequential path and ID iterations.
 pub const TT_SIZE: usize = 1 << 22; // 4M entries × 24 B = 96 MB
 
-/// Per-thread TT for parallel root search.  Sub-trees from a single root move
-/// rarely exceed ~500K unique positions, so 256K entries suffices while keeping
-/// peak memory at ≈ 8 MB × number of Rayon threads.
-const PARALLEL_TT_SIZE: usize = 1 << 18; // 256K entries ≈ 8 MB
+/// Per-thread TT size for the parallel root search.
+/// Each thread gets its own isolated TT to avoid cross-contamination of
+/// alpha-beta windows between threads searching different root moves.
+/// Kept small (256K × 24B = 6MB) to minimise allocation/zeroing overhead:
+/// each ID iteration creates one TT per Rayon thread, so large sizes hurt NPS.
+const PARALLEL_TT_SIZE: usize = 1 << 18; // 256K entries × 24 B = 6 MB per thread
 
 /// Initial aspiration window half-width in centipawns.  Searches at depth N
 /// use [prev_score - DELTA, prev_score + DELTA]; on failure one side widens to
@@ -281,7 +283,7 @@ fn is_zugzwang_prone(chess_board: &ChessBoard) -> bool {
 pub fn alpha_beta(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     ctx: &mut SearchContext,
     depth: i32,
     ply: usize,
@@ -591,11 +593,14 @@ pub fn alpha_beta(
 ///
 /// Shallow depths (< 3) use a sequential growing-alpha window.  Deeper depths
 /// evaluate all root moves in parallel — each on its own board clone with a
-/// fresh per-thread TT and SearchContext — then pick the best result.
+/// fresh per-thread TT (`PARALLEL_TT_SIZE`) and SearchContext — then pick the
+/// best result.  A fresh TT per thread is critical: sharing a single TT across
+/// threads contaminates alpha-beta windows between root moves, causing severe
+/// play regression.
 pub fn search_root(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     ctx: &mut SearchContext,
     depth: i32,
     alpha: i32,
@@ -626,8 +631,8 @@ pub fn search_root(
                     return (if is_white { i32::MIN + 2 } else { i32::MAX - 1 }, chess_move);
                 }
                 let mut board = chess_board.clone();
-                let mut local_tt = TranspositionTable::new(PARALLEL_TT_SIZE);
                 let mut local_ctx = SearchContext::new();
+                let mut local_tt = TranspositionTable::new(PARALLEL_TT_SIZE);
                 board.make_move(&mut chess_move);
                 let eval = alpha_beta(
                     &mut board, conductor, &mut local_tt, &mut local_ctx,
@@ -705,9 +710,9 @@ pub fn alpha_beta_root(
             }
         }
     }
-    let mut tt = TranspositionTable::new(TT_SIZE);
+    let tt = TranspositionTable::new(TT_SIZE);
     let mut ctx = SearchContext::new();
-    search_root(chess_board, conductor, &mut tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, None, None)
+    search_root(chess_board, conductor, &tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, None, None)
 }
 
 /// Result of an iterative-deepening search.
@@ -723,7 +728,7 @@ pub struct SearchResult {
 pub fn extract_ponder_move(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     best_move: ChessMove,
     is_white: bool,
 ) -> Option<ChessMove> {
@@ -800,8 +805,8 @@ pub fn iterative_deepening_root(
         }
     }
 
-    let mut tt = TranspositionTable::new(TT_SIZE);
-    iterative_deepening_root_with_tt(chess_board, conductor, book, &mut tt, max_depth, is_white, deadline, stop)
+    let tt = TranspositionTable::new(TT_SIZE);
+    iterative_deepening_root_with_tt(chess_board, conductor, book, &tt, max_depth, is_white, deadline, stop)
 }
 
 /// Like `iterative_deepening_root` but accepts an external `TranspositionTable`
@@ -811,7 +816,7 @@ pub fn iterative_deepening_root_with_tt(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
     book: Option<&OpeningBook>,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     max_depth: i32,
     is_white: bool,
     deadline: Option<Instant>,
@@ -1125,9 +1130,9 @@ mod tests {
 
         let (root_score, _) = alpha_beta_root(&mut board, &c, None, 2, true);
 
-        let mut tt = TranspositionTable::new(1 << 16);
+        let tt = TranspositionTable::new(1 << 16);
         let mut ctx = SearchContext::new();
-        let (ab_score, _) = alpha_beta(&mut board, &c, &mut tt, &mut ctx, 2, 0, i32::MIN + 1, i32::MAX, true, true, None);
+        let (ab_score, _) = alpha_beta(&mut board, &c, &tt, &mut ctx, 2, 0, i32::MIN + 1, i32::MAX, true, true, None);
 
         assert_eq!(
             root_score, ab_score,
@@ -1353,9 +1358,9 @@ mod tests {
         let c = conductor();
         let moves = get_all_legal_moves_for_color(&mut board, &c, false);
         assert!(moves.is_empty(), "Black should have no legal moves (stalemate)");
-        let mut tt = TranspositionTable::new(1 << 16);
+        let tt = TranspositionTable::new(1 << 16);
         let mut ctx = SearchContext::new();
-        let (score, _) = alpha_beta(&mut board, &c, &mut tt, &mut ctx, 2, 0, i32::MIN + 1, i32::MAX, false, true, None);
+        let (score, _) = alpha_beta(&mut board, &c, &tt, &mut ctx, 2, 0, i32::MIN + 1, i32::MAX, false, true, None);
         assert_eq!(score, 0, "Stalemate must evaluate to 0 (draw), got {score}");
     }
 
@@ -1382,9 +1387,9 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("3qk3/8/8/8/8/2N5/8/4K3 b - - 0 1");
         let c = conductor();
-        let mut tt = TranspositionTable::new(TT_SIZE);
+        let tt = TranspositionTable::new(TT_SIZE);
         let mut ctx = SearchContext::new();
-        let (score, mv) = search_root(&mut board, &c, &mut tt, &mut ctx, 4, -50, 50, false, None, None);
+        let (score, mv) = search_root(&mut board, &c, &tt, &mut ctx, 4, -50, 50, false, None, None);
         assert!(score < -200 || score <= -50,
             "Black should win material or fail-low, got {score}");
         if score > -50 && score < 50 {
@@ -1423,13 +1428,13 @@ mod tests {
         board.set_from_fen("4k3/8/8/3n4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
 
-        let mut tt1 = TranspositionTable::new(TT_SIZE);
+        let tt1 = TranspositionTable::new(TT_SIZE);
         let mut ctx1 = SearchContext::new();
-        let (score_full, mv_full) = search_root(&mut board, &c, &mut tt1, &mut ctx1, 4, i32::MIN + 1, i32::MAX, true, None, None);
+        let (score_full, mv_full) = search_root(&mut board, &c, &tt1, &mut ctx1, 4, i32::MIN + 1, i32::MAX, true, None, None);
 
-        let mut tt2 = TranspositionTable::new(TT_SIZE);
+        let tt2 = TranspositionTable::new(TT_SIZE);
         let mut ctx2 = SearchContext::new();
-        let (score_asp, _) = search_root(&mut board, &c, &mut tt2, &mut ctx2, 4, -50, 50, true, None, None);
+        let (score_asp, _) = search_root(&mut board, &c, &tt2, &mut ctx2, 4, -50, 50, true, None, None);
 
         let m = mv_full.expect("Full window must return a move");
         assert!(score_full > 200, "White should win material, got {score_full}");
@@ -1744,9 +1749,9 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
-        let mut tt = TranspositionTable::new(1 << 16);
+        let tt = TranspositionTable::new(1 << 16);
         let mut ctx = SearchContext::new();
-        alpha_beta(&mut board, &c, &mut tt, &mut ctx, 4, 0, i32::MIN + 1, i32::MAX, true, true, None);
+        alpha_beta(&mut board, &c, &tt, &mut ctx, 4, 0, i32::MIN + 1, i32::MAX, true, true, None);
         assert!(ctx.nodes > 0, "Node counter must be > 0 after search, got {}", ctx.nodes);
     }
 
@@ -1759,5 +1764,123 @@ mod tests {
         alpha_beta_root(&mut board, &c, None, 6, true);
         assert_eq!(board.current_hash(), hash_before,
             "Board must be clean after depth-6 search with all pruning active");
+    }
+
+    // ── TT integrity: stored moves must be legal ──────────────────────────────
+
+    /// After an ID search, every best_move the TT stored for the root position
+    /// must be a legal move in that position.
+    #[test]
+    fn tt_best_move_is_always_legal() {
+        let fens = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+            "4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        ];
+        let c = conductor();
+        for fen in fens {
+            let mut board = ChessBoard::new();
+            board.set_from_fen(fen);
+            let is_white = fen.split_whitespace().nth(1) == Some("w");
+            let tt = TranspositionTable::new(TT_SIZE);
+            let mut ctx = SearchContext::new();
+            search_root(&mut board, &c, &tt, &mut ctx, 4, i32::MIN + 1, i32::MAX, is_white, None, None);
+
+            // Probe TT for root hash and verify the stored best move (if any) is legal.
+            let hash = board.current_hash();
+            if let Some(entry) = tt.probe(hash) {
+                if let Some(tt_mv) = entry.best_move() {
+                    let legal = get_all_legal_moves_for_color(&mut board, &c, is_white);
+                    let is_legal = legal.iter().any(|m| {
+                        m.start_square() == tt_mv.start_square()
+                            && m.target_square() == tt_mv.target_square()
+                    });
+                    assert!(
+                        is_legal,
+                        "TT best_move {}→{} is not a legal move in FEN: {}",
+                        tt_mv.start_square(), tt_mv.target_square(), fen
+                    );
+                }
+            }
+        }
+    }
+
+    /// A search with a reused TT (simulating persistent cross-move TT) must
+    /// return the same score as a search with a fresh TT on the same position.
+    #[test]
+    fn reused_tt_gives_same_score_as_fresh() {
+        let fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4";
+        let c = conductor();
+        let depth = 4;
+
+        // Fresh TT.
+        let mut board = ChessBoard::new();
+        board.set_from_fen(fen);
+        let tt_fresh = TranspositionTable::new(TT_SIZE);
+        let mut ctx = SearchContext::new();
+        let (score_fresh, mv_fresh) = search_root(
+            &mut board, &c, &tt_fresh, &mut ctx, depth, i32::MIN + 1, i32::MAX, true, None, None,
+        );
+
+        // Polluted TT: search a different position first, then age it, then search the target.
+        let tt_reused = TranspositionTable::new(TT_SIZE);
+        let mut board2 = ChessBoard::new(); // starting position
+        let mut ctx2 = SearchContext::new();
+        search_root(&mut board2, &c, &tt_reused, &mut ctx2, depth, i32::MIN + 1, i32::MAX, true, None, None);
+        tt_reused.new_search();
+
+        let mut board3 = ChessBoard::new();
+        board3.set_from_fen(fen);
+        let mut ctx3 = SearchContext::new();
+        let (score_reused, mv_reused) = search_root(
+            &mut board3, &c, &tt_reused, &mut ctx3, depth, i32::MIN + 1, i32::MAX, true, None, None,
+        );
+
+        assert_eq!(
+            score_fresh, score_reused,
+            "Reused TT must give the same score as fresh TT: fresh={score_fresh} reused={score_reused}"
+        );
+        assert_eq!(
+            mv_fresh.map(|m| (m.start_square(), m.target_square())),
+            mv_reused.map(|m| (m.start_square(), m.target_square())),
+            "Reused TT must return the same best move as fresh TT"
+        );
+    }
+
+    /// Persistent TT across a simulated sequence of moves must not corrupt the
+    /// engine's ability to find a known winning tactic.
+    /// Position: white queen takes black queen (winning move).
+    #[test]
+    fn persistent_tt_does_not_corrupt_tactical_solution() {
+        let c = conductor();
+        let tt = TranspositionTable::new(TT_SIZE);
+
+        // Simulate several prior moves by searching unrelated positions first.
+        let warm_up_fens = [
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2",
+        ];
+        for fen in warm_up_fens {
+            let mut board = ChessBoard::new();
+            board.set_from_fen(fen);
+            let is_white = fen.split_whitespace().nth(1) == Some("w");
+            let mut ctx = SearchContext::new();
+            tt.new_search();
+            search_root(&mut board, &c, &tt, &mut ctx, 3, i32::MIN + 1, i32::MAX, is_white, None, None);
+        }
+
+        // Now search the tactical position: white has a free queen to take.
+        // "4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1"
+        // White Qd4 captures Qd5 (sq 35 → sq 27). Score should be > 800cp.
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let mut ctx = SearchContext::new();
+        tt.new_search();
+        let (score, mv) = search_root(&mut board, &c, &tt, &mut ctx, 4, i32::MIN + 1, i32::MAX, true, None, None);
+        let m = mv.expect("Engine must find a move after TT warm-up");
+        assert_eq!(m.target_square(), 35,
+            "Engine must capture the free queen (sq 35) after TT warm-up, got sq {}", m.target_square());
+        assert!(score > 800, "Score must be > 800cp after free queen capture, got {score}");
     }
 }
