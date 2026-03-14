@@ -464,6 +464,20 @@ impl ChessBoard {
                     self.castling_rights &= !(CastlingRights::BlackKingSide as u8 | CastlingRights::BlackQueenSide as u8)
                 }
             }
+            // If an opponent's rook is captured on its starting square, clear the
+            // corresponding castling right.  Without this, the engine could
+            // generate an illegal castling move using a rook that no longer exists.
+            if let Some(captured) = chess_move.capture {
+                if captured.piece_type() == PieceType::Rook {
+                    match target_square {
+                        0  => self.castling_rights &= !(CastlingRights::WhiteQueenSide as u8),
+                        7  => self.castling_rights &= !(CastlingRights::WhiteKingSide as u8),
+                        56 => self.castling_rights &= !(CastlingRights::BlackQueenSide as u8),
+                        63 => self.castling_rights &= !(CastlingRights::BlackKingSide as u8),
+                        _  => {}
+                    }
+                }
+            }
 
             // Update the piece's bitboard and color bitboards for regular moves
             self.update_piece_bitboard(piece_type, start_square_bb, target_square_bb);
@@ -826,6 +840,85 @@ mod tests {
         board.undo_null_move();
         assert_eq!(board.current_hash(), hash_before);
         assert_eq!(board.is_white_active(), was_white);
+    }
+
+    // ── Castling rights correctness ───────────────────────────────────────────
+
+    /// Capturing White's a1 rook must clear White's queenside castling right.
+    /// Before this fix, capturing an opponent rook on its starting square did not
+    /// update castling rights, allowing the engine to generate illegal castles.
+    #[test]
+    fn capture_on_a1_clears_white_queenside_castling() {
+        // Position: Black queen on b2 can capture White's Ra1.
+        // Castling rights start as KQkq; after Qxa1, white loses 'Q' (queenside).
+        let mut board = ChessBoard::new();
+        // FEN: black queen on b2, white rook on a1, kings elsewhere, all castling rights.
+        board.set_from_fen("r3k3/8/8/8/8/8/1q6/R3K3 b Qq - 0 1");
+        // Verify castling rights include white queenside before the move.
+        assert!(board.castling_rights & CastlingRights::WhiteQueenSide as u8 != 0,
+            "White queenside right must be set before the capture");
+        // Black queen b2=9 captures White Ra1=0.
+        let mut mv = ChessMove::new(9, 0);
+        board.make_move(&mut mv);
+        assert_eq!(board.castling_rights & CastlingRights::WhiteQueenSide as u8, 0,
+            "White queenside castling right must be cleared after Ra1 is captured");
+    }
+
+    /// Capturing White's h1 rook must clear White's kingside castling right.
+    #[test]
+    fn capture_on_h1_clears_white_kingside_castling() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("r3k3/8/8/8/8/8/6q1/4K2R b Kq - 0 1");
+        assert!(board.castling_rights & CastlingRights::WhiteKingSide as u8 != 0);
+        // Black queen g2=14 captures White Rh1=7.
+        let mut mv = ChessMove::new(14, 7);
+        board.make_move(&mut mv);
+        assert_eq!(board.castling_rights & CastlingRights::WhiteKingSide as u8, 0,
+            "White kingside castling right must be cleared after Rh1 is captured");
+    }
+
+    /// Capturing Black's a8 rook must clear Black's queenside castling right.
+    #[test]
+    fn capture_on_a8_clears_black_queenside_castling() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("r3k3/8/8/8/8/8/1Q6/4K3 w Qq - 0 1");
+        assert!(board.castling_rights & CastlingRights::BlackQueenSide as u8 != 0);
+        // White queen b1=1... wait, let me use b7=49 to get to a8=56.
+        // White Queen b2=9 captures Black Ra8=56.
+        board.set_from_fen("r3k3/1Q6/8/8/8/8/8/4K3 w q - 0 1");
+        assert!(board.castling_rights & CastlingRights::BlackQueenSide as u8 != 0);
+        let mut mv = ChessMove::new(49, 56);
+        board.make_move(&mut mv);
+        assert_eq!(board.castling_rights & CastlingRights::BlackQueenSide as u8, 0,
+            "Black queenside castling right must be cleared after Ra8 is captured");
+    }
+
+    /// Capturing Black's h8 rook must clear Black's kingside castling right.
+    #[test]
+    fn capture_on_h8_clears_black_kingside_castling() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k2r/6Q1/8/8/8/8/8/4K3 w k - 0 1");
+        assert!(board.castling_rights & CastlingRights::BlackKingSide as u8 != 0);
+        // White queen g7=54 captures Black Rh8=63.
+        let mut mv = ChessMove::new(54, 63);
+        board.make_move(&mut mv);
+        assert_eq!(board.castling_rights & CastlingRights::BlackKingSide as u8, 0,
+            "Black kingside castling right must be cleared after Rh8 is captured");
+    }
+
+    /// After undoing a rook-capture move, castling rights must be fully restored.
+    #[test]
+    fn undo_rook_capture_restores_castling_rights() {
+        let mut board = ChessBoard::new();
+        board.set_from_fen("r3k2r/6Q1/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        let rights_before = board.castling_rights;
+        // White queen g7=54 captures Black Rh8=63.
+        let mut mv = ChessMove::new(54, 63);
+        board.make_move(&mut mv);
+        assert_ne!(board.castling_rights, rights_before, "Rights should change after rook capture");
+        board.undo_move();
+        assert_eq!(board.castling_rights, rights_before,
+            "Castling rights must be fully restored after undo");
     }
 
     #[test]

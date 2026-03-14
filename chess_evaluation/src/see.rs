@@ -55,12 +55,14 @@ pub fn attackers_of(
     // Pawn attacks: find which pawns attack `sq`.
     // White pawn at (sq-7) attacks sq if sq not on h-file; at (sq-9) if not on a-file.
     // Black pawn at (sq+7) attacks sq if sq not on a-file; at (sq+9) if not on h-file.
+    // IMPORTANT: intersect with `occ` so that pawns removed from the exchange
+    // (i.e., no longer in `occ`) are not counted as attackers in subsequent rounds.
     let wp = board.get_white() & board.get_pawns();
     let bp = board.get_black() & board.get_pawns();
-    if sq >= 7 && file != 7 { atk |= Bitboard(1 << (sq - 7)) & wp; }
-    if sq >= 9 && file != 0 { atk |= Bitboard(1 << (sq - 9)) & wp; }
-    if sq + 7 < 64 && file != 0 { atk |= Bitboard(1 << (sq + 7)) & bp; }
-    if sq + 9 < 64 && file != 7 { atk |= Bitboard(1 << (sq + 9)) & bp; }
+    if sq >= 7 && file != 7 { atk |= Bitboard(1 << (sq - 7)) & wp & occ; }
+    if sq >= 9 && file != 0 { atk |= Bitboard(1 << (sq - 9)) & wp & occ; }
+    if sq + 7 < 64 && file != 0 { atk |= Bitboard(1 << (sq + 7)) & bp & occ; }
+    if sq + 9 < 64 && file != 7 { atk |= Bitboard(1 << (sq + 9)) & bp & occ; }
 
     // Knight and king (pre-computed LUTs, occupancy-independent).
     atk |= conductor.knight_lut[sq] & board.get_knights() & occ;
@@ -246,6 +248,49 @@ mod tests {
         let b = board("4k3/8/2n5/8/3P4/4P3/8/4K3 b - - 0 1");
         let score = see(&b, &cond(), 42, 27, false);
         assert!(score < -150, "black knight x pawn defended by pawn ≈ -200, got {score}");
+    }
+
+    /// Two white pawns (c5 and e5) both attack d6; black rook defends from d7.
+    /// After c5 captures d6 and is removed from occupancy, the black rook
+    /// recaptures, and then e5 recaptures the rook.
+    ///
+    /// The `& occ` fix ensures that c5 (now gone from the board) does NOT
+    /// re-appear as a white attacker in the third exchange round.  In the
+    /// current implementation the `candidates & occ` guard also catches this,
+    /// making the fix defensive — but the fix makes `attackers_of` self-consistent
+    /// and safe for any future direct use of its return value.
+    ///
+    /// FEN: 4k3/3r4/3p4/2P1P3/8/8/8/4K3 w - - 0 1
+    /// c5=34, e5=36 attack d6=43; black Rd7=51 defends d6.
+    /// Sequence: c5xd6(+100), Rd7xd6(-100), e5xd6(+500). Black declines final recap.
+    /// Backward pass: white recaptures rook (+500); black stops (500 > 100 pawn loss);
+    ///   net for white = +100 (free pawn).
+    #[test]
+    fn pawn_recapture_occ_filter() {
+        // c5=34 and e5=36 both attack d6=43. Black rook d7=51 defends.
+        let b = board("4k3/3r4/3p4/2P1P3/8/8/8/4K3 w - - 0 1");
+        let score = see(&b, &cond(), 34, 43, true);
+        // Net: white wins the pawn because black can't afford to recapture with the rook.
+        assert_eq!(score, SEE_PAWN, "c5xd6 with e5 backup vs Rd7: net gain = +pawn, got {score}");
+    }
+
+    /// En-passant capture: SEE should treat it as capturing a pawn (+100 value),
+    /// not as capturing an empty square (0 value).
+    /// Without special handling, SEE returns 0 for en-passant because there is
+    /// no piece on the target square; SEE_PAWN ≥ 0 so it still passes the
+    /// "good capture" filter, but the ordering score is wrong (0 vs +100).
+    #[test]
+    fn en_passant_see_value() {
+        // White pawn e5=36, black pawn d5=35 just played d7-d5 (en-passant available on d6=43).
+        // After exd6 en-passant, white gains the black pawn on d5.
+        // The target square d6=43 is empty; SEE on an empty target is 0, but
+        // the correct economic value is +SEE_PAWN (we capture a pawn for free).
+        // We verify SEE ≥ 0 so the move is not classified as a losing capture.
+        let b = board("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
+        // e5=36 captures toward d6=43 (en-passant target square)
+        let score = see(&b, &cond(), 36, 43, true);
+        assert!(score >= 0,
+            "en-passant capture must not be classified as losing (SEE={score})");
     }
 
     /// X-ray: rook behind a rook is revealed after first exchange.

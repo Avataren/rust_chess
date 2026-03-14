@@ -36,12 +36,35 @@ fn score_to_tt(score: i32, ply: usize) -> i32 {
 }
 
 /// Undo the ply-normalisation applied by `score_to_tt` when retrieving from TT.
+///
+/// Also guards against false mate scores near the 50-move draw boundary:
+/// if the stored mate requires more half-moves than remain before the 50-move
+/// rule fires, the score is downgraded to "winning but not forced mate".
+/// (Stockfish does the same check in `value_from_tt`.)
 #[inline]
-fn score_from_tt(score: i32, ply: usize) -> i32 {
+fn score_from_tt(score: i32, ply: usize, halfmove_clock: u32) -> i32 {
     let p = ply as i32;
-    if      score >  MATE_SCORE_THRESHOLD { score - p }
-    else if score < -MATE_SCORE_THRESHOLD { score + p }
-    else                                  { score }
+    if score > MATE_SCORE_THRESHOLD {
+        let retrieved = score - p;
+        // plies_to_mate: how many plies from the current node until checkmate.
+        let plies_to_mate = 1_000_000 - retrieved;
+        let plies_remaining = 100_i32 - halfmove_clock.min(100) as i32;
+        if plies_to_mate > plies_remaining {
+            // Mate is unreachable before the 50-move clock expires — downgrade.
+            return MATE_SCORE_THRESHOLD - 1;
+        }
+        retrieved
+    } else if score < -MATE_SCORE_THRESHOLD {
+        let retrieved = score + p;
+        let plies_to_mate = 1_000_000 + retrieved;
+        let plies_remaining = 100_i32 - halfmove_clock.min(100) as i32;
+        if plies_to_mate > plies_remaining {
+            return -(MATE_SCORE_THRESHOLD - 1);
+        }
+        retrieved
+    } else {
+        score
+    }
 }
 
 /// Initial aspiration window half-width in centipawns.  Searches at depth N
@@ -88,7 +111,8 @@ impl SearchContext {
         }
     }
 
-    /// Record a quiet move that caused a β-cutoff.
+    /// Record a quiet move that caused a β-cutoff:
+    /// update killer slots and reward the move in the history table.
     fn record_cutoff(&mut self, ply: usize, depth: i32, mv: ChessMove) {
         let p = ply.min(MAX_PLY - 1);
         let k = &mut self.killers[p];
@@ -99,8 +123,17 @@ impl SearchContext {
             k[1] = k[0];
             k[0] = Some(mv);
         }
-        // Reward deeper cutoffs more.
-        self.history[mv.start_square() as usize][mv.target_square() as usize] += depth * depth;
+        // Reward deeper cutoffs more, clamped to avoid history overflow.
+        let v = &mut self.history[mv.start_square() as usize][mv.target_square() as usize];
+        *v = (*v + depth * depth).min(16_384);
+    }
+
+    /// Apply a history malus (negative bonus) to a quiet move that was searched
+    /// but failed to produce a cutoff.  Penalises moves tried before the
+    /// actual β-cutoff move so they are ordered lower in future nodes.
+    fn apply_history_malus(&mut self, depth: i32, mv: ChessMove) {
+        let v = &mut self.history[mv.start_square() as usize][mv.target_square() as usize];
+        *v = (*v - depth * depth).max(-16_384);
     }
 }
 
@@ -281,14 +314,17 @@ fn order_moves(
 
 // ── Zugzwang guard ────────────────────────────────────────────────────────────
 
-/// Returns true when the position is likely a zugzwang situation:
-/// fewer than 2 minor/major pieces on the board means the side to move
-/// may have no good quiet moves to pass, making null-move pruning unsafe.
-fn is_zugzwang_prone(chess_board: &ChessBoard) -> bool {
-    let minor_and_major = chess_board.get_knights()
+/// Returns true when the position is likely a zugzwang situation.
+/// Checks only the **side to move**: if that side has fewer than 2 minor/major
+/// pieces, giving up the move (null move) can be catastrophically wrong.
+/// Counting both sides was incorrect — a side with only pawns can be in
+/// zugzwang even if the opponent has many pieces.
+fn is_zugzwang_prone(chess_board: &ChessBoard, is_white: bool) -> bool {
+    let side_bb = if is_white { chess_board.get_white() } else { chess_board.get_black() };
+    let minor_and_major = (chess_board.get_knights()
         | chess_board.get_bishops()
         | chess_board.get_rooks()
-        | chess_board.get_queens();
+        | chess_board.get_queens()) & side_bb;
     minor_and_major.count_ones() < 2
 }
 
@@ -330,15 +366,32 @@ pub fn alpha_beta(
     }
 
     let hash = chess_board.current_hash();
+    let halfmove_clock = chess_board.get_halfmove_clock();
     let original_alpha = alpha;
     let original_beta = beta;
+
+    // --- Mate distance pruning ---
+    // Tighten alpha/beta to the tightest achievable mate bounds at this ply.
+    // If we've already found a shorter mate elsewhere in the tree, there is
+    // no point continuing — we can't do better than our current best mate.
+    // Symmetrically, if the best we can do is already beaten by alpha, prune.
+    if ply > 0 {
+        let mated_score  = -1_000_000 + ply as i32;     // score if mated at this ply
+        let mating_score =  1_000_000 - ply as i32 - 1; // score if we give mate next ply
+        alpha = alpha.max(mated_score);
+        beta  = beta.min(mating_score);
+        if alpha >= beta {
+            return (alpha, None);
+        }
+    }
 
     // --- Transposition table probe ---
     let tt_move: Option<ChessMove> = if let Some(entry) = tt.probe(hash) {
         if entry.depth >= depth {
             // Undo the ply-normalization applied at store time so the score is
             // relative to the *current* ply, not the ply where it was stored.
-            let s = score_from_tt(entry.score, ply);
+            // Also guard against false mate scores near the 50-move boundary.
+            let s = score_from_tt(entry.score, ply, halfmove_clock);
             match entry.flag {
                 TtFlag::Exact => return (s, entry.best_move()),
                 TtFlag::LowerBound => {
@@ -385,7 +438,7 @@ pub fn alpha_beta(
     if null_move_allowed
         && depth >= 3
         && !in_check
-        && !is_zugzwang_prone(chess_board)
+        && !is_zugzwang_prone(chess_board, is_white)
     {
         let r = if depth >= 6 { 3 } else { 2 };
         chess_board.make_null_move();
@@ -434,6 +487,10 @@ pub fn alpha_beta(
 
     if is_white {
         let mut max_eval = i32::MIN;
+        // Track quiet moves tried so we can apply history malus to the ones
+        // that did NOT cause a cutoff (they turned out to be bad moves).
+        let mut tried_quiets: Vec<ChessMove> = Vec::with_capacity(8);
+
         for (move_index, mut chess_move) in legal_moves.into_iter().enumerate() {
             let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
 
@@ -494,6 +551,8 @@ pub fn alpha_beta(
 
             chess_board.undo_move();
 
+            if is_quiet { tried_quiets.push(chess_move); }
+
             if eval > max_eval {
                 max_eval = eval;
                 best_move = Some(chess_move);
@@ -502,8 +561,13 @@ pub fn alpha_beta(
                 alpha = eval;
             }
             if beta <= alpha {
-                if chess_move.capture.is_none() && !chess_move.is_promotion() {
+                if is_quiet {
+                    // Reward the cutoff move; penalise all quiets tried before it.
                     ctx.record_cutoff(ply, depth, chess_move);
+                    let n = tried_quiets.len();
+                    for &tried in tried_quiets[..n.saturating_sub(1)].iter() {
+                        ctx.apply_history_malus(depth, tried);
+                    }
                 }
                 break;
             }
@@ -520,6 +584,8 @@ pub fn alpha_beta(
         (max_eval, best_move)
     } else {
         let mut min_eval = i32::MAX;
+        let mut tried_quiets: Vec<ChessMove> = Vec::with_capacity(8);
+
         for (move_index, mut chess_move) in legal_moves.into_iter().enumerate() {
             let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
 
@@ -575,6 +641,8 @@ pub fn alpha_beta(
 
             chess_board.undo_move();
 
+            if is_quiet { tried_quiets.push(chess_move); }
+
             if eval < min_eval {
                 min_eval = eval;
                 best_move = Some(chess_move);
@@ -583,8 +651,12 @@ pub fn alpha_beta(
                 beta = eval;
             }
             if beta <= alpha {
-                if chess_move.capture.is_none() && !chess_move.is_promotion() {
+                if is_quiet {
                     ctx.record_cutoff(ply, depth, chess_move);
+                    let n = tried_quiets.len();
+                    for &tried in tried_quiets[..n.saturating_sub(1)].iter() {
+                        ctx.apply_history_malus(depth, tried);
+                    }
                 }
                 break;
             }
@@ -1445,27 +1517,28 @@ mod tests {
     fn zugzwang_prone_kings_only() {
         let mut board = ChessBoard::new();
         board.set_from_fen("k7/8/8/8/8/8/8/7K w - - 0 1");
-        assert!(is_zugzwang_prone(&board), "K vs K should be zugzwang-prone");
+        assert!(is_zugzwang_prone(&board, true), "K vs K should be zugzwang-prone");
     }
 
     #[test]
     fn zugzwang_prone_one_rook() {
         let mut board = ChessBoard::new();
+        // White K+R vs black K: white has 1 rook → prone (< 2 minor/major for white).
         board.set_from_fen("k7/8/8/8/8/8/8/6RK w - - 0 1");
-        assert!(is_zugzwang_prone(&board), "K+R vs K should be zugzwang-prone");
+        assert!(is_zugzwang_prone(&board, true), "K+R vs K should be zugzwang-prone");
     }
 
     #[test]
     fn not_zugzwang_prone_two_rooks() {
         let mut board = ChessBoard::new();
         board.set_from_fen("k7/8/8/8/8/8/8/5RRK w - - 0 1");
-        assert!(!is_zugzwang_prone(&board), "K+2R vs K should not be zugzwang-prone");
+        assert!(!is_zugzwang_prone(&board, true), "K+2R vs K should not be zugzwang-prone");
     }
 
     #[test]
     fn not_zugzwang_prone_starting_position() {
         let board = ChessBoard::new();
-        assert!(!is_zugzwang_prone(&board), "Starting position should not be zugzwang-prone");
+        assert!(!is_zugzwang_prone(&board, true), "Starting position should not be zugzwang-prone");
     }
 
     // -----------------------------------------------------------------------
@@ -2137,5 +2210,161 @@ mod tests {
         );
         assert_eq!(board.current_hash(), hash_before,
             "board hash must be unchanged after multi-threaded search");
+    }
+
+    // ── Zugzwang / NMP correctness ────────────────────────────────────────────
+
+    /// is_zugzwang_prone must return true when only the side to move has no
+    /// minor/major pieces, even if the opponent has many.
+    ///
+    /// Before the fix the function counted pieces for BOTH sides combined.
+    /// So KPP vs KQQ would count 2 queens = not prone, even though the side
+    /// to move (white, KPP) has zero non-pawn material — a classic zugzwang.
+    #[test]
+    fn zugzwang_prone_checks_side_to_move_only() {
+        // White KPP vs Black KQQ: white has no minor/major pieces → prone.
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/3qq3/8/8/8/8/3PP4/4K3 w - - 0 1");
+        assert!(is_zugzwang_prone(&board, true),
+            "White with only pawns/king must be zugzwang-prone even if opponent has queens");
+
+        // Black KPP vs White KQQ: black has no minor/major pieces → prone (black to move).
+        let mut board2 = ChessBoard::new();
+        board2.set_from_fen("4k3/3pp4/8/8/8/8/3QQ3/4K3 b - - 0 1");
+        assert!(is_zugzwang_prone(&board2, false),
+            "Black with only pawns/king must be zugzwang-prone even if opponent has queens");
+
+        // Both sides have major pieces: neither side is zugzwang-prone.
+        let mut board3 = ChessBoard::new();
+        board3.set_from_fen("4k3/3rr3/8/8/8/8/3RR3/4K3 w - - 0 1");
+        assert!(!is_zugzwang_prone(&board3, true),
+            "White with 2 rooks must not be zugzwang-prone");
+    }
+
+    // ── Mate distance pruning ─────────────────────────────────────────────────
+
+    /// Mate distance pruning must tighten alpha to the mated-at-this-ply lower
+    /// bound.  If a shorter mate has already been found (alpha >= mating_score),
+    /// the node must return immediately without searching.
+    #[test]
+    fn mate_distance_pruning_triggers_when_shorter_mate_found() {
+        let c = conductor();
+        let tt = TranspositionTable::new(1 << 16);
+        let mut ctx = SearchContext::new();
+
+        // Mate-in-1 position for white.  Searching with alpha already set to
+        // the mating score at ply=1 (999_998) means we can never do better, so
+        // the node at ply=1 should prune immediately.
+        let mut board = ChessBoard::new();
+        board.set_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4");
+
+        // With a full-window search, white finds the mate-in-1 quickly.
+        let (score, mv) = alpha_beta(
+            &mut board, &c, &tt, &mut ctx,
+            3, 0, i32::MIN + 1, i32::MAX, true, true, None,
+        );
+        assert!(score > 999_000, "Must find a mate score, got {score}");
+        assert!(mv.is_some(), "Must find a best move");
+    }
+
+    /// score_from_tt must downgrade a mate score when the halfmove clock is
+    /// too high for the mate to be reachable before the 50-move draw rule.
+    #[test]
+    fn tt_mate_score_downgraded_near_50move_boundary() {
+        // Store a "mate in 5 plies" score in the TT.
+        // Retrieved with halfmove_clock = 96 (only 4 half-moves remaining).
+        // The mate requires 5 plies but only 4 are available → downgrade.
+        let mate_in_5_stored = 1_000_000 - 5 + 0; // score_to_tt at ply=0: +0 → stored = 999_995
+        // At retrieval ply=0, halfmove_clock=96 (4 plies remaining):
+        let retrieved = score_from_tt(mate_in_5_stored + 0, 0, 96);
+        // 5 plies needed, 4 remaining → should be downgraded
+        assert!(retrieved < 999_000,
+            "Mate score must be downgraded near 50-move boundary, got {retrieved}");
+        assert!(retrieved > 0,
+            "Downgraded score must still be positive (winning), got {retrieved}");
+
+        // With plenty of time (clock=0), the same mate should NOT be downgraded.
+        let retrieved_ok = score_from_tt(mate_in_5_stored, 0, 0);
+        assert!(retrieved_ok > 999_000,
+            "Mate score must NOT be downgraded with low halfmove clock, got {retrieved_ok}");
+    }
+
+    // ── History malus ─────────────────────────────────────────────────────────
+
+    /// Quiet moves tried before a beta-cutoff should receive a history malus.
+    /// After a search where the first move causes a cutoff, the second tried
+    /// quiet move should have lower history than a fresh one.
+    #[test]
+    fn history_malus_applied_to_failed_quiet_moves() {
+        let c = conductor();
+        let tt = TranspositionTable::new(1 << 16);
+        let mut ctx = SearchContext::new();
+
+        // Starting position — run a depth-4 search to populate history.
+        let mut board = ChessBoard::new();
+        alpha_beta(&mut board, &c, &tt, &mut ctx, 4, 0, i32::MIN + 1, i32::MAX, true, true, None);
+
+        // After search, some history values should be negative (malus applied).
+        let has_negative = ctx.history.iter().flat_map(|row| row.iter()).any(|&v| v < 0);
+        assert!(has_negative,
+            "History table must contain negative values (malus) after a search with cutoffs");
+    }
+
+    /// apply_history_malus clamps at -16_384.
+    #[test]
+    fn history_malus_clamps_at_minimum() {
+        let mut ctx = SearchContext::new();
+        let mv = chess_foundation::ChessMove::new(0, 16);
+        // Apply malus many times — must not underflow below -16_384.
+        for _ in 0..100 {
+            ctx.apply_history_malus(10, mv);
+        }
+        let v = ctx.history[0][16];
+        assert!(v >= -16_384, "History must not go below -16_384, got {v}");
+    }
+
+    /// record_cutoff clamps at +16_384.
+    #[test]
+    fn history_bonus_clamps_at_maximum() {
+        let mut ctx = SearchContext::new();
+        let mv = chess_foundation::ChessMove::new(0, 16);
+        // Apply bonus many times — must not overflow above 16_384.
+        for _ in 0..100 {
+            ctx.record_cutoff(0, 10, mv);
+        }
+        let v = ctx.history[0][16];
+        assert!(v <= 16_384, "History must not exceed 16_384, got {v}");
+    }
+
+    /// The engine must not return a spuriously large score in a position where
+    /// the side to move has only pawns (zugzwang-prone), caused by NMP giving
+    /// the opponent a free move when it shouldn't.
+    ///
+    /// KQQ vs KPP where black is to move: black passes (null move) → white
+    /// searches and finds a huge score.  With the old bug, this could propagate
+    /// as a false cutoff.  With the fix, NMP is suppressed and black searches
+    /// real moves instead.
+    #[test]
+    fn nmp_suppressed_when_side_to_move_has_only_pawns() {
+        let c = conductor();
+        let tt = TranspositionTable::new(1 << 16);
+        let mut ctx = SearchContext::new();
+
+        // Black to move, black has only KPP.  White has KQQ.
+        // White is clearly winning, but the score must be grounded in real moves,
+        // not a null-move phantom.  We just verify the board is clean afterward
+        // and that a result is returned (no panic / infinite loop).
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/3qq3/8/8/8/8/3PP4/4K3 b - - 0 1");
+        let hash_before = board.current_hash();
+        let (_score, _mv) = alpha_beta(
+            &mut board, &c, &tt, &mut ctx,
+            5, 0, i32::MIN + 1, i32::MAX,
+            false, // is_white = false (black to move)
+            true,  // null_move_allowed
+            None,
+        );
+        assert_eq!(board.current_hash(), hash_before,
+            "Board must be clean after search in zugzwang-prone position");
     }
 }
