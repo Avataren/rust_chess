@@ -4,27 +4,18 @@ use move_generator::{
     move_generator::{get_all_legal_captures_for_color, get_all_legal_moves_for_color},
     piece_conductor::PieceConductor,
 };
-use rand::seq::SliceRandom;
-use rayon::prelude::*;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use web_time::Instant;
 
 use crate::{
     evaluate_board,
     opening_book::OpeningBook,
-    see::{see, attackers_of},
+    see::see,
     transposition_table::{TranspositionTable, TtFlag},
 };
 
 /// Shared TT for the sequential path and ID iterations.
 pub const TT_SIZE: usize = 1 << 22; // 4M entries × 24 B = 96 MB
-
-/// Per-thread TT size for the parallel root search.
-/// Each thread gets its own isolated TT to avoid cross-contamination of
-/// alpha-beta windows between threads searching different root moves.
-/// Kept small (256K × 24B = 6MB) to minimise allocation/zeroing overhead:
-/// each ID iteration creates one TT per Rayon thread, so large sizes hurt NPS.
-const PARALLEL_TT_SIZE: usize = 1 << 18; // 256K entries × 24 B = 6 MB per thread
 
 /// Initial aspiration window half-width in centipawns.  Searches at depth N
 /// use [prev_score - DELTA, prev_score + DELTA]; on failure one side widens to
@@ -587,16 +578,13 @@ pub fn alpha_beta(
 
 // ── Root search ───────────────────────────────────────────────────────────────
 
-/// Root-level search at a single fixed depth.  The caller supplies the TT so
-/// it can be reused across iterations.  `prev_best` (the best move from the
-/// previous iteration) is ordered first to maximise alpha pruning.
+/// Root-level search at a single fixed depth with PVS (Principal Variation
+/// Search).  The first move gets a full [alpha, beta] window; subsequent moves
+/// use a null window and re-search on fail-high.  Alpha/beta are updated
+/// between moves for proper pruning.
 ///
-/// Shallow depths (< 3) use a sequential growing-alpha window.  Deeper depths
-/// evaluate all root moves in parallel — each on its own board clone with a
-/// fresh per-thread TT (`PARALLEL_TT_SIZE`) and SearchContext — then pick the
-/// best result.  A fresh TT per thread is critical: sharing a single TT across
-/// threads contaminates alpha-beta windows between root moves, causing severe
-/// play regression.
+/// All root moves are searched sequentially on the shared TT.  Parallelism is
+/// handled at a higher level by Lazy SMP (`lazy_smp_search`).
 pub fn search_root(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
@@ -613,79 +601,94 @@ pub fn search_root(
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board, conductor), None);
     }
-    // Order: prev_best first (PV move from previous ID iteration), then
-    // killers at ply 0 (usually empty), then history-scored quiets.
     order_moves(&mut legal_moves, prev_best, &ctx.killers[0], &ctx.history,
                 chess_board, conductor, is_white);
 
-    // --- Parallel root search (depth >= 3, native only) ---
-    // Each root move is evaluated independently on its own board clone with a
-    // fresh per-thread TT and SearchContext.
-    if depth >= 3 {
-        let stop_par = stop.clone();
-        let results: Vec<(i32, ChessMove)> = legal_moves
-            .into_par_iter()
-            .map(move |mut chess_move| {
-                if stop_par.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
-                    // Return sentinel: aborted moves are filtered out by caller
-                    return (if is_white { i32::MIN + 2 } else { i32::MAX - 1 }, chess_move);
+    // Default to first ordered move so we never return None even if stop fires
+    // before the first move is fully evaluated.
+    let mut best_move: Option<ChessMove> = legal_moves.first().copied();
+
+    if is_white {
+        let mut best_score = i32::MIN + 1;
+        let mut alpha = alpha;
+
+        for (i, mut chess_move) in legal_moves.into_iter().enumerate() {
+            if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
+                break;
+            }
+            chess_board.make_move(&mut chess_move);
+
+            let eval = if chess_board.is_repetition(2) {
+                0
+            } else if i == 0 {
+                alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 1, 1, alpha, beta, false, true, stop.clone()).0
+            } else {
+                let score = alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 1, 1, alpha, alpha + 1, false, true, stop.clone()).0;
+                if score > alpha && score < beta {
+                    alpha_beta(chess_board, conductor, tt, ctx,
+                        depth - 1, 1, alpha, beta, false, true, stop.clone()).0
+                } else {
+                    score
                 }
-                let mut board = chess_board.clone();
-                let mut local_ctx = SearchContext::new();
-                let mut local_tt = TranspositionTable::new(PARALLEL_TT_SIZE);
-                board.make_move(&mut chess_move);
-                let eval = alpha_beta(
-                    &mut board, conductor, &mut local_tt, &mut local_ctx,
-                    depth - 1, 1, alpha, beta, !is_white, true, stop_par.clone(),
-                ).0;
-                (eval, chess_move)
-            })
-            .collect();
+            };
 
-        let best_score = if is_white {
-            results.iter().map(|(s, _)| *s).max().unwrap_or(i32::MIN + 1)
-        } else {
-            results.iter().map(|(s, _)| *s).min().unwrap_or(i32::MAX)
-        };
-        let best_moves: Vec<ChessMove> = results.into_iter()
-            .filter(|(s, _)| *s == best_score)
-            .map(|(_, mv)| mv)
-            .collect();
-        return (best_score, best_moves.choose(&mut rand::thread_rng()).copied());
-    }
+            chess_board.undo_move();
 
-    // --- Sequential root search ---
-    let mut best_score = if is_white { i32::MIN + 1 } else { i32::MAX };
-    let mut best_moves: Vec<ChessMove> = Vec::new();
-
-    for mut chess_move in legal_moves {
-        chess_board.make_move(&mut chess_move);
-        let (eval, _) = alpha_beta(
-            chess_board, conductor, tt, ctx, depth - 1, 1, alpha, beta, !is_white, true, stop.clone(),
-        );
-        chess_board.undo_move();
-
-        if is_white {
             if eval > best_score {
                 best_score = eval;
-                best_moves.clear();
-                best_moves.push(chess_move);
-            } else if eval == best_score {
-                best_moves.push(chess_move);
+                best_move = Some(chess_move);
             }
-        } else {
-            if eval < best_score {
-                best_score = eval;
-                best_moves.clear();
-                best_moves.push(chess_move);
-            } else if eval == best_score {
-                best_moves.push(chess_move);
+            if eval > alpha {
+                alpha = eval;
+            }
+            if alpha >= beta {
+                break;
             }
         }
-    }
+        (best_score, best_move)
+    } else {
+        let mut best_score = i32::MAX;
+        let mut beta = beta;
 
-    let best = best_moves.choose(&mut rand::thread_rng()).copied();
-    (best_score, best)
+        for (i, mut chess_move) in legal_moves.into_iter().enumerate() {
+            if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
+                break;
+            }
+            chess_board.make_move(&mut chess_move);
+
+            let eval = if chess_board.is_repetition(2) {
+                0
+            } else if i == 0 {
+                alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 1, 1, alpha, beta, true, true, stop.clone()).0
+            } else {
+                let score = alpha_beta(chess_board, conductor, tt, ctx,
+                    depth - 1, 1, beta - 1, beta, true, true, stop.clone()).0;
+                if score < beta && score > alpha {
+                    alpha_beta(chess_board, conductor, tt, ctx,
+                        depth - 1, 1, alpha, beta, true, true, stop.clone()).0
+                } else {
+                    score
+                }
+            };
+
+            chess_board.undo_move();
+
+            if eval < best_score {
+                best_score = eval;
+                best_move = Some(chess_move);
+            }
+            if eval < beta {
+                beta = eval;
+            }
+            if beta <= alpha {
+                break;
+            }
+        }
+        (best_score, best_move)
+    }
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -783,6 +786,14 @@ pub fn extract_ponder_move(
 ///
 /// Returns a `SearchResult` containing score, best move, and predicted
 /// opponent reply (ponder move) extracted from the TT.
+/// Number of available CPU threads.  Used by callers that want Lazy SMP.
+pub fn available_threads() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+/// Convenience wrapper: creates a fresh TT and runs a single-threaded search.
+/// For multi-threaded search, use `iterative_deepening_root_with_tt` with an
+/// explicit `num_threads` and a persistent TT.
 pub fn iterative_deepening_root(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
@@ -792,26 +803,21 @@ pub fn iterative_deepening_root(
     deadline: Option<Instant>,
     stop: Option<Arc<AtomicBool>>,
 ) -> SearchResult {
-    if let Some(book) = book {
-        if let Some((from, to)) = book.probe(chess_board) {
-            let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
-            if let Some(book_move) = legal
-                .into_iter()
-                .find(|m| m.start_square() == from && m.target_square() == to)
-            {
-                eprintln!("Book move: {}", book_move.to_san_simple());
-                return SearchResult { score: 0, best_move: Some(book_move), ponder_move: None };
-            }
-        }
-    }
-
     let tt = TranspositionTable::new(TT_SIZE);
-    iterative_deepening_root_with_tt(chess_board, conductor, book, &tt, max_depth, is_white, deadline, stop)
+    iterative_deepening_root_with_tt(
+        chess_board, conductor, book, &tt, max_depth, is_white,
+        deadline, stop, 1,
+    )
 }
 
 /// Like `iterative_deepening_root` but accepts an external `TranspositionTable`
 /// so the caller can persist it across moves.  The caller should call
 /// `tt.new_search()` before each invocation to age old entries.
+///
+/// When `num_threads > 1`, Lazy SMP is used: N-1 helper threads search the
+/// same position with a shared TT via `rayon::scope`, while the main thread
+/// runs the authoritative iterative deepening.  Helpers populate the TT;
+/// their results are discarded.
 pub fn iterative_deepening_root_with_tt(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
@@ -821,7 +827,9 @@ pub fn iterative_deepening_root_with_tt(
     is_white: bool,
     deadline: Option<Instant>,
     stop: Option<Arc<AtomicBool>>,
+    num_threads: usize,
 ) -> SearchResult {
+    // Book probe before spawning any threads.
     if let Some(book) = book {
         if let Some((from, to)) = book.probe(chess_board) {
             let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
@@ -835,29 +843,76 @@ pub fn iterative_deepening_root_with_tt(
         }
     }
 
+    if num_threads <= 1 {
+        return id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop);
+    }
+
+    // ── Lazy SMP: spawn helpers, main thread runs authoritative search ───
+    let helper_stop = Arc::new(AtomicBool::new(false));
+
+    let mut result = SearchResult {
+        score: 0,
+        best_move: None,
+        ponder_move: None,
+    };
+
+    rayon::scope(|s| {
+        // Spawn N-1 helper threads, each with its own board clone & context.
+        for i in 0..num_threads - 1 {
+            let mut board = chess_board.clone();
+            let cond = conductor.clone();
+            let hs = Arc::clone(&helper_stop);
+            let ext = stop.clone();
+            s.spawn(move |_| {
+                smp_helper(&mut board, &cond, tt, max_depth, is_white, hs, ext, i);
+            });
+        }
+
+        // Main thread: full iterative deepening with aspiration & deadline.
+        result = id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop.clone());
+
+        // Main thread done — signal helpers to stop.
+        helper_stop.store(true, Ordering::Release);
+    });
+
+    result
+}
+
+// ── Lazy SMP internals ───────────────────────────────────────────────────────
+
+/// Single-threaded iterative deepening with aspiration windows.  Used by the
+/// main thread (and as the sole path when num_threads == 1).
+fn id_search_single(
+    chess_board: &mut ChessBoard,
+    conductor: &PieceConductor,
+    tt: &TranspositionTable,
+    max_depth: i32,
+    is_white: bool,
+    deadline: Option<Instant>,
+    stop: Option<Arc<AtomicBool>>,
+) -> SearchResult {
     let mut ctx = SearchContext::new();
     let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
 
     for depth in 1..=max_depth {
-        let _iter_start = Instant::now();
         let (prev_score, prev_move) = best;
 
-        // Age history at the start of each new iteration (skip depth 1 — nothing
-        // to age yet).
         if depth > 1 {
             ctx.age_history();
         }
 
         let result = if depth <= 2 {
-            // Full window for shallow depths — aspirating an unknown score is useless.
             search_root(chess_board, conductor, tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move, stop.clone())
         } else {
-            // Narrow aspiration window around previous score.  Widen one side on
-            // failure and retry until the result lands inside the window.
             let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
             let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
             loop {
                 let result = search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone());
+                // Stop flag fired — break out immediately to avoid infinite loop
+                // (partial search returns extreme scores that keep failing the window).
+                if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
+                    break result;
+                }
                 if result.0 > lo && result.0 < hi {
                     break result;
                 } else if result.0 <= lo {
@@ -871,10 +926,6 @@ pub fn iterative_deepening_root_with_tt(
             }
         };
 
-        // Stop flag means the iteration may have been interrupted mid-search
-        // (e.g. UCI "stop" command) — discard the unreliable result.
-        // Exception: if we have no move yet, use the interrupted result anyway
-        // so we never return best_move: None.
         if let Some(ref s) = stop {
             if s.load(Ordering::Relaxed) {
                 if best.1.is_none() && result.1.is_some() {
@@ -884,7 +935,6 @@ pub fn iterative_deepening_root_with_tt(
             }
         }
 
-        // Iteration completed cleanly — save it before checking deadline.
         best = result;
 
         if let Some(dl) = deadline {
@@ -892,7 +942,6 @@ pub fn iterative_deepening_root_with_tt(
         }
     }
 
-    // Extract the ponder move from the TT
     let ponder_move = best.1.and_then(|bm| {
         extract_ponder_move(chess_board, conductor, tt, bm, is_white)
     });
@@ -901,6 +950,48 @@ pub fn iterative_deepening_root_with_tt(
         score: best.0,
         best_move: best.1,
         ponder_move,
+    }
+}
+
+/// Helper thread for Lazy SMP: runs simplified iterative deepening to populate
+/// the shared TT.  No book, no aspiration, no ponder extraction.
+/// Stops when either `helper_stop` or `ext_stop` fires.
+fn smp_helper(
+    chess_board: &mut ChessBoard,
+    conductor: &PieceConductor,
+    tt: &TranspositionTable,
+    max_depth: i32,
+    is_white: bool,
+    helper_stop: Arc<AtomicBool>,
+    ext_stop: Option<Arc<AtomicBool>>,
+    thread_idx: usize,
+) {
+    let mut ctx = SearchContext::new();
+    let mut prev_move: Option<ChessMove> = None;
+
+    // Stagger starting depth so helpers explore different depth layers.
+    let start_depth = 1 + (thread_idx % 2) as i32;
+
+    for depth in start_depth..=max_depth {
+        if helper_stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if ext_stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
+            break;
+        }
+
+        if depth > 1 {
+            ctx.age_history();
+        }
+
+        // Pass helper_stop as the stop flag so search_root exits promptly.
+        let (_, mv) = search_root(
+            chess_board, conductor, tt, &mut ctx, depth,
+            i32::MIN + 1, i32::MAX,
+            is_white, prev_move, Some(Arc::clone(&helper_stop)),
+        );
+
+        prev_move = mv;
     }
 }
 
@@ -1882,5 +1973,95 @@ mod tests {
         assert_eq!(m.target_square(), 35,
             "Engine must capture the free queen (sq 35) after TT warm-up, got sq {}", m.target_square());
         assert!(score > 800, "Score must be > 800cp after free queen capture, got {score}");
+    }
+
+    // ── Lazy SMP diagnostics ───────────────────────────────────────────────
+
+    #[test]
+    fn lazy_smp_single_thread_returns_move() {
+        let c = conductor();
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let tt = TranspositionTable::new(TT_SIZE);
+        let r = iterative_deepening_root_with_tt(
+            &mut board, &c, None, &tt, 4, true, None, None, 1,
+        );
+        assert!(r.best_move.is_some(), "single-thread must return a move");
+        let mv = r.best_move.unwrap();
+        assert_eq!(mv.target_square(), 35, "must capture queen on d5 (sq 35)");
+    }
+
+    #[test]
+    fn lazy_smp_two_threads_returns_move() {
+        let c = conductor();
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let tt = TranspositionTable::new(TT_SIZE);
+        let r = iterative_deepening_root_with_tt(
+            &mut board, &c, None, &tt, 4, true, None, None, 2,
+        );
+        assert!(r.best_move.is_some(), "2-thread Lazy SMP must return a move");
+        let mv = r.best_move.unwrap();
+        assert_eq!(mv.target_square(), 35, "must capture queen on d5 (sq 35)");
+    }
+
+    #[test]
+    fn lazy_smp_four_threads_returns_move() {
+        let c = conductor();
+        let mut board = ChessBoard::new();
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let tt = TranspositionTable::new(TT_SIZE);
+        let r = iterative_deepening_root_with_tt(
+            &mut board, &c, None, &tt, 4, true, None, None, 4,
+        );
+        assert!(r.best_move.is_some(), "4-thread Lazy SMP must return a move");
+        let mv = r.best_move.unwrap();
+        assert_eq!(mv.target_square(), 35, "must capture queen on d5 (sq 35)");
+    }
+
+    #[test]
+    fn lazy_smp_with_deadline_returns_move() {
+        use std::time::Duration;
+        let c = conductor();
+        let mut board = ChessBoard::new();
+        // Starting position — no forced move, just need any legal move.
+        let tt = TranspositionTable::new(TT_SIZE);
+        let deadline = Some(Instant::now() + Duration::from_millis(200));
+        let r = iterative_deepening_root_with_tt(
+            &mut board, &c, None, &tt, 64, true, deadline, None, 4,
+        );
+        assert!(r.best_move.is_some(), "4-thread Lazy SMP with deadline must return a move");
+    }
+
+    #[test]
+    fn lazy_smp_with_stop_flag_returns_move() {
+        use std::time::Duration;
+        let c = conductor();
+        let mut board = ChessBoard::new();
+        let tt = TranspositionTable::new(TT_SIZE);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_c = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            stop_c.store(true, Ordering::Relaxed);
+        });
+        let r = iterative_deepening_root_with_tt(
+            &mut board, &c, None, &tt, 64, true, None, Some(stop), 4,
+        );
+        assert!(r.best_move.is_some(), "4-thread Lazy SMP with stop flag must return a move");
+    }
+
+    #[test]
+    fn lazy_smp_board_unchanged_after_search() {
+        let c = conductor();
+        let mut board = ChessBoard::new();
+        board.set_from_fen("r1bqkbnr/pppppppp/2n5/4P3/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 2");
+        let hash_before = board.current_hash();
+        let tt = TranspositionTable::new(TT_SIZE);
+        let _ = iterative_deepening_root_with_tt(
+            &mut board, &c, None, &tt, 4, false, None, None, 4,
+        );
+        assert_eq!(board.current_hash(), hash_before,
+            "board hash must be unchanged after multi-threaded search");
     }
 }

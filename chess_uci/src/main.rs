@@ -248,6 +248,7 @@ fn search_and_respond(
     stop: Arc<AtomicBool>,
     is_white: bool,
     tt: Arc<TranspositionTable>,
+    num_threads: usize,
 ) {
     let search_stop = make_search_stop(&stop, params.hard_deadline);
 
@@ -262,6 +263,7 @@ fn search_and_respond(
         is_white,
         params.soft_deadline,
         Some(search_stop),
+        num_threads,
     );
     let ms = t0.elapsed().as_millis();
     let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
@@ -290,6 +292,7 @@ fn ponder_and_respond(
     ponderhit: Arc<AtomicBool>,
     is_white: bool,
     tt: Arc<TranspositionTable>,
+    num_threads: usize,
 ) {
     let search_stop = Arc::new(AtomicBool::new(false));
 
@@ -350,6 +353,7 @@ fn ponder_and_respond(
         is_white,
         None, // no soft deadline — stop flag controls everything
         Some(search_stop),
+        num_threads,
     );
 
     let ms = t0.elapsed().as_millis();
@@ -377,6 +381,11 @@ fn main() {
     // Cleared on `ucinewgame`.
     let mut tt: Arc<TranspositionTable> = Arc::new(TranspositionTable::new(TT_SIZE));
 
+    // Lazy SMP thread count (default: all available CPUs).
+    let mut num_threads: usize = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+
     let stop_flag = Arc::new(AtomicBool::new(false));
     let ponderhit_flag = Arc::new(AtomicBool::new(false));
     let mut search_handle: Option<thread::JoinHandle<()>> = None;
@@ -392,8 +401,27 @@ fn main() {
             "uci" => {
                 println!("id name {NAME}");
                 println!("id author {AUTHOR}");
+                println!("option name Threads type spin default {num_threads} min 1 max 256");
                 println!("option name Ponder type check default true");
                 println!("uciok");
+            }
+            "setoption" => {
+                // setoption name <name> value <value>
+                if let (Some(name_pos), Some(val_pos)) = (
+                    tokens.iter().position(|&t| t == "name"),
+                    tokens.iter().position(|&t| t == "value"),
+                ) {
+                    let name: String = tokens[name_pos + 1..val_pos].join(" ");
+                    let value = tokens.get(val_pos + 1).unwrap_or(&"");
+                    match name.to_lowercase().as_str() {
+                        "threads" => {
+                            if let Ok(n) = value.parse::<usize>() {
+                                num_threads = n.max(1).min(256);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
             "isready" => {
                 println!("readyok");
@@ -429,15 +457,16 @@ fn main() {
                 let stop_c      = Arc::clone(&stop_flag);
                 let tt_c        = Arc::clone(&tt);
 
+                let threads = num_threads;
                 if is_ponder {
                     ponderhit_flag.store(false, Ordering::Release);
                     let ponder_c = Arc::clone(&ponderhit_flag);
                     search_handle = Some(thread::spawn(move || {
-                        ponder_and_respond(board_c, conductor_c, book_c, params, stop_c, ponder_c, is_white, tt_c);
+                        ponder_and_respond(board_c, conductor_c, book_c, params, stop_c, ponder_c, is_white, tt_c, threads);
                     }));
                 } else {
                     search_handle = Some(thread::spawn(move || {
-                        search_and_respond(board_c, conductor_c, book_c, params, stop_c, is_white, tt_c);
+                        search_and_respond(board_c, conductor_c, book_c, params, stop_c, is_white, tt_c, threads);
                     }));
                 }
             }
