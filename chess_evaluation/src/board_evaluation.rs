@@ -364,11 +364,14 @@ mod tests {
     }
 }
 /// Mop-up bonus: drive the losing king to a corner in winning endgames.
+/// The bonus is scaled up as the 50-move clock rises so the engine urgently
+/// makes progress rather than shuffling and drawing by the 50-move rule.
 fn mop_up(
     material_score: i32,
     white_king_sq: usize,
     black_king_sq: usize,
     mg_phase: i32,
+    halfmove_clock: u32,
 ) -> i32 {
     let eg_weight = ((24 - mg_phase) * 256) / 24;
     if eg_weight < 80 || material_score.abs() < 150 {
@@ -385,7 +388,15 @@ fn mop_up(
         (-(corner_push), -(proximity))
     };
 
-    (corner_push + proximity) * eg_weight / 256
+    // Scale urgency: normal weight up to clock=30, then ramp up to 3× by clock=90.
+    let urgency = if halfmove_clock <= 30 {
+        256
+    } else {
+        let extra = ((halfmove_clock - 30).min(60) as i32 * 512) / 60;
+        256 + extra
+    };
+
+    (corner_push + proximity) * eg_weight / 256 * urgency / 256
 }
 
 /// Pawn structure penalty (doubled + isolated).
@@ -669,7 +680,8 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
         + count(white & bishops) * MG_BISHOP_VALUE - count(black & bishops) * MG_BISHOP_VALUE
         + count(white & rooks)   * MG_ROOK_VALUE   - count(black & rooks)   * MG_ROOK_VALUE
         + count(white & queens)  * MG_QUEEN_VALUE  - count(black & queens)  * MG_QUEEN_VALUE;
-    score += mop_up(material_score, white_king_sq, black_king_sq, mg_phase);
+    score += mop_up(material_score, white_king_sq, black_king_sq, mg_phase,
+                    chess_board.get_halfmove_clock());
 
 
     // --- Passed pawns (tapered bonus + rank-weighted king proximity) ---

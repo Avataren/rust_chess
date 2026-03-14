@@ -27,7 +27,7 @@ impl FENParser {
         let active_color = parts[1];
         let castling_rights = parts[2];
         // let en_passant = parts[3];
-        // let halfmove_clock = parts[4].parse::<u32>().unwrap_or(0);
+        let halfmove_clock = parts[4].parse::<u32>().unwrap_or(0);
         // let fullmove_number = parts[5].parse::<u32>().unwrap_or(1);
 
         // Set pieces on the board
@@ -43,10 +43,7 @@ impl FENParser {
         // // Assuming ChessBoard has a method to set en passant target
         // board.set_en_passant_target(en_passant);
 
-        // // Set halfmove clock and fullmove number
-        // // Assuming ChessBoard has methods to set these values
-        // board.set_halfmove_clock(halfmove_clock);
-        // board.set_fullmove_number(fullmove_number);
+        board.set_halfmove_clock(halfmove_clock);
     }
 
     fn set_pieces_from_fen(board: &mut ChessBoard, layout: &str) {

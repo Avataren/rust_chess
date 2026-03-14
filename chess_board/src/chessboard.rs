@@ -28,7 +28,10 @@ pub struct ChessBoard {
     queens: Bitboard,
     kings: Bitboard,
     pub castling_rights: u8,
-    move_history: Vec<(ChessMove, u8)>,
+    /// Halfmove clock for the 50-move rule: incremented each ply, reset on
+    /// pawn moves and captures.
+    halfmove_clock: u32,
+    move_history: Vec<(ChessMove, u8, u32)>,
     /// Zobrist hash after every position, including the starting position.
     /// Used for threefold-repetition detection.
     position_history: Vec<u64>,
@@ -48,6 +51,7 @@ impl ChessBoard {
             queens: Bitboard(0x0800_0000_0000_0008),  // d1, d8
             kings: Bitboard(0x1000_0000_0000_0010),   // e1, e8
             castling_rights: CastlingRights::AllCastlingRights as u8,
+            halfmove_clock: 0,
             move_history: Vec::with_capacity(100),
             position_history: Vec::with_capacity(100),
             game_state: GameState::InProgress,
@@ -62,12 +66,21 @@ impl ChessBoard {
         self.white_is_active = !self.white_is_active;
     }
 
+    pub fn get_halfmove_clock(&self) -> u32 {
+        self.halfmove_clock
+    }
+
+    pub fn set_halfmove_clock(&mut self, clock: u32) {
+        self.halfmove_clock = clock;
+    }
+
     /// Give the opponent a free move without moving any piece.
     /// Must always be followed by exactly one `undo_null_move()`.
     pub fn make_null_move(&mut self) {
         // Sentinel with flag=0 (NO_FLAG): get_last_move() will not report
         // PAWN_TWO_UP_FLAG, erasing en-passant rights for the sub-search.
-        self.move_history.push((ChessMove::new(0, 0), self.castling_rights));
+        self.move_history.push((ChessMove::new(0, 0), self.castling_rights, self.halfmove_clock));
+        self.halfmove_clock += 1;
         self.white_is_active = !self.white_is_active;
         // Incremental hash update: only the side-to-move bit changes.
         let t = ZobristTable::get();
@@ -91,6 +104,7 @@ impl ChessBoard {
         self.queens = Bitboard(0);
         self.kings = Bitboard(0);
         self.castling_rights = CastlingRights::AllCastlingRights as u8;
+        self.halfmove_clock = 0;
         self.move_history.clear();
         self.position_history.clear();
         self.game_state = GameState::InProgress;
@@ -244,17 +258,18 @@ impl ChessBoard {
     pub fn get_last_move(&self) -> Option<ChessMove> {
         self.move_history
             .last()
-            .map(|(chess_move, _)| chess_move.clone())
+            .map(|(chess_move, _, _)| chess_move.clone())
     }
 
     pub fn undo_move(&mut self) {
-        if let Some((chess_move, prev_castling_rights)) = self.move_history.pop() {
+        if let Some((chess_move, prev_castling_rights, prev_halfmove)) = self.move_history.pop() {
             let target_square = chess_move.target_square();
             let start_square = chess_move.start_square();
             let target_square_bb = Bitboard::from_square_index(target_square);
             let start_square_bb = Bitboard::from_square_index(start_square);
 
             self.castling_rights = prev_castling_rights;
+            self.halfmove_clock = prev_halfmove;
             // Undo pawn promotion first, if applicable
             if let Some(promotion_piece) = chess_move.promotion_piece_type() {
                 // Remove the promotion piece from the target square
@@ -392,9 +407,16 @@ impl ChessBoard {
                 // println!("No piece captured");
             }
 
-            // store history before altering castling rights!
+            // store history before altering castling rights/halfmove clock!
+            let prev_halfmove = self.halfmove_clock;
             self.move_history
-                .push((*chess_move, self.castling_rights));
+                .push((*chess_move, self.castling_rights, prev_halfmove));
+            // Reset on pawn move or capture; increment otherwise.
+            if piece_type == PieceType::Pawn || chess_move.capture.is_some() {
+                self.halfmove_clock = 0;
+            } else {
+                self.halfmove_clock += 1;
+            }
             if chess_move.has_flag(ChessMove::CASTLE_FLAG) {
                 // Determine rook's initial and final positions based on the castling type
                 let (rook_start_square, rook_target_square) = match target_square {
