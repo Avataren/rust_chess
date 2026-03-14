@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chess_board::ChessBoard;
-use chess_evaluation::{iterative_deepening_root_with_tt, OpeningBook, TranspositionTable, TT_SIZE};
+use chess_evaluation::{iterative_deepening_root_with_tt, OpeningBook, TranspositionTable};
 use chess_foundation::{piece::PieceType, ChessMove};
 use move_generator::{move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor};
 
@@ -264,11 +264,15 @@ fn search_and_respond(
         params.soft_deadline,
         Some(search_stop),
         num_threads,
+        Some(&|depth, score, nodes, ms| {
+            let nps = if ms > 0 { nodes * 1000 / ms as u64 } else { nodes };
+            println!("info depth {depth} score cp {score} nodes {nodes} nps {nps} time {ms}");
+            let _ = io::stdout().flush();
+        }),
     );
     let ms = t0.elapsed().as_millis();
     let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
     let ponder_str = result.ponder_move.map(mv_to_uci);
-    println!("info score cp {} time {ms}", result.score);
     if let Some(ref p) = ponder_str {
         println!("bestmove {mv_str} ponder {p}");
     } else {
@@ -354,12 +358,16 @@ fn ponder_and_respond(
         None, // no soft deadline — stop flag controls everything
         Some(search_stop),
         num_threads,
+        Some(&|depth, score, nodes, ms| {
+            let nps = if ms > 0 { nodes * 1000 / ms as u64 } else { nodes };
+            println!("info depth {depth} score cp {score} nodes {nodes} nps {nps} time {ms}");
+            let _ = io::stdout().flush();
+        }),
     );
 
     let ms = t0.elapsed().as_millis();
     let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
     let ponder_str = result.ponder_move.map(mv_to_uci);
-    println!("info score cp {} time {ms}", result.score);
     if let Some(ref p) = ponder_str {
         println!("bestmove {mv_str} ponder {p}");
     } else {
@@ -376,15 +384,21 @@ fn main() {
     let mut board = ChessBoard::new();
     let mut move_number: usize = 1;
 
+    // TT size: default 96 MB (4M entries × 24 B).  Configurable via UCI Hash.
+    let mut hash_mb: usize = 96;
+    let entries_for_mb = |mb: usize| mb * 1024 * 1024 / 24;
+
     // Persistent TT: survives across moves so the engine reuses prior search
     // analysis.  `new_search()` is called before each search to age old entries.
-    // Cleared on `ucinewgame`.
-    let mut tt: Arc<TranspositionTable> = Arc::new(TranspositionTable::new(TT_SIZE));
+    // Cleared on `ucinewgame` or when Hash size changes.
+    let mut tt: Arc<TranspositionTable> = Arc::new(TranspositionTable::new(entries_for_mb(hash_mb)));
 
-    // Lazy SMP thread count (default: all available CPUs).
-    let mut num_threads: usize = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    // Lazy SMP thread count.  Default = all available logical CPUs.
+    // Helpers use the same aspiration-window approach as the main thread,
+    // so multi-threaded play is at least as strong as single-threaded.
+    // Override via "setoption name Threads value N".
+    let default_threads = chess_evaluation::available_threads();
+    let mut num_threads: usize = default_threads;
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let ponderhit_flag = Arc::new(AtomicBool::new(false));
@@ -401,7 +415,8 @@ fn main() {
             "uci" => {
                 println!("id name {NAME}");
                 println!("id author {AUTHOR}");
-                println!("option name Threads type spin default {num_threads} min 1 max 256");
+                println!("option name Threads type spin default {default_threads} min 1 max 256");
+                println!("option name Hash type spin default 96 min 1 max 65536");
                 println!("option name Ponder type check default true");
                 println!("uciok");
             }
@@ -419,6 +434,15 @@ fn main() {
                                 num_threads = n.max(1).min(256);
                             }
                         }
+                        "hash" => {
+                            if let Ok(mb) = value.parse::<usize>() {
+                                let mb = mb.max(1).min(65536);
+                                if mb != hash_mb {
+                                    hash_mb = mb;
+                                    tt = Arc::new(TranspositionTable::new(entries_for_mb(hash_mb)));
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -434,7 +458,7 @@ fn main() {
                 board = ChessBoard::new();
                 move_number = 1;
                 // Clear TT: new game → old analysis is irrelevant.
-                tt = Arc::new(TranspositionTable::new(TT_SIZE));
+                tt = Arc::new(TranspositionTable::new(entries_for_mb(hash_mb)));
             }
             "position" => {
                 move_number = apply_position(&mut board, &conductor, &tokens[1..]);

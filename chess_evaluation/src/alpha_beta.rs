@@ -11,11 +11,15 @@ use crate::{
     evaluate_board,
     opening_book::OpeningBook,
     see::see,
-    transposition_table::{TranspositionTable, TtFlag},
+    transposition_table::{set_main_thread, TranspositionTable, TtFlag},
 };
 
-/// Shared TT for the sequential path and ID iterations.
-pub const TT_SIZE: usize = 1 << 22; // 4M entries × 24 B = 96 MB
+/// Default TT size: 4M entries × 24 B = 96 MB.
+/// Large enough for excellent single-threaded hit rates at classical time controls.
+/// The UCI `Hash` option (in MB) overrides this at startup.
+pub const TT_SIZE_DEFAULT: usize = 1 << 22; // 4M entries × 24 B = 96 MB
+/// Kept for crates that call `iterative_deepening_root` directly (Bevy UI).
+pub const TT_SIZE: usize = TT_SIZE_DEFAULT;
 
 /// Initial aspiration window half-width in centipawns.  Searches at depth N
 /// use [prev_score - DELTA, prev_score + DELTA]; on failure one side widens to
@@ -715,6 +719,7 @@ pub fn alpha_beta_root(
     }
     let tt = TranspositionTable::new(TT_SIZE);
     let mut ctx = SearchContext::new();
+    set_main_thread(true);
     search_root(chess_board, conductor, &tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, None, None)
 }
 
@@ -804,9 +809,10 @@ pub fn iterative_deepening_root(
     stop: Option<Arc<AtomicBool>>,
 ) -> SearchResult {
     let tt = TranspositionTable::new(TT_SIZE);
+    set_main_thread(true);
     iterative_deepening_root_with_tt(
         chess_board, conductor, book, &tt, max_depth, is_white,
-        deadline, stop, 1,
+        deadline, stop, 1, None,
     )
 }
 
@@ -818,6 +824,9 @@ pub fn iterative_deepening_root(
 /// same position with a shared TT via `rayon::scope`, while the main thread
 /// runs the authoritative iterative deepening.  Helpers populate the TT;
 /// their results are discarded.
+///
+/// `on_depth` is called on the main thread after each completed depth with
+/// `(depth, score_cp, nodes, elapsed_ms)`.  Use this for UCI `info` output.
 pub fn iterative_deepening_root_with_tt(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
@@ -828,6 +837,7 @@ pub fn iterative_deepening_root_with_tt(
     deadline: Option<Instant>,
     stop: Option<Arc<AtomicBool>>,
     num_threads: usize,
+    on_depth: Option<&(dyn Fn(i32, i32, u64, u128) + Sync)>,
 ) -> SearchResult {
     // Book probe before spawning any threads.
     if let Some(book) = book {
@@ -844,7 +854,8 @@ pub fn iterative_deepening_root_with_tt(
     }
 
     if num_threads <= 1 {
-        return id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop);
+        set_main_thread(true);
+        return id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop, on_depth);
     }
 
     // ── Lazy SMP: spawn helpers, main thread runs authoritative search ───
@@ -864,12 +875,14 @@ pub fn iterative_deepening_root_with_tt(
             let hs = Arc::clone(&helper_stop);
             let ext = stop.clone();
             s.spawn(move |_| {
+                set_main_thread(false); // helpers must not overwrite main-thread TT entries
                 smp_helper(&mut board, &cond, tt, max_depth, is_white, hs, ext, i);
             });
         }
 
         // Main thread: full iterative deepening with aspiration & deadline.
-        result = id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop.clone());
+        set_main_thread(true);
+        result = id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop.clone(), on_depth);
 
         // Main thread done — signal helpers to stop.
         helper_stop.store(true, Ordering::Release);
@@ -882,6 +895,9 @@ pub fn iterative_deepening_root_with_tt(
 
 /// Single-threaded iterative deepening with aspiration windows.  Used by the
 /// main thread (and as the sole path when num_threads == 1).
+///
+/// `on_depth` is called after each fully-completed depth with
+/// `(depth, score_cp, nodes, elapsed_ms)` so callers can emit UCI `info` lines.
 fn id_search_single(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
@@ -890,7 +906,9 @@ fn id_search_single(
     is_white: bool,
     deadline: Option<Instant>,
     stop: Option<Arc<AtomicBool>>,
+    on_depth: Option<&(dyn Fn(i32, i32, u64, u128) + Sync)>,
 ) -> SearchResult {
+    let t0 = Instant::now();
     let mut ctx = SearchContext::new();
     let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
 
@@ -914,14 +932,18 @@ fn id_search_single(
                     break result;
                 }
                 if result.0 > lo && result.0 < hi {
+                    // Score fits inside the window — this is the correct result.
                     break result;
                 } else if result.0 <= lo {
                     lo = i32::MIN + 1;
                 } else {
                     hi = i32::MAX;
                 }
+                // Both bounds are now at their maximums: do one final full-window
+                // search so we return a result from [MIN+1, MAX], not from the
+                // narrower window that triggered the double-widen.
                 if lo == i32::MIN + 1 && hi == i32::MAX {
-                    break result;
+                    break search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone());
                 }
             }
         };
@@ -936,6 +958,10 @@ fn id_search_single(
         }
 
         best = result;
+
+        if let Some(cb) = on_depth {
+            cb(depth, best.0, ctx.nodes, t0.elapsed().as_millis());
+        }
 
         if let Some(dl) = deadline {
             if Instant::now() >= dl { break; }
@@ -953,9 +979,19 @@ fn id_search_single(
     }
 }
 
-/// Helper thread for Lazy SMP: runs simplified iterative deepening to populate
-/// the shared TT.  No book, no aspiration, no ponder extraction.
-/// Stops when either `helper_stop` or `ext_stop` fires.
+/// Helper thread for Lazy SMP: runs iterative deepening with aspiration windows
+/// to populate the shared TT.  Like the main thread but without book probe or
+/// ponder extraction.  Stops when either `helper_stop` or `ext_stop` fires.
+///
+/// Each helper uses its own aspiration window (centred on its previous
+/// iteration score), matching Stockfish's approach.  This ensures helper TT
+/// entries are consistent with the main thread's aspiration-window scores,
+/// avoiding the "full-window helper floods TT with scores outside main
+/// thread's window" regression.
+///
+/// Helpers loop continuously (restarting from their staggered start depth
+/// each pass) so they keep populating the TT for the full duration of the
+/// main thread's search.
 fn smp_helper(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
@@ -966,32 +1002,48 @@ fn smp_helper(
     ext_stop: Option<Arc<AtomicBool>>,
     thread_idx: usize,
 ) {
-    let mut ctx = SearchContext::new();
-    let mut prev_move: Option<ChessMove> = None;
+    // Stagger starting depth across helpers so they cover different layers.
+    let start_depth = 1 + (thread_idx % 3) as i32;
 
-    // Stagger starting depth so helpers explore different depth layers.
-    let start_depth = 1 + (thread_idx % 2) as i32;
+    'outer: loop {
+        let mut ctx = SearchContext::new();
+        let mut prev_score: i32 = if is_white { i32::MIN + 1 } else { i32::MAX };
+        let mut prev_move: Option<ChessMove> = None;
 
-    for depth in start_depth..=max_depth {
-        if helper_stop.load(Ordering::Relaxed) {
-            break;
+        for depth in start_depth..=max_depth {
+            if helper_stop.load(Ordering::Relaxed) { break 'outer; }
+            if ext_stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) { break 'outer; }
+
+            if depth > start_depth {
+                ctx.age_history();
+            }
+
+            // Use aspiration windows (same as main thread) at depth >= 3.
+            let stop = Some(Arc::clone(&helper_stop));
+            let result = if depth <= 2 {
+                search_root(chess_board, conductor, tt, &mut ctx, depth,
+                    i32::MIN + 1, i32::MAX, is_white, prev_move, stop)
+            } else {
+                let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
+                let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
+                loop {
+                    let r = search_root(chess_board, conductor, tt, &mut ctx, depth,
+                        lo, hi, is_white, prev_move, Some(Arc::clone(&helper_stop)));
+                    if helper_stop.load(Ordering::Relaxed) { break r; }
+                    if r.0 > lo && r.0 < hi { break r; }
+                    else if r.0 <= lo { lo = i32::MIN + 1; }
+                    else              { hi = i32::MAX; }
+                    if lo == i32::MIN + 1 && hi == i32::MAX {
+                        break search_root(chess_board, conductor, tt, &mut ctx, depth,
+                            lo, hi, is_white, prev_move, Some(Arc::clone(&helper_stop)));
+                    }
+                }
+            };
+
+            prev_score = result.0;
+            prev_move  = result.1;
         }
-        if ext_stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
-            break;
-        }
-
-        if depth > 1 {
-            ctx.age_history();
-        }
-
-        // Pass helper_stop as the stop flag so search_root exits promptly.
-        let (_, mv) = search_root(
-            chess_board, conductor, tt, &mut ctx, depth,
-            i32::MIN + 1, i32::MAX,
-            is_white, prev_move, Some(Arc::clone(&helper_stop)),
-        );
-
-        prev_move = mv;
+        // Completed one full pass — loop back for the next pass.
     }
 }
 
@@ -1984,7 +2036,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let tt = TranspositionTable::new(TT_SIZE);
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, true, None, None, 1,
+            &mut board, &c, None, &tt, 4, true, None, None, 1, None,
         );
         assert!(r.best_move.is_some(), "single-thread must return a move");
         let mv = r.best_move.unwrap();
@@ -1998,7 +2050,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let tt = TranspositionTable::new(TT_SIZE);
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, true, None, None, 2,
+            &mut board, &c, None, &tt, 4, true, None, None, 2, None,
         );
         assert!(r.best_move.is_some(), "2-thread Lazy SMP must return a move");
         let mv = r.best_move.unwrap();
@@ -2012,7 +2064,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let tt = TranspositionTable::new(TT_SIZE);
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, true, None, None, 4,
+            &mut board, &c, None, &tt, 4, true, None, None, 4, None,
         );
         assert!(r.best_move.is_some(), "4-thread Lazy SMP must return a move");
         let mv = r.best_move.unwrap();
@@ -2028,7 +2080,7 @@ mod tests {
         let tt = TranspositionTable::new(TT_SIZE);
         let deadline = Some(Instant::now() + Duration::from_millis(200));
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 64, true, deadline, None, 4,
+            &mut board, &c, None, &tt, 64, true, deadline, None, 4, None,
         );
         assert!(r.best_move.is_some(), "4-thread Lazy SMP with deadline must return a move");
     }
@@ -2046,7 +2098,7 @@ mod tests {
             stop_c.store(true, Ordering::Relaxed);
         });
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 64, true, None, Some(stop), 4,
+            &mut board, &c, None, &tt, 64, true, None, Some(stop), 4, None,
         );
         assert!(r.best_move.is_some(), "4-thread Lazy SMP with stop flag must return a move");
     }
@@ -2059,7 +2111,7 @@ mod tests {
         let hash_before = board.current_hash();
         let tt = TranspositionTable::new(TT_SIZE);
         let _ = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, false, None, None, 4,
+            &mut board, &c, None, &tt, 4, false, None, None, 4, None,
         );
         assert_eq!(board.current_hash(), hash_before,
             "board hash must be unchanged after multi-threaded search");
