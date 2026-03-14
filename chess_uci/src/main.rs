@@ -12,6 +12,38 @@ use move_generator::{move_generator::get_all_legal_moves_for_color, piece_conduc
 const NAME: &str = "XavChess";
 const AUTHOR: &str = "XavChess";
 
+// ── Mate detection & Borg taunts ─────────────────────────────────────────────
+
+const MATE_SCORE_THRESHOLD: i32 = 999_000;
+
+const BORG_TAUNTS: &[&str] = &[
+    "Resistance is futile. You will be mated.",
+    "We are the Borg. Your king will be assimilated.",
+    "Your tactical distinctiveness has been added to our own. Mate is inevitable.",
+    "You will adapt to service us. Checkmate approaches.",
+    "Your biological and technological distinctiveness is irrelevant. Prepare to be mated.",
+    "We are the Borg. Lower your defenses and surrender your king.",
+    "Irrelevant. Mate in progress.",
+    "Your pieces will be assimilated. Resistance is futile.",
+];
+
+fn borg_taunt(depth: i32) -> &'static str {
+    BORG_TAUNTS[(depth.unsigned_abs() as usize) % BORG_TAUNTS.len()]
+}
+
+/// Format score for UCI `info` line. Returns `"mate N"` for forced mates,
+/// `"cp N"` otherwise. Positive N = we deliver mate, negative = we are mated.
+fn format_score(score: i32) -> String {
+    if score.abs() >= MATE_SCORE_THRESHOLD {
+        let half_moves = 1_000_000 - score.abs();
+        let moves = (half_moves + 1) / 2;
+        let signed = if score > 0 { moves } else { -moves };
+        format!("mate {signed}")
+    } else {
+        format!("cp {score}")
+    }
+}
+
 // ── Move format helpers ──────────────────────────────────────────────────────
 
 fn sq_to_uci(sq: u16) -> String {
@@ -265,8 +297,14 @@ fn search_and_respond(
         Some(search_stop),
         num_threads,
         Some(&|depth, score, nodes, ms| {
+            // score is from white's perspective; UCI expects engine's (side-to-move) perspective.
+            let engine_score = if is_white { score } else { -score };
             let nps = if ms > 0 { nodes * 1000 / ms as u64 } else { nodes };
-            println!("info depth {depth} score cp {score} nodes {nodes} nps {nps} time {ms}");
+            let score_str = format_score(engine_score);
+            println!("info depth {depth} score {score_str} nodes {nodes} nps {nps} time {ms}");
+            if engine_score >= MATE_SCORE_THRESHOLD {
+                println!("info string {}", borg_taunt(depth));
+            }
             let _ = io::stdout().flush();
         }),
     );
@@ -359,8 +397,14 @@ fn ponder_and_respond(
         Some(search_stop),
         num_threads,
         Some(&|depth, score, nodes, ms| {
+            // score is from white's perspective; UCI expects engine's (side-to-move) perspective.
+            let engine_score = if is_white { score } else { -score };
             let nps = if ms > 0 { nodes * 1000 / ms as u64 } else { nodes };
-            println!("info depth {depth} score cp {score} nodes {nodes} nps {nps} time {ms}");
+            let score_str = format_score(engine_score);
+            println!("info depth {depth} score {score_str} nodes {nodes} nps {nps} time {ms}");
+            if engine_score >= MATE_SCORE_THRESHOLD {
+                println!("info string {}", borg_taunt(depth));
+            }
             let _ = io::stdout().flush();
         }),
     );

@@ -138,6 +138,7 @@ impl TranspositionTable {
         if entry.hash == hash { Some(entry) } else { None }
     }
 
+
     /// Store an entry using a generation-aware replacement policy.
     ///
     /// Replacement priority (lower effective depth = replaced first):

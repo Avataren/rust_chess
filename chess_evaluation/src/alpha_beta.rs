@@ -21,6 +21,29 @@ pub const TT_SIZE_DEFAULT: usize = 1 << 22; // 4M entries × 24 B = 96 MB
 /// Kept for crates that call `iterative_deepening_root` directly (Bevy UI).
 pub const TT_SIZE: usize = TT_SIZE_DEFAULT;
 
+/// Scores with absolute value above this are treated as mate scores.
+const MATE_SCORE_THRESHOLD: i32 = 999_000;
+
+/// Normalise a mate score before storing in the TT.
+/// Converts from "mate at ply P from the search root" to "mate in N moves
+/// from the current node" so the score is correct at any retrieval ply.
+#[inline]
+fn score_to_tt(score: i32, ply: usize) -> i32 {
+    let p = ply as i32;
+    if      score >  MATE_SCORE_THRESHOLD { score + p }
+    else if score < -MATE_SCORE_THRESHOLD { score - p }
+    else                                  { score }
+}
+
+/// Undo the ply-normalisation applied by `score_to_tt` when retrieving from TT.
+#[inline]
+fn score_from_tt(score: i32, ply: usize) -> i32 {
+    let p = ply as i32;
+    if      score >  MATE_SCORE_THRESHOLD { score - p }
+    else if score < -MATE_SCORE_THRESHOLD { score + p }
+    else                                  { score }
+}
+
 /// Initial aspiration window half-width in centipawns.  Searches at depth N
 /// use [prev_score - DELTA, prev_score + DELTA]; on failure one side widens to
 /// the full bound and we retry.
@@ -313,21 +336,20 @@ pub fn alpha_beta(
     // --- Transposition table probe ---
     let tt_move: Option<ChessMove> = if let Some(entry) = tt.probe(hash) {
         if entry.depth >= depth {
+            // Undo the ply-normalization applied at store time so the score is
+            // relative to the *current* ply, not the ply where it was stored.
+            let s = score_from_tt(entry.score, ply);
             match entry.flag {
-                TtFlag::Exact => return (entry.score, entry.best_move()),
+                TtFlag::Exact => return (s, entry.best_move()),
                 TtFlag::LowerBound => {
-                    if entry.score > alpha {
-                        alpha = entry.score;
-                    }
+                    if s > alpha { alpha = s; }
                 }
                 TtFlag::UpperBound => {
-                    if entry.score < beta {
-                        beta = entry.score;
-                    }
+                    if s < beta  { beta  = s; }
                 }
             }
             if alpha >= beta {
-                return (entry.score, entry.best_move());
+                return (s, entry.best_move());
             }
         }
         entry.best_move()
@@ -494,7 +516,7 @@ pub fn alpha_beta(
         } else {
             TtFlag::Exact
         };
-        tt.store(hash, depth, max_eval, flag, best_move);
+        tt.store(hash, depth, score_to_tt(max_eval, ply), flag, best_move);
         (max_eval, best_move)
     } else {
         let mut min_eval = i32::MAX;
@@ -575,7 +597,7 @@ pub fn alpha_beta(
         } else {
             TtFlag::Exact
         };
-        tt.store(hash, depth, min_eval, flag, best_move);
+        tt.store(hash, depth, score_to_tt(min_eval, ply), flag, best_move);
         (min_eval, best_move)
     }
 }
