@@ -437,11 +437,11 @@ fn main() {
     // Cleared on `ucinewgame` or when Hash size changes.
     let mut tt: Arc<TranspositionTable> = Arc::new(TranspositionTable::new(entries_for_mb(hash_mb)));
 
-    // Lazy SMP thread count.  Default = all available logical CPUs.
-    // Helpers use the same aspiration-window approach as the main thread,
-    // so multi-threaded play is at least as strong as single-threaded.
-    // Override via "setoption name Threads value N".
-    let default_threads = chess_evaluation::available_threads();
+    // Lazy SMP thread count.  Default = min(8, available logical CPUs).
+    // Override via "setoption name Threads value N"; the value is capped at
+    // the number of logical CPUs to avoid over-subscription.
+    let max_threads = chess_evaluation::available_threads();
+    let default_threads = max_threads.min(8);
     let mut num_threads: usize = default_threads;
 
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -459,7 +459,7 @@ fn main() {
             "uci" => {
                 println!("id name {NAME}");
                 println!("id author {AUTHOR}");
-                println!("option name Threads type spin default {default_threads} min 1 max 256");
+                println!("option name Threads type spin default {default_threads} min 1 max {max_threads}");
                 println!("option name Hash type spin default 96 min 1 max 65536");
                 println!("option name Ponder type check default true");
                 println!("uciok");
@@ -475,7 +475,7 @@ fn main() {
                     match name.to_lowercase().as_str() {
                         "threads" => {
                             if let Ok(n) = value.parse::<usize>() {
-                                num_threads = n.max(1).min(256);
+                                num_threads = n.max(1).min(max_threads);
                             }
                         }
                         "hash" => {
