@@ -136,7 +136,7 @@ struct GoParams {
     /// Hard deadline: a background timer fires the stop flag at this point.
     hard_deadline: Option<Instant>,
     /// Whether this is a ponder search (think on opponent's time).
-    is_ponder: bool,
+    _is_ponder: bool,
     /// Raw movetime in ms — used by ponder to set deadline on ponderhit.
     movetime_ms: Option<u64>,
 }
@@ -174,7 +174,7 @@ fn parse_go(tokens: &[&str], is_white: bool, move_number: usize) -> GoParams {
             max_depth,
             soft_deadline: Some(now + Duration::from_millis(ms)),
             hard_deadline: Some(now + Duration::from_millis(ms)),
-            is_ponder,
+            _is_ponder: is_ponder,
             movetime_ms,
         };
     }
@@ -225,12 +225,12 @@ fn parse_go(tokens: &[&str], is_white: bool, move_number: usize) -> GoParams {
             max_depth,
             soft_deadline: Some(now + Duration::from_millis(soft_ms)),
             hard_deadline: Some(now + Duration::from_millis(hard_ms)),
-            is_ponder,
+            _is_ponder: is_ponder,
             // For ponder: use hard_ms as the duration after ponderhit
             movetime_ms: Some(hard_ms),
         }
     } else {
-        GoParams { max_depth, soft_deadline: None, hard_deadline: None, is_ponder, movetime_ms: None }
+        GoParams { max_depth, soft_deadline: None, hard_deadline: None, _is_ponder: is_ponder, movetime_ms: None }
     }
 }
 
@@ -308,7 +308,7 @@ fn search_and_respond(
             let _ = io::stdout().flush();
         }),
     );
-    let ms = t0.elapsed().as_millis();
+    let _ms = t0.elapsed().as_millis();
     let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
     let ponder_str = result.ponder_move.map(mv_to_uci);
     if let Some(ref p) = ponder_str {
@@ -409,7 +409,7 @@ fn ponder_and_respond(
         }),
     );
 
-    let ms = t0.elapsed().as_millis();
+    let _ms = t0.elapsed().as_millis();
     let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
     let ponder_str = result.ponder_move.map(mv_to_uci);
     if let Some(ref p) = ponder_str {
