@@ -13,7 +13,7 @@ import io
 import threading
 from typing import Optional
 
-STOCKFISH = "/tmp/usr/bin/stockfish"
+STOCKFISH = "/usr/bin/stockfish"
 ENGINE    = "/home/avataren/src/rust_chess/target/release/chess_uci"
 
 OPENINGS = [

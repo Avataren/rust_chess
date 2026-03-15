@@ -87,9 +87,12 @@ pub fn get_all_legal_captures_for_color(
             get_pseudo_legal_move_list_from_square(square, chess_board, conductor, is_white);
         for mut chess_move in pseudo_legal_moves {
             // A move is a capture if the target square holds an enemy piece,
-            // or if it carries the en-passant flag (captured pawn is off the target square).
+            // or if it carries the en-passant flag (captured pawn is off the target square),
+            // or if it is a queen promotion (always worth searching in qsearch to avoid
+            // the horizon effect of evaluating a position with a pawn on rank 7).
             let is_capture = enemy.contains_square(chess_move.target_square() as i32)
-                || chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG);
+                || chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG)
+                || chess_move.has_flag(ChessMove::PROMOTE_TO_QUEEN_FLAG);
             if !is_capture {
                 continue;
             }

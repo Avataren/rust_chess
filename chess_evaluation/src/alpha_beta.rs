@@ -1,5 +1,6 @@
 use chess_board::ChessBoard;
 use chess_foundation::ChessMove;
+use chess_foundation::piece::PieceType;
 use move_generator::{
     move_generator::{get_all_legal_captures_for_color, get_all_legal_moves_for_color},
     piece_conductor::PieceConductor,
@@ -39,6 +40,72 @@ fn lmr_reduction(depth: i32, move_index: usize) -> i32 {
     let mi = move_index.min(63);
     table[d][mi]
 }
+
+/// Continuation history table.
+/// Indexed logically as [prev_piece_type 0-6][prev_to 0-63][curr_piece_type 0-6][curr_to 0-63].
+/// Flat Vec for heap allocation (avoids stack overflow from large array).
+/// Size: 7 × 64 × 7 × 64 × 4 bytes = ~784 KB per table.
+const CONT_HIST_PIECE: usize = 7;
+const CONT_HIST_SQ: usize = 64;
+const CONT_HIST_SIZE: usize = CONT_HIST_PIECE * CONT_HIST_SQ * CONT_HIST_PIECE * CONT_HIST_SQ;
+
+pub struct ContHistTable {
+    data: Vec<i32>,
+}
+
+impl ContHistTable {
+    pub fn new() -> Self {
+        Self { data: vec![0; CONT_HIST_SIZE] }
+    }
+
+    #[inline(always)]
+    fn idx(pp: usize, pt: usize, cp: usize, ct: usize) -> usize {
+        (pp * CONT_HIST_SQ + pt) * (CONT_HIST_PIECE * CONT_HIST_SQ) + cp * CONT_HIST_SQ + ct
+    }
+
+    #[inline(always)]
+    pub fn get(&self, pp: usize, pt: usize, cp: usize, ct: usize) -> i32 {
+        self.data[Self::idx(pp, pt, cp, ct)]
+    }
+
+    #[inline(always)]
+    pub fn get_mut(&mut self, pp: usize, pt: usize, cp: usize, ct: usize) -> &mut i32 {
+        &mut self.data[Self::idx(pp, pt, cp, ct)]
+    }
+
+    pub fn age(&mut self) {
+        for v in &mut self.data { *v >>= 1; }
+    }
+}
+
+/// Map a ChessMove's piece to a cont-hist index (0-6).
+#[inline(always)]
+fn piece_idx(mv: ChessMove) -> usize {
+    mv.chess_piece.map(|cp| cp.piece_type() as usize).unwrap_or(0).min(6)
+}
+
+/// Approximate material value of a captured piece (for delta pruning).
+#[inline(always)]
+fn capture_value(board: &ChessBoard, mv: &ChessMove) -> i32 {
+    if mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
+        return 100;
+    }
+    match board.get_piece_type(mv.target_square()) {
+        Some(PieceType::Queen)  => 900,
+        Some(PieceType::Rook)   => 500,
+        Some(PieceType::Bishop) => 325,
+        Some(PieceType::Knight) => 300,
+        Some(PieceType::Pawn)   => 100,
+        _                       => 0,
+    }
+}
+
+/// ProbCut margin: if a capture SEE exceeds beta by this much, do a shallow verify.
+const PROBCUT_MARGIN: i32 = 200;
+
+/// Delta pruning margin in quiescence: skip captures that can't raise alpha even
+/// with an extra DELTA_MARGIN bonus on top of the captured-piece value.
+const DELTA_MARGIN: i32 = 250;
 
 /// Default TT size: 4M entries × 24 B = 96 MB.
 /// Large enough for excellent single-threaded hit rates at classical time controls.
@@ -114,6 +181,9 @@ pub const MAX_PLY: usize = 64;
 /// * `history`          — `history[from][to]` accumulates `depth²` on β-cutoff.
 /// * `capture_history`  — `capture_history[from][to]` same but for captures;
 ///                        used to break SEE ties in move ordering.
+/// * `cont_hist_1`      — 1-ply continuation history: good responses to opponent's last move.
+///                        Indexed by (prev_piece, prev_to, curr_piece, curr_to).
+/// * `cont_hist_2`      — 2-ply continuation history: good follow-ups to our own last move.
 /// * `countermoves`     — `countermoves[from][to]` is the quiet move that most
 ///                        recently refuted the opponent move (from→to).
 /// * `prev_moves`       — the move played at each ply, used to index countermoves.
@@ -124,6 +194,8 @@ pub struct SearchContext {
     killers: [[Option<ChessMove>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
     capture_history: [[i32; 64]; 64],
+    pub cont_hist_1: ContHistTable,
+    pub cont_hist_2: ContHistTable,
     countermoves: Box<[[Option<ChessMove>; 64]; 64]>,
     prev_moves: [Option<ChessMove>; MAX_PLY],
     excluded_move: [Option<ChessMove>; MAX_PLY],
@@ -139,6 +211,8 @@ impl SearchContext {
             killers: [[None; 2]; MAX_PLY],
             history: [[0; 64]; 64],
             capture_history: [[0; 64]; 64],
+            cont_hist_1: ContHistTable::new(),
+            cont_hist_2: ContHistTable::new(),
             countermoves: Box::new([[None; 64]; 64]),
             prev_moves: [None; MAX_PLY],
             excluded_move: [None; MAX_PLY],
@@ -156,10 +230,12 @@ impl SearchContext {
         for row in &mut self.capture_history {
             for v in row { *v >>= 1; }
         }
+        self.cont_hist_1.age();
+        self.cont_hist_2.age();
     }
 
     /// Record a move that caused a β-cutoff:
-    /// update killer slots + history (quiets) or capture_history (captures),
+    /// update killer slots + history + continuation history (quiets),
     /// and the countermove table.
     fn record_cutoff(&mut self, ply: usize, depth: i32, mv: ChessMove) {
         let p = ply.min(MAX_PLY - 1);
@@ -172,20 +248,59 @@ impl SearchContext {
             k[0] = Some(mv);
         }
         // Reward deeper cutoffs more, clamped to avoid history overflow.
+        let bonus = depth * depth;
         let v = &mut self.history[mv.start_square() as usize][mv.target_square() as usize];
-        *v = (*v + depth * depth).min(16_384);
+        *v = (*v + bonus).min(16_384);
         // Countermove: record mv as the refutation of the opponent's last move.
         if let Some(prev) = self.prev_moves[p] {
             self.countermoves[prev.start_square() as usize][prev.target_square() as usize] = Some(mv);
+        }
+        // Continuation history: reward this move given the previous moves.
+        let mv_piece = piece_idx(mv);
+        let mv_to    = mv.target_square() as usize;
+        // 1-ply: keyed on opponent's previous move (what they just played before us)
+        if let Some(prev1) = self.prev_moves[p] {
+            let pp1 = piece_idx(prev1);
+            let pt1 = prev1.target_square() as usize;
+            let v = self.cont_hist_1.get_mut(pp1, pt1, mv_piece, mv_to);
+            *v = (*v + bonus).min(16_384);
+        }
+        // 2-ply: keyed on our own previous move (what we played 2 plies ago)
+        if p >= 1 {
+            if let Some(prev2) = self.prev_moves[p - 1] {
+                let pp2 = piece_idx(prev2);
+                let pt2 = prev2.target_square() as usize;
+                let v = self.cont_hist_2.get_mut(pp2, pt2, mv_piece, mv_to);
+                *v = (*v + bonus).min(16_384);
+            }
         }
     }
 
     /// Apply a history malus (negative bonus) to a quiet move that was searched
     /// but failed to produce a cutoff.  Penalises moves tried before the
     /// actual β-cutoff move so they are ordered lower in future nodes.
-    fn apply_history_malus(&mut self, depth: i32, mv: ChessMove) {
+    fn apply_history_malus(&mut self, ply: usize, depth: i32, mv: ChessMove) {
+        let p = ply.min(MAX_PLY - 1);
+        let malus = depth * depth;
         let v = &mut self.history[mv.start_square() as usize][mv.target_square() as usize];
-        *v = (*v - depth * depth).max(-16_384);
+        *v = (*v - malus).max(-16_384);
+        // Also apply malus to continuation history.
+        let mv_piece = piece_idx(mv);
+        let mv_to    = mv.target_square() as usize;
+        if let Some(prev1) = self.prev_moves[p] {
+            let pp1 = piece_idx(prev1);
+            let pt1 = prev1.target_square() as usize;
+            let v = self.cont_hist_1.get_mut(pp1, pt1, mv_piece, mv_to);
+            *v = (*v - malus).max(-16_384);
+        }
+        if p >= 1 {
+            if let Some(prev2) = self.prev_moves[p - 1] {
+                let pp2 = piece_idx(prev2);
+                let pt2 = prev2.target_square() as usize;
+                let v = self.cont_hist_2.get_mut(pp2, pt2, mv_piece, mv_to);
+                *v = (*v - malus).max(-16_384);
+            }
+        }
     }
 }
 
@@ -230,8 +345,15 @@ fn quiescence(
         captures.sort();
 
         for mut chess_move in captures {
+            // Delta pruning: if even capturing the piece (plus a margin) can't raise alpha,
+            // skip this capture entirely (saves SEE computation on hopeless moves).
+            let cap_val = capture_value(chess_board, &chess_move)
+                + if chess_move.is_promotion() { 800 } else { 0 };
+            if stand_pat + cap_val + DELTA_MARGIN <= alpha {
+                continue;
+            }
+
             // SEE pruning: skip losing captures (SEE < 0).
-            // More accurate than delta pruning — correctly handles all defended pieces.
             if see(chess_board, conductor,
                    chess_move.start_square() as usize,
                    chess_move.target_square() as usize,
@@ -261,6 +383,13 @@ fn quiescence(
         captures.sort();
 
         for mut chess_move in captures {
+            // Delta pruning (black): if even capturing the piece can't drop below beta, skip.
+            let cap_val = capture_value(chess_board, &chess_move)
+                + if chess_move.is_promotion() { 800 } else { 0 };
+            if stand_pat - cap_val - DELTA_MARGIN >= beta {
+                continue;
+            }
+
             // SEE pruning: skip losing captures.
             if see(chess_board, conductor,
                    chess_move.start_square() as usize,
@@ -300,6 +429,10 @@ fn order_moves(
     countermove: Option<ChessMove>,
     history: &[[i32; 64]; 64],
     capture_history: &[[i32; 64]; 64],
+    ch1: &ContHistTable,
+    ch2: &ContHistTable,
+    prev1: Option<(usize, usize)>,  // (prev_piece_idx, prev_to) for 1-ply cont hist
+    prev2: Option<(usize, usize)>,  // (prev_piece_idx, prev_to) for 2-ply cont hist
     board: &ChessBoard,
     conductor: &PieceConductor,
     is_white: bool,
@@ -371,11 +504,17 @@ fn order_moves(
         }).map(|pos| quiets.swap_remove(pos))
     });
 
-    // Sort remaining quiets by history score, highest first.
-    quiets.sort_by(|a, b| {
-        history[b.start_square() as usize][b.target_square() as usize]
-            .cmp(&history[a.start_square() as usize][a.target_square() as usize])
-    });
+    // Sort remaining quiets by combined history + continuation history score, highest first.
+    let quiet_score = |m: &ChessMove| -> i32 {
+        let from  = m.start_square() as usize;
+        let to    = m.target_square() as usize;
+        let piece = piece_idx(*m);
+        let mut h = history[from][to];
+        if let Some((pp, pt)) = prev1 { h += ch1.get(pp, pt, piece, to); }
+        if let Some((pp, pt)) = prev2 { h += ch2.get(pp, pt, piece, to); }
+        h
+    };
+    quiets.sort_by(|a, b| quiet_score(b).cmp(&quiet_score(a)));
 
     // Reassemble: TT → good captures → killers → countermove → history quiets → bad captures.
     if let Some(tt_m) = tt_entry {
@@ -547,7 +686,13 @@ pub fn alpha_beta(
         && !in_check
         && !is_zugzwang_prone(chess_board, is_white)
     {
-        let r = if depth >= 6 { 3 } else { 2 };
+        // Adaptive R: larger when static eval is far above beta (we're clearly winning),
+        // allowing more aggressive pruning of already-dominant positions.
+        let excess = if let Some(se) = static_eval {
+            if is_white { (se - beta) / 200 } else { (alpha - se) / 200 }
+        } else { 0 };
+        let r = (3 + depth / 3 + excess.clamp(0, 3)).min(depth - 1);
+
         chess_board.make_null_move();
         let null_score = alpha_beta(
             chess_board, conductor, tt, ctx,
@@ -558,6 +703,58 @@ pub fn alpha_beta(
 
         if is_white && null_score >= beta { return (beta, None); }
         if !is_white && null_score <= alpha { return (alpha, None); }
+    }
+
+    // --- ProbCut ---
+    // If a capture is very likely to fail high (white) or low (black) at this node,
+    // confirm with a shallow reduced search.  Avoids spending full depth on obvious
+    // wins/losses.  Only at depth >= 5, not in check, not in a singular extension.
+    if depth >= 5 && !in_check && null_move_allowed && ctx.excluded_move[p].is_none() {
+        let pc_threshold = if is_white { beta + PROBCUT_MARGIN } else { alpha - PROBCUT_MARGIN };
+        // Quick guard: only enter if static eval suggests a capture MIGHT reach the threshold.
+        let pc_feasible = pc_threshold.abs() < MATE_SCORE_THRESHOLD && static_eval.map_or(true, |se| {
+            if is_white { se + 900 >= pc_threshold } else { se - 900 <= pc_threshold }
+        });
+        if pc_feasible {
+            let pc_depth = (depth - 4).max(1);
+            let captures = get_all_legal_captures_for_color(chess_board, conductor, is_white);
+            for mut pc_mv in captures {
+                let see_val = see(chess_board, conductor,
+                    pc_mv.start_square() as usize, pc_mv.target_square() as usize, is_white);
+                if see_val < 0 { continue; } // skip losing captures
+
+                // Quick feasibility filter using static eval + SEE.
+                let likely = if let Some(se) = static_eval {
+                    if is_white { se + see_val >= pc_threshold }
+                    else        { se - see_val <= pc_threshold }
+                } else { true };
+                if !likely { continue; }
+
+                if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) { break; }
+
+                chess_board.make_move(&mut pc_mv);
+                let (pc_alpha, pc_beta) = if is_white {
+                    (pc_threshold - 1, pc_threshold)
+                } else {
+                    (pc_threshold, pc_threshold + 1)
+                };
+                let (pc_score, _) = alpha_beta(
+                    chess_board, conductor, tt, ctx,
+                    pc_depth, ply + 1, pc_alpha, pc_beta, !is_white,
+                    false, stop.clone(),
+                );
+                chess_board.undo_move();
+
+                if is_white && pc_score >= pc_threshold {
+                    tt.store(hash, depth - 3, score_to_tt(pc_score, ply), TtFlag::LowerBound, Some(pc_mv));
+                    return (pc_score, Some(pc_mv));
+                }
+                if !is_white && pc_score <= pc_threshold {
+                    tt.store(hash, depth - 3, score_to_tt(pc_score, ply), TtFlag::UpperBound, Some(pc_mv));
+                    return (pc_score, Some(pc_mv));
+                }
+            }
+        }
     }
 
     // --- Internal Iterative Deepening (IID) ---
@@ -589,7 +786,8 @@ pub fn alpha_beta(
     //   - Have a TT move with sufficient depth and a lower/exact bound
     //   - TT score is not a mate score (mate distance is exact, not a guide)
     //   - Not in check (check extension already handled above)
-    let singular_extension = if ctx.excluded_move[p].is_none()
+    // singular_extension: true = extend TT move; se_singular_score/se_singular_beta for double ext.
+    let (singular_extension, se_singular_score, se_singular_beta) = if ctx.excluded_move[p].is_none()
         && depth >= 6
         && ply > 0
         && !in_check
@@ -601,9 +799,7 @@ pub fn alpha_beta(
                 && matches!(entry.flag, TtFlag::LowerBound | TtFlag::Exact)
                 && tt_score.abs() < MATE_SCORE_THRESHOLD
             {
-                // Singular search: reduced-depth search excluding the TT move.
-                // If no other move beats tt_score - margin, the TT move is singular.
-                let se_margin = 50;
+                let se_margin = 50; // same as before; double ext uses se_singular_score gap
                 let se_beta = tt_score - se_margin;
                 ctx.excluded_move[p] = tt_move;
                 let (se_score, _) = alpha_beta(
@@ -611,19 +807,19 @@ pub fn alpha_beta(
                     (depth / 2).max(1), ply,
                     se_beta - 1, se_beta,
                     is_white,
-                    false, // no null move in singular search
+                    false,
                     stop.clone(),
                 );
                 ctx.excluded_move[p] = None;
-                se_score < se_beta
+                (se_score < se_beta, se_score, se_beta)
             } else {
-                false
+                (false, 0, 0)
             }
         } else {
-            false
+            (false, 0, 0)
         }
     } else {
-        false
+        (false, 0, 0)
     };
 
     let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
@@ -643,24 +839,35 @@ pub fn alpha_beta(
     }
 
     let killers = &ctx.killers[p];
-    // Safety: we need the history borrow separate from ctx for the mutable borrow
-    // later (record_cutoff).  Copy the pointer via a raw slice reference to avoid
-    // a lifetime overlap.  We only read history here; the write happens after the
-    // loop body, when we hold no other borrows on ctx.
-    let history_ptr: *const [[i32; 64]; 64] = &ctx.history;
+    // Safety: we need immutable borrows of history tables alongside a mutable borrow
+    // of ctx later (record_cutoff, apply_history_malus).  Use raw pointers that are
+    // only read in order_moves; writes happen after the loop via ctx exclusively.
+    let history_ptr:     *const [[i32; 64]; 64] = &ctx.history;
     let cap_history_ptr: *const [[i32; 64]; 64] = &ctx.capture_history;
-    // SAFETY: we do not mutate ctx.history / ctx.capture_history between this
-    // point and the end of the loop body; writes only happen via ctx after these
-    // borrows have ended.
-    let history: &[[i32; 64]; 64] = unsafe { &*history_ptr };
+    let ch1_ptr: *const ContHistTable = &ctx.cont_hist_1;
+    let ch2_ptr: *const ContHistTable = &ctx.cont_hist_2;
+    // SAFETY: these tables are not mutated between this point and end of the loop.
+    let history:         &[[i32; 64]; 64] = unsafe { &*history_ptr };
     let capture_history: &[[i32; 64]; 64] = unsafe { &*cap_history_ptr };
+    let ch1: &ContHistTable = unsafe { &*ch1_ptr };
+    let ch2: &ContHistTable = unsafe { &*ch2_ptr };
+
+    // Continuation history lookup keys for this ply.
+    // prev1 = opponent's last move (1 ply back); prev2 = our last move (2 plies back).
+    let prev1: Option<(usize, usize)> = ctx.prev_moves[p].map(|pm| {
+        (piece_idx(pm), pm.target_square() as usize)
+    });
+    let prev2: Option<(usize, usize)> = if p >= 1 {
+        ctx.prev_moves[p - 1].map(|pm| (piece_idx(pm), pm.target_square() as usize))
+    } else { None };
 
     // Look up the countermove for the opponent's last move at this ply.
     let countermove: Option<ChessMove> = ctx.prev_moves[p].and_then(|pm| {
         ctx.countermoves[pm.start_square() as usize][pm.target_square() as usize]
     });
 
-    order_moves(&mut legal_moves, tt_move, killers, countermove, history, capture_history, chess_board, conductor, is_white);
+    order_moves(&mut legal_moves, tt_move, killers, countermove, history, capture_history,
+                ch1, ch2, prev1, prev2, chess_board, conductor, is_white);
     // `killers` borrow of ctx ends here (it is not used again below).
 
     let mut best_move: Option<ChessMove> = None;
@@ -711,10 +918,11 @@ pub fn alpha_beta(
             }
             if is_quiet { quiet_count += 1; }
 
-            // Singular extension: extend the TT move by one ply when it is
-            // the only move that keeps the score above the SE threshold.
-            // Only applied at move_index==0 (the TT move is always sorted first).
-            let move_ext = if singular_extension && move_index == 0 { 1i32 } else { 0i32 };
+            // Singular / double extension for the TT move (move_index == 0).
+            // Double-extend when the position is extremely singular (score well below se_beta).
+            let move_ext = if singular_extension && move_index == 0 {
+                if se_singular_score < se_singular_beta - depth { 2i32 } else { 1i32 }
+            } else { 0i32 };
 
             // Record this move as the "previous move" for the child ply so the
             // child can look up the countermove that refutes it.
@@ -722,11 +930,20 @@ pub fn alpha_beta(
             chess_board.make_move(&mut chess_move);
 
             // LMR reduction: R grows with depth and move index.
-            // Formula: R = floor(ln(depth) * ln(move_index+1) / 1.5), capped.
-            // +1 when not improving: search late moves even less when falling behind.
+            // Reduce less for moves with high continuation history score (they're "interesting").
             let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
                 let r = lmr_reduction(depth, move_index).max(1);
                 let r = if improving { r } else { r + 1 };
+                // Scale back reduction for moves that cont_hist considers good.
+                let ch_score = {
+                    let mv_piece = piece_idx(chess_move);
+                    let mv_to    = chess_move.target_square() as usize;
+                    let mut s = 0i32;
+                    if let Some((pp, pt)) = prev1 { s += ch1.get(pp, pt, mv_piece, mv_to); }
+                    if let Some((pp, pt)) = prev2 { s += ch2.get(pp, pt, mv_piece, mv_to); }
+                    s
+                };
+                let r = if ch_score > 8_000 { (r - 1).max(0) } else { r };
                 r.min(depth - 1)
             } else {
                 0
@@ -779,7 +996,7 @@ pub fn alpha_beta(
                     ctx.record_cutoff(ply, depth, chess_move);
                     let n = tried_quiets.len();
                     for &tried in tried_quiets[..n.saturating_sub(1)].iter() {
-                        ctx.apply_history_malus(depth, tried);
+                        ctx.apply_history_malus(ply, depth, tried);
                     }
                 } else {
                     // Capture cutoff: reward in capture_history.
@@ -839,9 +1056,10 @@ pub fn alpha_beta(
             }
             if is_quiet { quiet_count += 1; }
 
-            // Singular extension: extend the TT move by one ply when it is
-            // the only move that keeps the score above the SE threshold.
-            let move_ext = if singular_extension && move_index == 0 { 1i32 } else { 0i32 };
+            // Singular / double extension (mirrored from white branch).
+            let move_ext = if singular_extension && move_index == 0 {
+                if se_singular_score < se_singular_beta - depth { 2i32 } else { 1i32 }
+            } else { 0i32 };
 
             // Record this move as the "previous move" for the child ply.
             ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
@@ -850,6 +1068,15 @@ pub fn alpha_beta(
             let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
                 let r = lmr_reduction(depth, move_index).max(1);
                 let r = if improving { r } else { r + 1 };
+                let ch_score = {
+                    let mv_piece = piece_idx(chess_move);
+                    let mv_to    = chess_move.target_square() as usize;
+                    let mut s = 0i32;
+                    if let Some((pp, pt)) = prev1 { s += ch1.get(pp, pt, mv_piece, mv_to); }
+                    if let Some((pp, pt)) = prev2 { s += ch2.get(pp, pt, mv_piece, mv_to); }
+                    s
+                };
+                let r = if ch_score > 8_000 { (r - 1).max(0) } else { r };
                 r.min(depth - 1)
             } else {
                 0
@@ -901,7 +1128,7 @@ pub fn alpha_beta(
                     ctx.record_cutoff(ply, depth, chess_move);
                     let n = tried_quiets.len();
                     for &tried in tried_quiets[..n.saturating_sub(1)].iter() {
-                        ctx.apply_history_malus(depth, tried);
+                        ctx.apply_history_malus(ply, depth, tried);
                     }
                 } else {
                     let v = &mut ctx.capture_history
@@ -950,9 +1177,13 @@ pub fn search_root(
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board, conductor), None);
     }
-    // No countermove at root (no previous move in the game tree).
+    // No countermove or continuation history at root (no previous game-tree moves).
+    let ch1_ptr: *const ContHistTable = &ctx.cont_hist_1;
+    let ch2_ptr: *const ContHistTable = &ctx.cont_hist_2;
+    let ch1_root: &ContHistTable = unsafe { &*ch1_ptr };
+    let ch2_root: &ContHistTable = unsafe { &*ch2_ptr };
     order_moves(&mut legal_moves, prev_best, &ctx.killers[0], None, &ctx.history, &ctx.capture_history,
-                chess_board, conductor, is_white);
+                ch1_root, ch2_root, None, None, chess_board, conductor, is_white);
 
     // Default to first ordered move so we never return None even if stop fires
     // before the first move is fully evaluated.
@@ -1268,26 +1499,25 @@ fn id_search_single(
         let result = if depth <= 2 {
             search_root(chess_board, conductor, tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move, stop.clone())
         } else {
-            let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
-            let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
+            // Progressive aspiration window: start narrow, multiply delta on failure
+            // instead of opening directly to full window.  Saves re-searches.
+            let mut delta = ASPIRATION_DELTA;
+            let mut lo = prev_score.saturating_sub(delta);
+            let mut hi = prev_score.saturating_add(delta);
             loop {
                 let result = search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone());
-                // Stop flag fired — break out immediately to avoid infinite loop
-                // (partial search returns extreme scores that keep failing the window).
                 if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
                     break result;
                 }
                 if result.0 > lo && result.0 < hi {
-                    // Score fits inside the window — this is the correct result.
                     break result;
                 } else if result.0 <= lo {
-                    lo = i32::MIN + 1;
+                    delta = (delta * 4).min(2000);
+                    lo = if delta >= 2000 { i32::MIN + 1 } else { prev_score.saturating_sub(delta) };
                 } else {
-                    hi = i32::MAX;
+                    delta = (delta * 4).min(2000);
+                    hi = if delta >= 2000 { i32::MAX } else { prev_score.saturating_add(delta) };
                 }
-                // Both bounds are now at their maximums: do one final full-window
-                // search so we return a result from [MIN+1, MAX], not from the
-                // narrower window that triggered the double-widen.
                 if lo == i32::MIN + 1 && hi == i32::MAX {
                     break search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone());
                 }
@@ -2570,7 +2800,7 @@ mod tests {
         let mv = chess_foundation::ChessMove::new(0, 16);
         // Apply malus many times — must not underflow below -16_384.
         for _ in 0..100 {
-            ctx.apply_history_malus(10, mv);
+            ctx.apply_history_malus(0, 10, mv);
         }
         let v = ctx.history[0][16];
         assert!(v >= -16_384, "History must not go below -16_384, got {v}");
@@ -2741,5 +2971,69 @@ mod tests {
         );
         assert_eq!(score1, score2,
             "Score must be identical with warm pawn cache ({score1} vs {score2})");
+    }
+
+    // ── Intermezzo / blunder regression ──────────────────────────────────────
+
+    /// Regression: engine must find Be6+ (intermezzo check) before recapturing
+    /// a knight that is forking the queen.
+    ///
+    /// Position after 19...Nxd1 (real game: lichess.org/eFCQedjx):
+    ///   3r1rk1/1p4pp/p2qp3/3p1B2/8/P3QN1P/1PP2P2/3nR1K1 w - - 0 20
+    ///
+    /// Black's Nd1 attacks White's Qe3 (threat: Nxe3 winning the queen).
+    /// White must play Be6+ (Bf5→e6, check via the e6-f7-g8 diagonal since
+    /// f7 is empty), forcing Kh8, then Rxd1 wins the knight and saves
+    /// the queen.  Immediately playing Rxd1 allows Nxe3 and white loses
+    /// the queen.
+    #[test]
+    fn intermezzo_be6_saves_queen_from_knight_fork() {
+        let c = conductor();
+        let tt = TranspositionTable::new(1 << 20);
+        let mut ctx = SearchContext::new();
+        let mut board = ChessBoard::new();
+        // f5 = sq 37, e6 = sq 44  (rank*8 + file, 0-indexed from a1=0)
+        board.set_from_fen("3r1rk1/1p4pp/p2qp3/3p1B2/8/P3QN1P/1PP2P2/3nR1K1 w - - 0 20");
+
+        let (_, mv) = alpha_beta(
+            &mut board, &c, &tt, &mut ctx,
+            7, 0, i32::MIN + 1, i32::MAX, true, true, None,
+        );
+        let mv = mv.expect("Engine must return a move");
+
+        // Be6+ is the only move that saves the queen.
+        assert_eq!(
+            (mv.start_square(), mv.target_square()),
+            (37, 44),
+            "Engine must play Be6+ (f5→e6, sq 37→44), got {}→{}",
+            mv.start_square(), mv.target_square()
+        );
+    }
+
+    /// Regression: engine must NOT play Rxd1 immediately in the same position,
+    /// because that allows Nxe3 (black wins the queen).
+    ///
+    /// This is a faster companion to `intermezzo_be6_saves_queen_from_knight_fork`:
+    /// even at depth=5 the queen-loss must be visible.
+    #[test]
+    fn engine_avoids_rxd1_allowing_queen_loss() {
+        let c = conductor();
+        let tt = TranspositionTable::new(1 << 16);
+        let mut ctx = SearchContext::new();
+        let mut board = ChessBoard::new();
+        board.set_from_fen("3r1rk1/1p4pp/p2qp3/3p1B2/8/P3QN1P/1PP2P2/3nR1K1 w - - 0 20");
+
+        let (_, mv) = alpha_beta(
+            &mut board, &c, &tt, &mut ctx,
+            5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+        );
+        let mv = mv.expect("Engine must return a move");
+
+        // Re1 (sq 4) to d1 (sq 3) is the blunder: loses queen to Nxe3.
+        let is_rxd1 = mv.start_square() == 4 && mv.target_square() == 3;
+        assert!(
+            !is_rxd1,
+            "Engine must NOT play Rxd1 (allows Nxe3 winning the queen)"
+        );
     }
 }
