@@ -713,7 +713,7 @@ pub fn alpha_beta(
         let pc_threshold = if is_white { beta.saturating_add(PROBCUT_MARGIN) } else { alpha.saturating_sub(PROBCUT_MARGIN) };
         // Quick guard: only enter if static eval suggests a capture MIGHT reach the threshold.
         let pc_feasible = pc_threshold.saturating_abs() < MATE_SCORE_THRESHOLD && static_eval.map_or(true, |se| {
-            if is_white { se + 900 >= pc_threshold } else { se - 900 <= pc_threshold }
+            if is_white { se.saturating_add(900) >= pc_threshold } else { se.saturating_sub(900) <= pc_threshold }
         });
         if pc_feasible {
             let pc_depth = (depth - 4).max(1);
