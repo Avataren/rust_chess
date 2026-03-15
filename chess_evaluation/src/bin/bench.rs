@@ -1,22 +1,24 @@
 //! bench — NPS / depth benchmark for the chess engine.
 //!
-//! Runs a sequential fixed-depth alpha-beta search on a standard test suite
-//! and reports nodes searched, wall time, and NPS per position.  Uses the
-//! sequential search path so node counts are deterministic and comparable
-//! across chunks regardless of thread count.
+//! Runs a fixed-depth search on a standard test suite and reports nodes
+//! searched, wall time, and NPS per position.
 //!
 //! Usage:
 //!   cargo run -p chess_evaluation --bin bench --release
 //!   cargo run -p chess_evaluation --bin bench --release -- --depth 7
+//!   cargo run -p chess_evaluation --bin bench --release -- --depth 7 --threads 4
+//!   cargo run -p chess_evaluation --bin bench --release -- --threads 1,2,4,8
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
-    alpha_beta, SearchContext, TranspositionTable, TT_SIZE,
+    alpha_beta, iterative_deepening_root_with_tt,
+    SearchContext, TranspositionTable, TT_SIZE,
 };
 use move_generator::{
     move_generator::get_all_legal_moves_for_color,
     piece_conductor::PieceConductor,
 };
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 // ── Position suite ─────────────────────────────────────────────────────────────
@@ -59,16 +61,15 @@ const POSITIONS: &[(&str, bool, &str)] = &[
      true,  "Q vs passers"),
 ];
 
-/// Run one sequential fixed-depth search and return (nodes, elapsed_ms, score).
-fn bench_one(fen: &str, is_white: bool, depth: i32) -> (u64, u128, i32) {
+/// Run a sequential fixed-depth search (deterministic node count, single-threaded).
+fn bench_sequential(fen: &str, is_white: bool, depth: i32) -> (u64, u128, i32) {
     let mut board = ChessBoard::new();
     board.set_from_fen(fen);
     let conductor = PieceConductor::new();
-    let mut tt = TranspositionTable::new(TT_SIZE);
+    let tt = TranspositionTable::new(TT_SIZE);
     let mut ctx = SearchContext::new();
 
-    // Sequential root: iterate over root moves, call alpha_beta for each.
-    let mut moves = get_all_legal_moves_for_color(&mut board, &conductor, is_white);
+    let moves = get_all_legal_moves_for_color(&mut board, &conductor, is_white);
     if moves.is_empty() {
         return (0, 0, 0);
     }
@@ -84,7 +85,7 @@ fn bench_one(fen: &str, is_white: bool, depth: i32) -> (u64, u128, i32) {
         let (score, _) = alpha_beta(
             &mut board,
             &conductor,
-            &mut tt,
+            &tt,
             &mut ctx,
             depth - 1,
             1,
@@ -104,14 +105,51 @@ fn bench_one(fen: &str, is_white: bool, depth: i32) -> (u64, u128, i32) {
     (ctx.nodes, elapsed_ms, best_score)
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let depth: i32 = args.windows(2)
-        .find(|w| w[0] == "--depth")
-        .and_then(|w| w[1].parse().ok())
-        .unwrap_or(7);
+/// Run a multi-threaded iterative-deepening search up to `depth`.
+/// Returns (main_thread_nodes_at_final_depth, elapsed_ms, score).
+fn bench_threaded(fen: &str, is_white: bool, depth: i32, num_threads: usize) -> (u64, u128, i32) {
+    let mut board = ChessBoard::new();
+    board.set_from_fen(fen);
+    let conductor = PieceConductor::new();
+    let tt = TranspositionTable::new(TT_SIZE);
 
-    println!("=== Engine benchmark  depth={} ===\n", depth);
+    // Capture nodes & ms from the last completed depth via on_depth callback.
+    let last_nodes: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
+    let last_nodes_cb = Arc::clone(&last_nodes);
+
+    let t0 = Instant::now();
+
+    let result = iterative_deepening_root_with_tt(
+        &mut board,
+        &conductor,
+        None,
+        &tt,
+        depth,
+        is_white,
+        None, // no deadline — run to full depth
+        None, // no external stop
+        num_threads,
+        Some(&move |_d, _score, nodes, _ms| {
+            *last_nodes_cb.lock().unwrap() = nodes;
+        }),
+    );
+
+    let elapsed_ms = t0.elapsed().as_millis();
+    let nodes = *last_nodes.lock().unwrap();
+    (nodes, elapsed_ms, result.score)
+}
+
+/// `force_id`: when true, always use iterative-deepening path (even for 1 thread)
+///             so all thread counts are directly comparable.
+fn run_suite(depth: i32, num_threads: usize, force_id: bool) {
+    let mode = if !force_id && num_threads <= 1 {
+        "sequential fixed-depth (1 thread, deterministic)".to_string()
+    } else if num_threads <= 1 {
+        "iterative deepening (1 thread)".to_string()
+    } else {
+        format!("Lazy SMP ({num_threads} threads)")
+    };
+    println!("\n=== depth={depth}  {mode} ===\n");
     println!("{:<28} {:>12} {:>10} {:>12}", "Position", "Nodes", "ms", "NPS");
     println!("{}", "-".repeat(66));
 
@@ -119,7 +157,11 @@ fn main() {
     let mut total_ms    = 0u128;
 
     for &(fen, is_white, label) in POSITIONS {
-        let (nodes, ms, _score) = bench_one(fen, is_white, depth);
+        let (nodes, ms, _score) = if !force_id && num_threads <= 1 {
+            bench_sequential(fen, is_white, depth)
+        } else {
+            bench_threaded(fen, is_white, depth, num_threads)
+        };
         let nps = if ms > 0 { nodes as u128 * 1000 / ms } else { 0 };
         total_nodes += nodes;
         total_ms    += ms;
@@ -131,6 +173,37 @@ fn main() {
     println!("{:<28} {:>12} {:>10} {:>12}", "TOTAL / AVG NPS",
              total_nodes, total_ms, avg_nps);
     println!();
-    println!("depth={depth}  positions={}  total_nodes={total_nodes}  avg_nps={avg_nps}",
+    println!("depth={depth}  threads={num_threads}  positions={}  total_nodes={total_nodes}  avg_nps={avg_nps}  total_ms={total_ms}",
              POSITIONS.len());
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
+    let depth: i32 = args.windows(2)
+        .find(|w| w[0] == "--depth")
+        .and_then(|w| w[1].parse().ok())
+        .unwrap_or(7);
+
+    // --threads accepts a single value (e.g. 4) or a comma-separated list (e.g. 1,2,4,8).
+    let threads_str = args.windows(2)
+        .find(|w| w[0] == "--threads")
+        .map(|w| w[1].as_str())
+        .unwrap_or("1");
+
+    let thread_counts: Vec<usize> = threads_str
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+
+    let thread_counts = if thread_counts.is_empty() { vec![1] } else { thread_counts };
+
+    // If --threads is explicitly given, use iterative-deepening for all counts
+    // so results are directly comparable.  Without --threads, use the
+    // deterministic sequential fixed-depth path as the canonical baseline.
+    let threads_explicit = args.iter().any(|a| a == "--threads");
+
+    for &tc in &thread_counts {
+        run_suite(depth, tc, threads_explicit);
+    }
 }

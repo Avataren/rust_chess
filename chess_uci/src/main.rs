@@ -437,11 +437,12 @@ fn main() {
     // Cleared on `ucinewgame` or when Hash size changes.
     let mut tt: Arc<TranspositionTable> = Arc::new(TranspositionTable::new(entries_for_mb(hash_mb)));
 
-    // Lazy SMP thread count.  Default = min(8, available logical CPUs).
+    // Lazy SMP thread count.  Default = min(6, available logical CPUs).
+    // 6 threads is the empirical sweet spot on the benchmark suite (depth 7).
     // Override via "setoption name Threads value N"; the value is capped at
     // the number of logical CPUs to avoid over-subscription.
     let max_threads = chess_evaluation::available_threads();
-    let default_threads = max_threads.min(8);
+    let default_threads = max_threads.min(6);
     let mut num_threads: usize = default_threads;
 
     let stop_flag = Arc::new(AtomicBool::new(false));

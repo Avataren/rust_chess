@@ -1,12 +1,84 @@
 use chess_board::ChessBoard;
 use chess_foundation::Bitboard;
 use move_generator::piece_conductor::PieceConductor;
+use std::cell::UnsafeCell;
 
 use crate::piece_tables::{
     eg_bishop_table, eg_king_table, eg_knight_table, eg_pawn_table, eg_queen_table,
     eg_rook_table, is_passed_pawn, mg_bishop_table, mg_king_table, mg_knight_table,
     mg_pawn_table, mg_queen_table, mg_rook_table, passed_pawn_bonus_eg, passed_pawn_bonus_mg,
 };
+
+// ── Pawn hash table ──────────────────────────────────────────────────────────
+//
+// Pawn structure evaluation is expensive (PSTs + doubled/isolated + passed
+// pawn detection) but depends only on the two pawn bitboards, which change
+// infrequently during a search.  Caching behind a small per-thread table
+// avoids recomputing the same pawn eval at every node.
+
+const PAWN_TABLE_SIZE: usize = 1 << 14; // 16k entries (~1 MB per thread)
+
+/// A single pawn hash entry.  Stores all pawn-only MG/EG contributions
+/// (PSTs, structure penalties, passed pawn base bonuses) plus the passed-pawn
+/// bitboards needed to compute king-proximity bonuses at lookup time.
+#[derive(Clone, Copy)]
+struct PawnHashEntry {
+    key:          u64,
+    pawn_mg:      i32,  // white pawn PSTs MG − black pawn PSTs MG
+    pawn_eg:      i32,  // white pawn PSTs EG − black pawn PSTs EG
+    struct_score: i32,  // black structure penalty − white structure penalty (white's POV)
+    pass_w_mg:    i32,  // Σ passed_pawn_bonus_mg for white passers
+    pass_w_eg:    i32,
+    pass_b_mg:    i32,  // Σ passed_pawn_bonus_mg for black passers
+    pass_b_eg:    i32,
+    white_passers: u64,
+    black_passers: u64,
+}
+
+impl PawnHashEntry {
+    const EMPTY: Self = Self {
+        key: 0, pawn_mg: 0, pawn_eg: 0, struct_score: 0,
+        pass_w_mg: 0, pass_w_eg: 0, pass_b_mg: 0, pass_b_eg: 0,
+        white_passers: 0, black_passers: 0,
+    };
+}
+
+struct PawnHashTable {
+    entries: Box<[PawnHashEntry; PAWN_TABLE_SIZE]>,
+}
+
+impl PawnHashTable {
+    fn new() -> Self {
+        Self { entries: Box::new([PawnHashEntry::EMPTY; PAWN_TABLE_SIZE]) }
+    }
+
+    #[inline(always)]
+    fn probe(&self, key: u64) -> Option<&PawnHashEntry> {
+        let e = &self.entries[key as usize & (PAWN_TABLE_SIZE - 1)];
+        if e.key == key { Some(e) } else { None }
+    }
+
+    #[inline(always)]
+    fn store(&mut self, entry: PawnHashEntry) {
+        self.entries[entry.key as usize & (PAWN_TABLE_SIZE - 1)] = entry;
+    }
+}
+
+// UnsafeCell allows mutation via a shared reference inside thread_local!
+// This is sound because thread_local storage is never shared across threads.
+struct UnsafePawnTable(UnsafeCell<PawnHashTable>);
+unsafe impl Sync for UnsafePawnTable {}
+
+thread_local! {
+    static PAWN_TABLE: UnsafePawnTable = UnsafePawnTable(UnsafeCell::new(PawnHashTable::new()));
+}
+
+/// Compute a pawn-only Zobrist hash from the two pawn bitboards.
+#[inline(always)]
+fn pawn_key(white_pawns: u64, black_pawns: u64) -> u64 {
+    white_pawns.wrapping_mul(0x9E3779B97F4A7C15)
+        ^ black_pawns.wrapping_mul(0x517CC1B727220A95)
+}
 
 // PeSTO tapered piece values
 const MG_PAWN_VALUE:   i32 =  82;
@@ -362,6 +434,74 @@ mod tests {
         assert!(protected > unprotected,
             "Protected outpost ({protected}) must score higher than unprotected ({unprotected})");
     }
+
+    // ── Pawn hash cache correctness ──────────────────────────────────────────
+
+    /// Calling evaluate_board twice on the same position must return the same
+    /// score regardless of whether it's a cache miss or hit.
+    #[test]
+    fn pawn_hash_consistent_on_repeated_calls() {
+        let c = PieceConductor::new();
+        let mut board = ChessBoard::new();
+        // Italian Game: typical middlegame pawn structure.
+        board.set_from_fen("r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2NP1N2/PPP2PPP/R1BQK2R b KQkq - 0 6");
+
+        let s1 = evaluate_board(&board, &c); // cache miss — computes fresh
+        let s2 = evaluate_board(&board, &c); // cache hit — reads stored value
+        let s3 = evaluate_board(&board, &c); // hit again
+        assert_eq!(s1, s2, "Cache hit must return same score as cache miss ({s1} vs {s2})");
+        assert_eq!(s2, s3, "Repeated cache hits must be stable ({s2} vs {s3})");
+    }
+
+    /// Two positions with different pawn structures must produce different eval
+    /// scores.  This catches hash collisions silently returning the wrong entry.
+    #[test]
+    fn pawn_hash_distinguishes_different_pawn_structures() {
+        let c = PieceConductor::new();
+
+        // Position A: symmetric starting pawns.
+        let mut board_a = ChessBoard::new();
+        board_a.set_from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1");
+
+        // Position B: white has an advanced pawn on e5, black has none.
+        let mut board_b = ChessBoard::new();
+        board_b.set_from_fen("4k3/pppp1ppp/8/4P3/8/8/PPPP1PPP/4K3 w - - 0 1");
+
+        let sa = evaluate_board(&board_a, &c);
+        let sb = evaluate_board(&board_b, &c);
+        // Scores must differ — they have different pawn structures.
+        assert_ne!(sa, sb,
+            "Different pawn structures must produce different eval scores (both got {sa})");
+    }
+
+    /// After changing the pawn structure (simulated by evaluating a different
+    /// FEN after the first), the eval must reflect the new pawn configuration,
+    /// not the cached result from the previous position.
+    #[test]
+    fn pawn_hash_updates_after_pawn_structure_change() {
+        let c = PieceConductor::new();
+
+        // First: position with doubled white pawns on the e-file.
+        let mut board1 = ChessBoard::new();
+        board1.set_from_fen("4k3/8/8/8/4P3/4P3/8/4K3 w - - 0 1");
+        let score_doubled = evaluate_board(&board1, &c);
+
+        // Then: same material but no doubled pawns.
+        let mut board2 = ChessBoard::new();
+        board2.set_from_fen("4k3/8/8/8/4P3/3P4/8/4K3 w - - 0 1");
+        let score_normal = evaluate_board(&board2, &c);
+
+        // Doubled pawns carry a penalty, so the doubled position must score lower.
+        assert!(score_doubled < score_normal,
+            "Doubled pawns ({score_doubled}) must score lower than normal ({score_normal})");
+
+        // Now re-evaluate board1 — must still return the original (correct) value,
+        // not the cached value from board2.
+        let score_doubled_again = evaluate_board(&board1, &c);
+        assert_eq!(score_doubled, score_doubled_again,
+            "Re-evaluating the doubled-pawn position must return the same score \
+             ({score_doubled} vs {score_doubled_again}), not a stale cache from the other position");
+    }
 }
 /// Mop-up bonus: drive the losing king to a corner in winning endgames.
 /// The bonus is scaled up as the 50-move clock rises so the engine urgently
@@ -570,22 +710,13 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
         return (mg * mg_phase + eg * eg_phase) / 24;
     }
 
-    // --- White PSTs ---
-    for_each_sq(white & pawns, |sq| {
-        mg += mg_pawn_table(sq, true);
-        eg += eg_pawn_table(sq, true);
-    });
+    // --- PSTs (non-pawn pieces computed fresh; pawns via pawn hash) ---
     for_each_sq(white & knights, |sq| { mg += mg_knight_table(sq, true); eg += eg_knight_table(sq, true); });
     for_each_sq(white & bishops, |sq| { mg += mg_bishop_table(sq, true); eg += eg_bishop_table(sq, true); });
     for_each_sq(white & rooks,   |sq| { mg += mg_rook_table(sq, true);   eg += eg_rook_table(sq, true); });
     for_each_sq(white & queens,  |sq| { mg += mg_queen_table(sq, true);  eg += eg_queen_table(sq, true); });
     for_each_sq(white & kings,   |sq| { mg += mg_king_table(sq, true);   eg += eg_king_table(sq, true); });
 
-    // --- Black PSTs ---
-    for_each_sq(black & pawns, |sq| {
-        mg -= mg_pawn_table(sq, false);
-        eg -= eg_pawn_table(sq, false);
-    });
     for_each_sq(black & knights, |sq| { mg -= mg_knight_table(sq, false); eg -= eg_knight_table(sq, false); });
     for_each_sq(black & bishops, |sq| { mg -= mg_bishop_table(sq, false); eg -= eg_bishop_table(sq, false); });
     for_each_sq(black & rooks,   |sq| { mg -= mg_rook_table(sq, false);   eg -= eg_rook_table(sq, false); });
@@ -594,6 +725,63 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
         mg -= mg_king_table(sq, false);
         eg -= eg_king_table(sq, false);
     });
+
+    // --- Pawn hash: PSTs + structure + passed pawn base bonuses ---
+    // Probe the per-thread pawn hash table.  On a miss, compute everything
+    // from scratch and store the result.  Hit rate is very high because pawn
+    // structure rarely changes in a single search tree.
+    let pkey = pawn_key(white_pawns_bb, black_pawns_bb);
+    let ph = PAWN_TABLE.with(|t| {
+        // SAFETY: thread_local, never aliased.
+        let table = unsafe { &mut *t.0.get() };
+        if let Some(e) = table.probe(pkey) {
+            return *e;
+        }
+        // Cache miss — compute all pawn-only terms.
+        let mut pmg = 0i32;
+        let mut peg = 0i32;
+        for_each_sq(white & pawns, |sq| { pmg += mg_pawn_table(sq, true);  peg += eg_pawn_table(sq, true); });
+        for_each_sq(black & pawns, |sq| { pmg -= mg_pawn_table(sq, false); peg -= eg_pawn_table(sq, false); });
+
+        let w_struct = pawn_structure_penalty(white_pawns_bb);
+        let b_struct = pawn_structure_penalty(black_pawns_bb);
+
+        let mut pw_mg = 0i32; let mut pw_eg = 0i32;
+        let mut pb_mg = 0i32; let mut pb_eg = 0i32;
+        let mut wpass = 0u64; let mut bpass = 0u64;
+        for_each_sq(white & pawns, |sq| {
+            if is_passed_pawn(sq, black_pawns_bb, true) {
+                wpass |= 1u64 << sq;
+                pw_mg += passed_pawn_bonus_mg(sq, true);
+                pw_eg += passed_pawn_bonus_eg(sq, true);
+            }
+        });
+        for_each_sq(black & pawns, |sq| {
+            if is_passed_pawn(sq, white_pawns_bb, false) {
+                bpass |= 1u64 << sq;
+                pb_mg += passed_pawn_bonus_mg(sq, false);
+                pb_eg += passed_pawn_bonus_eg(sq, false);
+            }
+        });
+
+        let entry = PawnHashEntry {
+            key:          pkey,
+            pawn_mg:      pmg,
+            pawn_eg:      peg,
+            struct_score: b_struct as i32 - w_struct as i32,
+            pass_w_mg:    pw_mg,
+            pass_w_eg:    pw_eg,
+            pass_b_mg:    pb_mg,
+            pass_b_eg:    pb_eg,
+            white_passers: wpass,
+            black_passers: bpass,
+        };
+        table.store(entry);
+        entry
+    });
+
+    mg += ph.pawn_mg;
+    eg += ph.pawn_eg;
 
     // --- King safety (MG only — fades naturally in endgame blend) ---
     //
@@ -637,36 +825,22 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
         }
     });
 
-    // --- Rook behind passed pawn (EG) ---
+    // --- Rook behind passed pawn (EG) — uses cached passer bitboards ---
     for_each_sq(white & rooks, |sq| {
         let file = sq % 8;
         let rank = sq / 8;
-        // Squares on same file with higher rank (ahead for white)
         let above = 1u64.wrapping_shl((rank as u32 + 1) * 8).wrapping_sub(1);
         let ahead_mask = FILE_MASKS[file] & !above;
-        let mut ahead_pawns = white_pawns_bb & ahead_mask;
-        while ahead_pawns != 0 {
-            let pawn_sq = ahead_pawns.trailing_zeros() as usize;
-            ahead_pawns &= ahead_pawns - 1;
-            if is_passed_pawn(pawn_sq, black_pawns_bb, true) {
-                eg += ROOK_BEHIND_PASSER_EG;
-                break;
-            }
+        if ph.white_passers & ahead_mask != 0 {
+            eg += ROOK_BEHIND_PASSER_EG;
         }
     });
     for_each_sq(black & rooks, |sq| {
         let file = sq % 8;
         let rank = sq / 8;
-        // Squares on same file with lower rank (ahead for black)
         let below_mask = FILE_MASKS[file] & ((1u64 << (rank * 8)).wrapping_sub(1));
-        let mut ahead_pawns = black_pawns_bb & below_mask;
-        while ahead_pawns != 0 {
-            let pawn_sq = ahead_pawns.trailing_zeros() as usize;
-            ahead_pawns &= ahead_pawns - 1;
-            if is_passed_pawn(pawn_sq, white_pawns_bb, false) {
-                eg -= ROOK_BEHIND_PASSER_EG;
-                break;
-            }
+        if ph.black_passers & below_mask != 0 {
+            eg -= ROOK_BEHIND_PASSER_EG;
         }
     });
 
@@ -684,45 +858,42 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
                     chess_board.get_halfmove_clock());
 
 
-    // --- Passed pawns (tapered bonus + rank-weighted king proximity) ---
-    for_each_sq(white & pawns, |sq| {
-        if is_passed_pawn(sq, black_pawns_bb, true) {
-            let bonus = (passed_pawn_bonus_mg(sq, true) * mg_phase
-                       + passed_pawn_bonus_eg(sq, true) * eg_phase) / 24;
-            score += bonus;
-            // Rank weight: 0 for ranks 0-2, grows with rank (Stockfish: 5r-13).
-            let rank_weight = (5 * (sq / 8) as i32 - 13).max(0);
-            if rank_weight > 0 {
-                let friendly_dist = chebyshev(sq, white_king_sq).min(5);
-                let enemy_dist    = chebyshev(sq, black_king_sq).min(5);
-                let proximity = (enemy_dist * PASSER_KING_ENEMY_WT
-                               - friendly_dist * PASSER_KING_FRIEND_WT)
-                               * rank_weight * eg_phase / 24;
-                score += proximity;
-            }
-        }
-    });
-    for_each_sq(black & pawns, |sq| {
-        if is_passed_pawn(sq, white_pawns_bb, false) {
-            let bonus = (passed_pawn_bonus_mg(sq, false) * mg_phase
-                       + passed_pawn_bonus_eg(sq, false) * eg_phase) / 24;
-            score -= bonus;
-            let black_rank = 7 - sq / 8; // relative rank from black's perspective
-            let rank_weight = (5 * black_rank as i32 - 13).max(0);
-            if rank_weight > 0 {
-                let friendly_dist = chebyshev(sq, black_king_sq).min(5);
-                let enemy_dist    = chebyshev(sq, white_king_sq).min(5);
-                let proximity = (enemy_dist * PASSER_KING_ENEMY_WT
-                               - friendly_dist * PASSER_KING_FRIEND_WT)
-                               * rank_weight * eg_phase / 24;
-                score -= proximity;
-            }
-        }
-    });
+    // --- Passed pawns (cached base bonuses + fresh king-proximity) ---
+    // Base bonuses come from the pawn hash; king proximity is computed fresh
+    // since kings move during search.
+    score += (ph.pass_w_mg * mg_phase + ph.pass_w_eg * eg_phase) / 24;
+    score -= (ph.pass_b_mg * mg_phase + ph.pass_b_eg * eg_phase) / 24;
 
-    // --- Pawn structure ---
-    score -= pawn_structure_penalty(white_pawns_bb);
-    score += pawn_structure_penalty(black_pawns_bb);
+    let mut wpass = ph.white_passers;
+    while wpass != 0 {
+        let sq = wpass.trailing_zeros() as usize;
+        wpass &= wpass - 1;
+        let rank_weight = (5 * (sq / 8) as i32 - 13).max(0);
+        if rank_weight > 0 {
+            let friendly_dist = chebyshev(sq, white_king_sq).min(5);
+            let enemy_dist    = chebyshev(sq, black_king_sq).min(5);
+            score += (enemy_dist * PASSER_KING_ENEMY_WT
+                    - friendly_dist * PASSER_KING_FRIEND_WT)
+                    * rank_weight * eg_phase / 24;
+        }
+    }
+    let mut bpass = ph.black_passers;
+    while bpass != 0 {
+        let sq = bpass.trailing_zeros() as usize;
+        bpass &= bpass - 1;
+        let black_rank = 7 - sq / 8;
+        let rank_weight = (5 * black_rank as i32 - 13).max(0);
+        if rank_weight > 0 {
+            let friendly_dist = chebyshev(sq, black_king_sq).min(5);
+            let enemy_dist    = chebyshev(sq, white_king_sq).min(5);
+            score -= (enemy_dist * PASSER_KING_ENEMY_WT
+                    - friendly_dist * PASSER_KING_FRIEND_WT)
+                    * rank_weight * eg_phase / 24;
+        }
+    }
+
+    // --- Pawn structure (cached) ---
+    score += ph.struct_score;
 
     // --- Mobility ---
     // Weighted by mg_phase so mobility matters more in the middlegame when

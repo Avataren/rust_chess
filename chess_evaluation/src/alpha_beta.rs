@@ -4,7 +4,7 @@ use move_generator::{
     move_generator::{get_all_legal_captures_for_color, get_all_legal_moves_for_color},
     piece_conductor::PieceConductor,
 };
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}};
 use web_time::Instant;
 
 use crate::{
@@ -13,6 +13,32 @@ use crate::{
     see::see,
     transposition_table::{set_main_thread, TranspositionTable, TtFlag},
 };
+
+// ── LMR lookup table ──────────────────────────────────────────────────────────
+
+/// Precomputed LMR reductions: `LMR_TABLE[depth][move_index]`.
+/// Formula: `floor(ln(depth) * ln(move_index+1) / 1.5)`.
+/// Avoids f64 log computation in the hot alpha-beta path.
+static LMR_TABLE: OnceLock<[[i32; 64]; 64]> = OnceLock::new();
+
+fn init_lmr_table() -> [[i32; 64]; 64] {
+    let mut table = [[0i32; 64]; 64];
+    for depth in 1usize..64 {
+        for mi in 1usize..64 {
+            let r = ((depth as f64).ln() * ((mi + 1) as f64).ln() / 1.5) as i32;
+            table[depth][mi] = r.max(0);
+        }
+    }
+    table
+}
+
+#[inline(always)]
+fn lmr_reduction(depth: i32, move_index: usize) -> i32 {
+    let table = LMR_TABLE.get_or_init(init_lmr_table);
+    let d  = (depth as usize).min(63);
+    let mi = move_index.min(63);
+    table[d][mi]
+}
 
 /// Default TT size: 4M entries × 24 B = 96 MB.
 /// Large enough for excellent single-threaded hit rates at classical time controls.
@@ -79,14 +105,17 @@ pub const MAX_PLY: usize = 64;
 
 /// Per-search state for move ordering heuristics.
 ///
-/// * `killers` — up to 2 quiet moves per ply that caused a β-cutoff.  Tried
-///   right after captures, before other quiet moves.
-/// * `history` — `history[from][to]` accumulates `depth²` every time the
-///   quiet move (from→to) causes a β-cutoff.  Used to rank the remaining
-///   quiet moves.
+/// * `killers`      — up to 2 quiet moves per ply that caused a β-cutoff.
+/// * `history`      — `history[from][to]` accumulates `depth²` on β-cutoff.
+/// * `countermoves` — `countermoves[from][to]` is the quiet move that most
+///                    recently refuted the opponent move (from→to).  Tried
+///                    after killers, before history-sorted quiets.
+/// * `prev_moves`   — the move played at each ply, used to index countermoves.
 pub struct SearchContext {
     killers: [[Option<ChessMove>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
+    countermoves: Box<[[Option<ChessMove>; 64]; 64]>,
+    prev_moves: [Option<ChessMove>; MAX_PLY],
     /// Total nodes visited (alpha_beta + quiescence calls).  Incremented at
     /// the top of each call.  Useful for NPS benchmarking.
     pub nodes: u64,
@@ -97,6 +126,8 @@ impl SearchContext {
         Self {
             killers: [[None; 2]; MAX_PLY],
             history: [[0; 64]; 64],
+            countermoves: Box::new([[None; 64]; 64]),
+            prev_moves: [None; MAX_PLY],
             nodes: 0,
         }
     }
@@ -112,7 +143,7 @@ impl SearchContext {
     }
 
     /// Record a quiet move that caused a β-cutoff:
-    /// update killer slots and reward the move in the history table.
+    /// update killer slots, history table, and countermove table.
     fn record_cutoff(&mut self, ply: usize, depth: i32, mv: ChessMove) {
         let p = ply.min(MAX_PLY - 1);
         let k = &mut self.killers[p];
@@ -126,6 +157,10 @@ impl SearchContext {
         // Reward deeper cutoffs more, clamped to avoid history overflow.
         let v = &mut self.history[mv.start_square() as usize][mv.target_square() as usize];
         *v = (*v + depth * depth).min(16_384);
+        // Countermove: record mv as the refutation of the opponent's last move.
+        if let Some(prev) = self.prev_moves[p] {
+            self.countermoves[prev.start_square() as usize][prev.target_square() as usize] = Some(mv);
+        }
     }
 
     /// Apply a history malus (negative bonus) to a quiet move that was searched
@@ -235,8 +270,9 @@ fn quiescence(
 ///   1. TT / PV move (if present)
 ///   2. Winning/even captures (SEE ≥ 0), sorted by SEE score descending
 ///   3. Killer moves (quiet moves that caused β-cutoffs at this ply)
-///   4. Remaining quiet moves, sorted by history score (descending)
-///   5. Losing captures (SEE < 0), sorted by SEE score descending
+///   4. Countermove (quiet move that refuted the opponent's last move)
+///   5. Remaining quiet moves, sorted by history score (descending)
+///   6. Losing captures (SEE < 0), sorted by SEE score descending
 ///
 /// Separating losing captures from killers/history-sorted quiets is important:
 /// a quiet killer or well-history-scored move is usually better than a losing exchange.
@@ -244,6 +280,7 @@ fn order_moves(
     moves: &mut Vec<ChessMove>,
     tt_move: Option<ChessMove>,
     killers: &[Option<ChessMove>; 2],
+    countermove: Option<ChessMove>,
     history: &[[i32; 64]; 64],
     board: &ChessBoard,
     conductor: &PieceConductor,
@@ -296,18 +333,29 @@ fn order_moves(
         }
     }
 
+    // Extract countermove (if not already pulled out as TT move or killer).
+    let countermove_entry: Option<ChessMove> = countermove.and_then(|cm| {
+        quiets.iter().position(|m| {
+            m.start_square() == cm.start_square()
+                && m.target_square() == cm.target_square()
+        }).map(|pos| quiets.swap_remove(pos))
+    });
+
     // Sort remaining quiets by history score, highest first.
     quiets.sort_by(|a, b| {
         history[b.start_square() as usize][b.target_square() as usize]
             .cmp(&history[a.start_square() as usize][a.target_square() as usize])
     });
 
-    // Reassemble: TT move → good captures (SEE≥0) → killers → history quiets → bad captures.
+    // Reassemble: TT → good captures → killers → countermove → history quiets → bad captures.
     if let Some(tt_m) = tt_entry {
         moves.push(tt_m);
     }
     moves.extend(good_captures.into_iter().map(|(_, m)| m));
     moves.extend(killer_entries);
+    if let Some(cm) = countermove_entry {
+        moves.push(cm);
+    }
     moves.extend(quiets);
     moves.extend(bad_captures.into_iter().map(|(_, m)| m));
 }
@@ -453,6 +501,23 @@ pub fn alpha_beta(
         if !is_white && null_score <= alpha { return (alpha, None); }
     }
 
+    // --- Internal Iterative Deepening (IID) ---
+    // When there is no TT move at a high-depth node, move ordering is poor.
+    // A reduced search populates the TT so we get a useful move hint.
+    // Applied at depth >= 5 when not in check and the TT gave no move.
+    let tt_move = if tt_move.is_none() && depth >= 5 && !in_check {
+        alpha_beta(
+            chess_board, conductor, tt, ctx,
+            depth - 2, ply, alpha, beta, is_white,
+            false, // no null move in IID to avoid recursion overhead
+            stop.clone(),
+        );
+        // Re-probe the TT — the reduced search will have stored its best move.
+        tt.probe(hash).and_then(|e| e.best_move())
+    } else {
+        tt_move
+    };
+
     let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
 
     if legal_moves.is_empty() {
@@ -469,7 +534,8 @@ pub fn alpha_beta(
         }
     }
 
-    let killers = &ctx.killers[ply.min(MAX_PLY - 1)];
+    let p = ply.min(MAX_PLY - 1);
+    let killers = &ctx.killers[p];
     // Safety: we need the history borrow separate from ctx for the mutable borrow
     // later (record_cutoff).  Copy the pointer via a raw slice reference to avoid
     // a lifetime overlap.  We only read history here; the write happens after the
@@ -480,7 +546,12 @@ pub fn alpha_beta(
     // `killers` (which is a field borrow) has ended.
     let history: &[[i32; 64]; 64] = unsafe { &*history_ptr };
 
-    order_moves(&mut legal_moves, tt_move, killers, history, chess_board, conductor, is_white);
+    // Look up the countermove for the opponent's last move at this ply.
+    let countermove: Option<ChessMove> = ctx.prev_moves[p].and_then(|pm| {
+        ctx.countermoves[pm.start_square() as usize][pm.target_square() as usize]
+    });
+
+    order_moves(&mut legal_moves, tt_move, killers, countermove, history, chess_board, conductor, is_white);
     // `killers` borrow of ctx ends here (it is not used again below).
 
     let mut best_move: Option<ChessMove> = None;
@@ -508,13 +579,15 @@ pub fn alpha_beta(
                 }
             }
 
+            // Record this move as the "previous move" for the child ply so the
+            // child can look up the countermove that refutes it.
+            ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
             chess_board.make_move(&mut chess_move);
 
             // LMR reduction: R grows with depth and move index.
             // Formula: R = floor(ln(depth) * ln(move_index+1) / 1.5), capped.
             let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
-                let r = ((depth as f64).ln() * ((move_index + 1) as f64).ln() / 1.5) as i32;
-                r.max(1).min(depth - 1)
+                lmr_reduction(depth, move_index).max(1).min(depth - 1)
             } else {
                 0
             };
@@ -600,11 +673,12 @@ pub fn alpha_beta(
                 }
             }
 
+            // Record this move as the "previous move" for the child ply.
+            ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
             chess_board.make_move(&mut chess_move);
 
             let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
-                let r = ((depth as f64).ln() * ((move_index + 1) as f64).ln() / 1.5) as i32;
-                r.max(1).min(depth - 1)
+                lmr_reduction(depth, move_index).max(1).min(depth - 1)
             } else {
                 0
             };
@@ -699,7 +773,8 @@ pub fn search_root(
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board, conductor), None);
     }
-    order_moves(&mut legal_moves, prev_best, &ctx.killers[0], &ctx.history,
+    // No countermove at root (no previous move in the game tree).
+    order_moves(&mut legal_moves, prev_best, &ctx.killers[0], None, &ctx.history,
                 chess_board, conductor, is_white);
 
     // Default to first ordered move so we never return None even if stop fires
@@ -2366,5 +2441,127 @@ mod tests {
         );
         assert_eq!(board.current_hash(), hash_before,
             "Board must be clean after search in zugzwang-prone position");
+    }
+
+    // ── LMR lookup table ─────────────────────────────────────────────────────
+
+    /// The precomputed LMR table must match the original f64 formula for a
+    /// range of (depth, move_index) pairs.  This guards against regressions
+    /// if the formula or table initialisation is changed.
+    #[test]
+    fn lmr_table_values_match_formula() {
+        let cases = [
+            (3usize, 2usize),  // shallow, few moves
+            (7,  5),           // typical middlegame node
+            (7,  15),          // many moves searched
+            (10, 10),          // deeper search
+            (20, 30),          // high depth, high move index
+            (1,  1),           // edge: depth=1 should give 0 (capped)
+        ];
+        for (depth, mi) in cases {
+            let expected = ((depth as f64).ln() * ((mi + 1) as f64).ln() / 1.5) as i32;
+            let expected = expected.max(0);
+            let got = lmr_reduction(depth as i32, mi);
+            assert_eq!(got, expected,
+                "lmr_reduction({depth}, {mi}): expected {expected}, got {got}");
+        }
+    }
+
+    // ── Countermove heuristic ─────────────────────────────────────────────────
+
+    /// `record_cutoff` must store the cutoff move as the countermove for the
+    /// opponent's previous move when `prev_moves[ply]` is set.
+    #[test]
+    fn countermove_recorded_on_cutoff() {
+        let mut ctx = SearchContext::new();
+        // Simulate: at ply 3, the previous move played was e2→e4 (squares 12→28).
+        let prev_from = 12usize;
+        let prev_to   = 28usize;
+        let prev_mv   = ChessMove::new(prev_from as u16, prev_to as u16);
+        ctx.prev_moves[3] = Some(prev_mv);
+
+        // The cutoff move at ply 3 is d7→d5 (squares 51→35).
+        let cutoff_mv = ChessMove::new(51, 35);
+        ctx.record_cutoff(3, 3, cutoff_mv);
+
+        let stored = ctx.countermoves[prev_from][prev_to];
+        assert!(stored.is_some(), "countermoves must be set after record_cutoff");
+        let stored = stored.unwrap();
+        assert_eq!(stored.start_square(),  cutoff_mv.start_square(),  "from square mismatch");
+        assert_eq!(stored.target_square(), cutoff_mv.target_square(), "to square mismatch");
+    }
+
+    /// Without a `prev_moves` entry the countermove table must not be updated.
+    #[test]
+    fn countermove_not_recorded_without_prev_move() {
+        let mut ctx = SearchContext::new();
+        // prev_moves[5] is None (default).
+        let cutoff_mv = ChessMove::new(10, 26);
+        ctx.record_cutoff(5, 3, cutoff_mv);
+        // No prev_move was set, so no countermove should be stored anywhere.
+        let any_set = ctx.countermoves.iter().flatten().any(|e| e.is_some());
+        assert!(!any_set, "No countermove must be stored when prev_move is absent");
+    }
+
+    /// The countermove heuristic must not alter the final search score — it is
+    /// purely a move-ordering aid.  Compare a fresh search (cold TT + context)
+    /// against a search on the same position where countermoves are pre-loaded
+    /// with arbitrary data; the score must be identical.
+    #[test]
+    fn countermove_ordering_does_not_change_score() {
+        let c = conductor();
+        let tt1 = TranspositionTable::new(1 << 16);
+        let mut ctx1 = SearchContext::new();
+        let mut board = ChessBoard::new();
+        board.set_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4");
+        let (score1, _) = alpha_beta(
+            &mut board, &c, &tt1, &mut ctx1,
+            5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+        );
+
+        // Pre-populate countermoves with arbitrary (potentially misleading) data.
+        let tt2 = TranspositionTable::new(1 << 16);
+        let mut ctx2 = SearchContext::new();
+        for from in 0..64 {
+            for to in 0..64 {
+                ctx2.countermoves[from][to] = Some(ChessMove::new(from as u16, to as u16));
+            }
+        }
+        let mut board2 = ChessBoard::new();
+        board2.set_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4");
+        let (score2, _) = alpha_beta(
+            &mut board2, &c, &tt2, &mut ctx2,
+            5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+        );
+
+        assert_eq!(score1, score2,
+            "Countermove table content must not change the search score ({score1} vs {score2})");
+    }
+
+    // ── Pawn hash (tested via evaluate_board in board_evaluation.rs) ──────────
+    // The alpha_beta-level test: ensure the pawn hash does not corrupt search
+    // results by verifying that a position searched twice gives the same score
+    // (warm pawn cache on second call).
+    #[test]
+    fn search_score_stable_with_warm_pawn_cache() {
+        let c = conductor();
+        let mut board = ChessBoard::new();
+        board.set_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4");
+
+        let tt = TranspositionTable::new(1 << 16);
+        let mut ctx = SearchContext::new();
+        let (score1, _) = alpha_beta(
+            &mut board, &c, &tt, &mut ctx,
+            5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+        );
+        // Second call: pawn hash is now warm.
+        let tt2 = TranspositionTable::new(1 << 16);
+        let mut ctx2 = SearchContext::new();
+        let (score2, _) = alpha_beta(
+            &mut board, &c, &tt2, &mut ctx2,
+            5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+        );
+        assert_eq!(score1, score2,
+            "Score must be identical with warm pawn cache ({score1} vs {score2})");
     }
 }
