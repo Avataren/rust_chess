@@ -144,6 +144,18 @@ const BISHOP_ATTACK_WEIGHT: i32 = 2;
 const ROOK_ATTACK_WEIGHT:   i32 = 3;
 const QUEEN_ATTACK_WEIGHT:  i32 = 5;
 
+// Greek Gift sacrifice bonus.
+// Added to attack_weight when an enemy bishop has a clear diagonal to the
+// h-file pawn of a kingside-castled king (king on g-file, bishop eyes h7/h2).
+// This single constant serves BOTH defence (penalises walking into the pattern)
+// and offence (rewards maintaining the attacking setup).
+// weight=2 (bishop alone) → SAFETY_TABLE[2]=4 cp  (old, invisible)
+// weight=7 (bishop+bonus) → SAFETY_TABLE[7]=155 cp (new, properly scary)
+const GREEK_GIFT_BONUS: i32 = 5;
+
+// h-file bitmask — used to identify h7/h2 sacrifice squares inside king zone.
+const H_FILE: u64 = 0x8080808080808080;
+
 // Open/semi-open file bonuses added to attack_weight.
 // An open file toward the king dramatically amplifies existing piece attacks.
 const OPEN_FILE_ATTACK_BONUS:      i32 = 3; // fully open file adjacent to king
@@ -663,6 +675,7 @@ fn king_attack_penalty(
 ) -> i32 {
     // King zone = king square + 8 surrounding squares.
     let zone = conductor.king_lut[king_sq] | Bitboard(1u64 << king_sq);
+    let king_file = king_sq % 8;
 
     let mut attack_weight = 0i32;
     let mut attacker_count = 0i32;
@@ -681,6 +694,15 @@ fn king_attack_penalty(
         if (attacks & zone).0 != 0 {
             attack_weight += BISHOP_ATTACK_WEIGHT;
             attacker_count += 1;
+
+            // Greek Gift bonus: bishop has a clear diagonal to the h-file pawn
+            // of a kingside-castled king (king on g-file = file 6).
+            // Applies to both White attacking Black's h7 and Black attacking h2.
+            // Raises attack_weight by 5 → SAFETY_TABLE lookup jumps from ~4 cp
+            // to ~155 cp, making the engine correctly fear/value the pattern.
+            if king_file == 6 && (attacks.0 & zone.0 & H_FILE) != 0 {
+                attack_weight += GREEK_GIFT_BONUS;
+            }
         }
     });
 

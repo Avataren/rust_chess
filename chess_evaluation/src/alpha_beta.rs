@@ -2973,6 +2973,68 @@ mod tests {
             "Score must be identical with warm pawn cache ({score1} vs {score2})");
     }
 
+    // ── Greek Gift sacrifice ──────────────────────────────────────────────────
+
+    /// Regression: engine must find the Greek Gift sacrifice Bxh7+ in the
+    /// position from game IamhuBOM, move 12.
+    ///
+    /// FEN after 11...Bg4 (White to move):
+    ///   r3r1k1/ppq2ppp/n1pb1p2/8/3P2b1/2PB1N2/PPQ2PPP/R1B2RK1 w - - 4 12
+    ///
+    /// White's Bd3 can sacrifice on h7 (clear e4-f5-g6 diagonal).  After
+    /// Bxh7+ Kxh7 Ng5+ or Bxh7+ Kh8 Ng5, the attack is decisive.
+    #[test]
+    fn greek_gift_bxh7_sacrifice_found() {
+        let c = conductor();
+        let tt = TranspositionTable::new(1 << 20);
+        let mut ctx = SearchContext::new();
+        let mut board = ChessBoard::new();
+        // d3=sq 19, h7=sq 55
+        board.set_from_fen("r3r1k1/ppq2ppp/n1pb1p2/8/3P2b1/2PB1N2/PPQ2PPP/R1B2RK1 w - - 4 12");
+
+        let (_, mv) = alpha_beta(
+            &mut board, &c, &tt, &mut ctx,
+            7, 0, i32::MIN + 1, i32::MAX, true, true, None,
+        );
+        let mv = mv.expect("Engine must return a move");
+
+        assert_eq!(
+            (mv.start_square(), mv.target_square()),
+            (19, 55),
+            "Engine must find Greek Gift Bxh7+ (d3→h7, sq 19→55), got {}→{}",
+            mv.start_square(), mv.target_square()
+        );
+    }
+
+    /// Regression: engine must NOT play Bg4 in the position just before the
+    /// sacrifice is possible (Black to move, game IamhuBOM move 11).
+    ///
+    /// FEN after 11.Qc2 (Black to move):
+    ///   r1b1r1k1/ppq2ppp/n1pb1p2/8/3P4/2PB1N2/PPQ2PPP/R1B2RK1 b - - 3 11
+    ///
+    /// 11...Bg4?? allows 12.Bxh7+! winning immediately.
+    #[test]
+    fn engine_avoids_bg4_allowing_greek_gift() {
+        let c = conductor();
+        let tt = TranspositionTable::new(1 << 16);
+        let mut ctx = SearchContext::new();
+        let mut board = ChessBoard::new();
+        // Bc8=sq 58, g4=sq 30
+        board.set_from_fen("r1b1r1k1/ppq2ppp/n1pb1p2/8/3P4/2PB1N2/PPQ2PPP/R1B2RK1 b - - 3 11");
+
+        let (_, mv) = alpha_beta(
+            &mut board, &c, &tt, &mut ctx,
+            6, 0, i32::MIN + 1, i32::MAX, false, true, None,
+        );
+        let mv = mv.expect("Engine must return a move");
+
+        let is_bg4 = mv.start_square() == 58 && mv.target_square() == 30;
+        assert!(
+            !is_bg4,
+            "Engine must NOT play Bg4 (sq 58→30): allows Greek Gift Bxh7+"
+        );
+    }
+
     // ── Intermezzo / blunder regression ──────────────────────────────────────
 
     /// Regression: engine must find Be6+ (intermezzo check) before recapturing
