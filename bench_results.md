@@ -149,3 +149,37 @@ Changes:
 - order_moves: captures sorted by SEE score (winning/even first, losing last) instead of MVV only.
 - qsearch: SEE < 0 pruning replaces delta pruning (skips clearly losing captures).
 - 9 SEE unit tests covering: undefended pieces, defended pieces, equal exchanges, X-ray, symmetry.
+
+---
+
+## chunk6 — Singular Extensions + Countermove + IID + Pawn Hash + LMP + Capture History (2026-03-15)
+
+```
+Position                            Nodes         ms          NPS
+------------------------------------------------------------------
+After 1.e4                          88083         93       947129
+Ruy Lopez setup                     92396        101       914811
+Italian Game                       229825        257       894260
+Tactical – Sacrifice               195841        188      1041707
+Open file tension                  102737         90      1141522
+Complex middle                     128577        134       959529
+Central tension                    132116        118      1119627
+K+P endgame                          5435          1      5435000
+Pawn race                            5584          1      5584000
+KR vs Kr                            87509         33      2651787
+Active rook                         20539          8      2567375
+Q vs passers                         8572          3      2857333
+------------------------------------------------------------------
+TOTAL / AVG NPS                   1097214       1027      1068368
+```
+
+total_nodes=1,097,214 (-70% vs chunk5)  avg_nps=1,068,368 (+60% vs chunk5)  total_ms=1,027 (-81% vs chunk5)
+Changes (cumulative since chunk5):
+- LMP (Late Move Pruning): skip remaining quiets after threshold at depth 1–4.
+- Capture history: separate bonus/malus table for captures, used as SEE tiebreaker.
+- Countermove heuristic: quiet move that refuted opponent's last move; ordered after killers.
+- IID (Internal Iterative Deepening): reduced-depth search at depth≥5 when TT has no move.
+- Pawn hash table: 16k-entry per-thread cache for pawn structure evaluation.
+- **Singular Extensions**: at depth≥6, if TT move's exclusion search (depth/2) fails below
+  tt_score−50cp, the TT move is singular and extended by one ply.
+  Implementation: `excluded_move[ply]` in SearchContext; TT cutoffs guarded when excluded.

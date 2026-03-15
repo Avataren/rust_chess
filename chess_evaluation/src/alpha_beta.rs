@@ -117,12 +117,14 @@ pub const MAX_PLY: usize = 64;
 /// * `countermoves`     — `countermoves[from][to]` is the quiet move that most
 ///                        recently refuted the opponent move (from→to).
 /// * `prev_moves`       — the move played at each ply, used to index countermoves.
+/// * `excluded_move`    — per-ply move excluded during singular extension search.
 pub struct SearchContext {
     killers: [[Option<ChessMove>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
     capture_history: [[i32; 64]; 64],
     countermoves: Box<[[Option<ChessMove>; 64]; 64]>,
     prev_moves: [Option<ChessMove>; MAX_PLY],
+    excluded_move: [Option<ChessMove>; MAX_PLY],
     /// Total nodes visited (alpha_beta + quiescence calls).  Incremented at
     /// the top of each call.  Useful for NPS benchmarking.
     pub nodes: u64,
@@ -136,6 +138,7 @@ impl SearchContext {
             capture_history: [[0; 64]; 64],
             countermoves: Box::new([[None; 64]; 64]),
             prev_moves: [None; MAX_PLY],
+            excluded_move: [None; MAX_PLY],
             nodes: 0,
         }
     }
@@ -440,6 +443,7 @@ pub fn alpha_beta(
     let halfmove_clock = chess_board.get_halfmove_clock();
     let original_alpha = alpha;
     let original_beta = beta;
+    let p = ply.min(MAX_PLY - 1);
 
     // --- Mate distance pruning ---
     // Tighten alpha/beta to the tightest achievable mate bounds at this ply.
@@ -458,7 +462,10 @@ pub fn alpha_beta(
 
     // --- Transposition table probe ---
     let tt_move: Option<ChessMove> = if let Some(entry) = tt.probe(hash) {
-        if entry.depth >= depth {
+        // When doing a singular extension search (excluded_move is set), the
+        // position is "virtual" (one move excluded), so TT scores may not be
+        // valid for cutoffs.  Still use the TT move for ordering.
+        if entry.depth >= depth && ctx.excluded_move[p].is_none() {
             // Undo the ply-normalization applied at store time so the score is
             // relative to the *current* ply, not the ply where it was stored.
             // Also guard against false mate scores near the 50-move boundary.
@@ -528,7 +535,7 @@ pub fn alpha_beta(
     // When there is no TT move at a high-depth node, move ordering is poor.
     // A reduced search populates the TT so we get a useful move hint.
     // Applied at depth >= 5 when not in check and the TT gave no move.
-    let tt_move = if tt_move.is_none() && depth >= 5 && !in_check {
+    let tt_move = if tt_move.is_none() && depth >= 5 && !in_check && ctx.excluded_move[p].is_none() {
         alpha_beta(
             chess_board, conductor, tt, ctx,
             depth - 2, ply, alpha, beta, is_white,
@@ -539,6 +546,55 @@ pub fn alpha_beta(
         tt.probe(hash).and_then(|e| e.best_move())
     } else {
         tt_move
+    };
+
+    // --- Singular Extensions ---
+    // If the TT move is the only good move in this position (all other moves
+    // fail below tt_score - margin), extend it by one ply.  This technique
+    // finds forced continuations and tactical sequences that would otherwise
+    // be cut off at the horizon.
+    //
+    // Conditions (following Stockfish / common practice):
+    //   - depth >= 6 to avoid exponential blowup at shallow nodes
+    //   - Not already in an SE search (excluded_move[p] is None)
+    //   - Have a TT move with sufficient depth and a lower/exact bound
+    //   - TT score is not a mate score (mate distance is exact, not a guide)
+    //   - Not in check (check extension already handled above)
+    let singular_extension = if ctx.excluded_move[p].is_none()
+        && depth >= 6
+        && ply > 0
+        && !in_check
+        && tt_move.is_some()
+    {
+        if let Some(entry) = tt.probe(hash) {
+            let tt_score = score_from_tt(entry.score, ply, halfmove_clock);
+            if entry.depth >= depth - 3
+                && matches!(entry.flag, TtFlag::LowerBound | TtFlag::Exact)
+                && tt_score.abs() < MATE_SCORE_THRESHOLD
+            {
+                // Singular search: reduced-depth search excluding the TT move.
+                // If no other move beats tt_score - margin, the TT move is singular.
+                let se_margin = 50;
+                let se_beta = tt_score - se_margin;
+                ctx.excluded_move[p] = tt_move;
+                let (se_score, _) = alpha_beta(
+                    chess_board, conductor, tt, ctx,
+                    (depth / 2).max(1), ply,
+                    se_beta - 1, se_beta,
+                    is_white,
+                    false, // no null move in singular search
+                    stop.clone(),
+                );
+                ctx.excluded_move[p] = None;
+                se_score < se_beta
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
     };
 
     let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
@@ -557,7 +613,6 @@ pub fn alpha_beta(
         }
     }
 
-    let p = ply.min(MAX_PLY - 1);
     let killers = &ctx.killers[p];
     // Safety: we need the history borrow separate from ctx for the mutable borrow
     // later (record_cutoff).  Copy the pointer via a raw slice reference to avoid
@@ -589,6 +644,11 @@ pub fn alpha_beta(
 
         let mut quiet_count = 0usize;
         for (move_index, mut chess_move) in legal_moves.into_iter().enumerate() {
+            // Skip the excluded move (used during singular extension searches).
+            if ctx.excluded_move[p].map_or(false, |em| em == chess_move) {
+                continue;
+            }
+
             let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
 
             // --- Futility pruning ---
@@ -617,6 +677,11 @@ pub fn alpha_beta(
             }
             if is_quiet { quiet_count += 1; }
 
+            // Singular extension: extend the TT move by one ply when it is
+            // the only move that keeps the score above the SE threshold.
+            // Only applied at move_index==0 (the TT move is always sorted first).
+            let move_ext = if singular_extension && move_index == 0 { 1i32 } else { 0i32 };
+
             // Record this move as the "previous move" for the child ply so the
             // child can look up the countermove that refutes it.
             ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
@@ -633,9 +698,9 @@ pub fn alpha_beta(
             let eval = if chess_board.is_repetition(2) {
                 0 // draw by repetition
             } else if move_index == 0 {
-                // PV node: full window search for first move.
+                // PV node: full window search for first move (with possible SE).
                 alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, alpha, beta, false, true, stop.clone()).0
+                    depth - 1 + move_ext, ply + 1, alpha, beta, false, true, stop.clone()).0
             } else if lmr_r > 0 {
                 // LMR: reduced null-window search.
                 let reduced = alpha_beta(chess_board, conductor, tt, ctx,
@@ -705,6 +770,11 @@ pub fn alpha_beta(
 
         let mut quiet_count = 0usize;
         for (move_index, mut chess_move) in legal_moves.into_iter().enumerate() {
+            // Skip the excluded move (used during singular extension searches).
+            if ctx.excluded_move[p].map_or(false, |em| em == chess_move) {
+                continue;
+            }
+
             let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
 
             // --- Futility pruning ---
@@ -727,6 +797,10 @@ pub fn alpha_beta(
             }
             if is_quiet { quiet_count += 1; }
 
+            // Singular extension: extend the TT move by one ply when it is
+            // the only move that keeps the score above the SE threshold.
+            let move_ext = if singular_extension && move_index == 0 { 1i32 } else { 0i32 };
+
             // Record this move as the "previous move" for the child ply.
             ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
             chess_board.make_move(&mut chess_move);
@@ -740,9 +814,9 @@ pub fn alpha_beta(
             let eval = if chess_board.is_repetition(2) {
                 0 // draw by repetition
             } else if move_index == 0 {
-                // PV node: full window search for first move.
+                // PV node: full window search for first move (with possible SE).
                 alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, alpha, beta, true, true, stop.clone()).0
+                    depth - 1 + move_ext, ply + 1, alpha, beta, true, true, stop.clone()).0
             } else if lmr_r > 0 {
                 // LMR: reduced null-window search.
                 let reduced = alpha_beta(chess_board, conductor, tt, ctx,
