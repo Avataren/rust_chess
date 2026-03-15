@@ -5,7 +5,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chess_board::ChessBoard;
-use chess_evaluation::{iterative_deepening_root_with_tt, OpeningBook, TranspositionTable};
+use chess_evaluation::{
+    init_neural_eval, is_neural_eval_enabled, iterative_deepening_root_with_tt,
+    set_neural_eval_enabled, OpeningBook, TranspositionTable,
+};
 use chess_foundation::{piece::PieceType, ChessMove};
 use move_generator::{move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor};
 
@@ -463,6 +466,8 @@ fn main() {
                 println!("option name Threads type spin default {default_threads} min 1 max {max_threads}");
                 println!("option name Hash type spin default 96 min 1 max 65536");
                 println!("option name Ponder type check default true");
+                println!("option name EvalFile type string default <empty>");
+                println!("option name NeuralEval type check default false");
                 println!("uciok");
             }
             "setoption" => {
@@ -487,6 +492,22 @@ fn main() {
                                     tt = Arc::new(TranspositionTable::new(entries_for_mb(hash_mb)));
                                 }
                             }
+                        }
+                        "evalfile" => {
+                            if !value.is_empty() && *value != "<empty>" {
+                                match init_neural_eval(value) {
+                                    Ok(()) => eprintln!("info string Loaded neural weights from {value}"),
+                                    Err(e) => eprintln!("info string Failed to load neural weights: {e}"),
+                                }
+                            }
+                        }
+                        "neuraleval" => {
+                            let enable = value.eq_ignore_ascii_case("true");
+                            set_neural_eval_enabled(enable);
+                            eprintln!(
+                                "info string Neural eval {}",
+                                if is_neural_eval_enabled() { "enabled" } else { "disabled" }
+                            );
                         }
                         _ => {}
                     }

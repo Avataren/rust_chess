@@ -1,11 +1,16 @@
 pub mod alpha_beta;
 pub mod board_evaluation;
+pub mod neural_eval;
 pub mod opening_book;
 pub mod piece_tables;
 pub mod see;
 pub mod transposition_table;
 
 pub use board_evaluation::evaluate_board;
+pub use neural_eval::{
+    init_neural_eval, init_neural_eval_from_bytes,
+    set_neural_eval_enabled, is_neural_eval_enabled,
+};
 pub use alpha_beta::alpha_beta;
 pub use alpha_beta::alpha_beta_root;
 pub use alpha_beta::iterative_deepening_root;

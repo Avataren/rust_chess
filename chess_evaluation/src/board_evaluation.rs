@@ -753,6 +753,12 @@ fn king_attack_penalty(
 /// Evaluates the chess board and returns an absolute score:
 /// positive = white is ahead, negative = black is ahead.
 pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i32 {
+    // Neural eval short-circuit: if enabled and weights are loaded, use the
+    // NN score directly. Returns None when disabled → classical path runs.
+    if let Some(score) = crate::neural_eval::try_neural_eval(chess_board) {
+        return score;
+    }
+
     let white = chess_board.get_white();
     let black = chess_board.get_black();
     let pawns   = chess_board.get_pawns();
