@@ -23,13 +23,29 @@ def evaluate_with_stockfish(
     return float(cp)
 
 
-def sample_positions_from_pgn(pgn_path: Path, max_positions: int, plies_min: int) -> list[chess.Board]:
+def sample_positions_from_pgn(
+    pgn_path: Path,
+    max_positions: int,
+    plies_min: int,
+    min_elo: int = 0,
+) -> list[chess.Board]:
     boards: list[chess.Board] = []
+    skipped = 0
     with pgn_path.open("r", encoding="utf-8", errors="ignore") as f:
         while len(boards) < max_positions:
             game = chess.pgn.read_game(f)
             if game is None:
                 break
+            if min_elo > 0:
+                try:
+                    white_elo = int(game.headers.get("WhiteElo", 0))
+                    black_elo = int(game.headers.get("BlackElo", 0))
+                except ValueError:
+                    skipped += 1
+                    continue
+                if white_elo < min_elo or black_elo < min_elo:
+                    skipped += 1
+                    continue
             board = game.board()
             line = []
             for mv in game.mainline_moves():
@@ -39,6 +55,8 @@ def sample_positions_from_pgn(pgn_path: Path, max_positions: int, plies_min: int
                 continue
             take = random.choice(line[plies_min:])
             boards.append(take)
+    if skipped:
+        print(f"Skipped {skipped} games below Elo threshold ({min_elo})")
     return boards
 
 
@@ -48,6 +66,7 @@ def selfplay_positions(
     movetime_ms: int,
     min_ply: int,
     max_ply: int,
+    positions_per_game: int = 1,
 ) -> list[chess.Board]:
     out: list[chess.Board] = []
     for _ in tqdm(range(games), desc="selfplay"):
@@ -61,7 +80,8 @@ def selfplay_positions(
             if ply >= min_ply:
                 states.append(board.copy())
         if states:
-            out.append(random.choice(states))
+            k = min(positions_per_game, len(states))
+            out.extend(random.sample(states, k))
     return out
 
 
@@ -81,10 +101,15 @@ def main():
     )
     ap.add_argument("--output", required=True, help="Output JSONL path")
     ap.add_argument("--pgn", help="Optional PGN source")
+    ap.add_argument("--min-elo", type=int, default=2200,
+                    help="Minimum Elo for both players when sampling from PGN (default 2200, 0 to disable)")
     ap.add_argument("--max-positions", type=int, default=200000)
     ap.add_argument("--eval-depth", type=int, default=12)
     ap.add_argument("--selfplay-games", type=int, default=50000)
     ap.add_argument("--selfplay-movetime-ms", type=int, default=20)
+    ap.add_argument("--positions-per-game", type=int, default=1,
+                    help="Positions sampled per self-play game (default 1). "
+                         "Increase to get more data from fewer games.")
     args = ap.parse_args()
 
     random.seed(42)
@@ -100,7 +125,9 @@ def main():
 
     boards: list[chess.Board] = []
     if args.pgn:
-        boards.extend(sample_positions_from_pgn(Path(args.pgn), args.max_positions // 2, plies_min=12))
+        # When self-play is disabled, allow PGN to fill the full quota.
+        pgn_cap = args.max_positions if args.selfplay_games == 0 else args.max_positions // 2
+        boards.extend(sample_positions_from_pgn(Path(args.pgn), pgn_cap, plies_min=12, min_elo=args.min_elo))
 
     boards.extend(
         selfplay_positions(
@@ -109,6 +136,7 @@ def main():
             movetime_ms=args.selfplay_movetime_ms,
             min_ply=12,
             max_ply=180,
+            positions_per_game=args.positions_per_game,
         )
     )
 

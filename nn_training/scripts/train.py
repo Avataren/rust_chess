@@ -200,7 +200,7 @@ def main():
         lr=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
     )
-    scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
     best_val = float("inf")
     out_path = Path(args.out)
