@@ -118,6 +118,8 @@ pub const MAX_PLY: usize = 64;
 ///                        recently refuted the opponent move (from→to).
 /// * `prev_moves`       — the move played at each ply, used to index countermoves.
 /// * `excluded_move`    — per-ply move excluded during singular extension search.
+/// * `static_evals`    — cached static eval per ply for the improving flag.
+///                       `i32::MIN` means "not computed / in check".
 pub struct SearchContext {
     killers: [[Option<ChessMove>; 2]; MAX_PLY],
     history: [[i32; 64]; 64],
@@ -125,6 +127,7 @@ pub struct SearchContext {
     countermoves: Box<[[Option<ChessMove>; 64]; 64]>,
     prev_moves: [Option<ChessMove>; MAX_PLY],
     excluded_move: [Option<ChessMove>; MAX_PLY],
+    static_evals: [i32; MAX_PLY],
     /// Total nodes visited (alpha_beta + quiescence calls).  Incremented at
     /// the top of each call.  Useful for NPS benchmarking.
     pub nodes: u64,
@@ -139,6 +142,7 @@ impl SearchContext {
             countermoves: Box::new([[None; 64]; 64]),
             prev_moves: [None; MAX_PLY],
             excluded_move: [None; MAX_PLY],
+            static_evals: [i32::MIN; MAX_PLY],
             nodes: 0,
         }
     }
@@ -489,7 +493,7 @@ pub fn alpha_beta(
     };
 
     // --- Static eval for shallow pruning ---
-    // Computed once and reused by RFP and futility pruning below.
+    // Computed once and reused by RFP, futility pruning, and the improving flag.
     // Skipped when in check (pruning is unsound under forced moves) or at
     // high depths where the cost is negligible vs. search time.
     let static_eval: Option<i32> = if !in_check && depth <= 9 {
@@ -498,15 +502,40 @@ pub fn alpha_beta(
         None
     };
 
+    // Cache the static eval for the improving flag (used by deeper plies).
+    // i32::MIN means "in check or not computed".
+    if let Some(se) = static_eval {
+        ctx.static_evals[p] = se;
+    }
+
+    // --- Improving flag ---
+    // True when the static eval at this ply is better than at ply-2 (same
+    // side to move, two half-moves ago).  An improving position warrants more
+    // careful search; a stagnant/deteriorating one can be pruned harder.
+    //   improving=true  → prune less aggressively (don't throw away good lines)
+    //   improving=false → prune more aggressively (already falling behind)
+    let improving = if !in_check && ply >= 2 {
+        match static_eval {
+            Some(se) => {
+                let prev = ctx.static_evals[p.saturating_sub(2)];
+                if prev == i32::MIN { false }
+                else if is_white    { se > prev }
+                else                { se < prev }
+            }
+            None => false,
+        }
+    } else {
+        false
+    };
+
     // --- Reverse Futility Pruning (RFP / "static NMP") ---
     // If our static eval already beats beta by a depth-scaled margin we
     // can expect a refutation, so cut off without searching.
-    // Stockfish uses ~77*depth at depth<16; we use 75*depth at depth≤9
-    // (conservative first extension beyond the original ≤6 cap).
-    // Not at root (ply>0), not in check, skip near mate scores.
+    // Margin is tighter when improving (position is solid) and looser when
+    // not improving (more caution needed before pruning a declining position).
     if let Some(se) = static_eval {
         if depth <= 9 && null_move_allowed && ply > 0 {
-            let margin = 75 * depth;
+            let margin = if improving { 65 * depth } else { 85 * depth };
             if is_white && se - margin >= beta  { return (se, None); }
             if !is_white && se + margin <= alpha { return (se, None); }
         }
@@ -667,11 +696,16 @@ pub fn alpha_beta(
 
             // --- Late Move Pruning (LMP) ---
             // At low depths, once we've tried enough quiet moves, skip the rest.
-            // Complements LMR: LMR reduces, LMP skips entirely once the threshold
-            // is reached.  Never at root (ply==0), never in check.
+            // When improving, allow ~50% more moves before pruning; when not
+            // improving (falling behind) prune at the standard threshold.
             if is_quiet && !in_check && ply > 0 {
                 let thresh_depth = depth.min(4) as usize;
-                if quiet_count >= LMP_THRESHOLD[thresh_depth] {
+                let lmp_thresh = if improving {
+                    LMP_THRESHOLD[thresh_depth] + LMP_THRESHOLD[thresh_depth] / 2
+                } else {
+                    LMP_THRESHOLD[thresh_depth]
+                };
+                if quiet_count >= lmp_thresh {
                     continue;
                 }
             }
@@ -689,8 +723,11 @@ pub fn alpha_beta(
 
             // LMR reduction: R grows with depth and move index.
             // Formula: R = floor(ln(depth) * ln(move_index+1) / 1.5), capped.
+            // +1 when not improving: search late moves even less when falling behind.
             let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
-                lmr_reduction(depth, move_index).max(1).min(depth - 1)
+                let r = lmr_reduction(depth, move_index).max(1);
+                let r = if improving { r } else { r + 1 };
+                r.min(depth - 1)
             } else {
                 0
             };
@@ -791,7 +828,12 @@ pub fn alpha_beta(
             // --- Late Move Pruning (LMP) ---
             if is_quiet && !in_check && ply > 0 {
                 let thresh_depth = depth.min(4) as usize;
-                if quiet_count >= LMP_THRESHOLD[thresh_depth] {
+                let lmp_thresh = if improving {
+                    LMP_THRESHOLD[thresh_depth] + LMP_THRESHOLD[thresh_depth] / 2
+                } else {
+                    LMP_THRESHOLD[thresh_depth]
+                };
+                if quiet_count >= lmp_thresh {
                     continue;
                 }
             }
@@ -806,7 +848,9 @@ pub fn alpha_beta(
             chess_board.make_move(&mut chess_move);
 
             let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
-                lmr_reduction(depth, move_index).max(1).min(depth - 1)
+                let r = lmr_reduction(depth, move_index).max(1);
+                let r = if improving { r } else { r + 1 };
+                r.min(depth - 1)
             } else {
                 0
             };

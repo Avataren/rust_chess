@@ -135,8 +135,8 @@ const ROOK_MOBILITY_WEIGHT:   i32 = 2; // ~28cp at 14 squares (was 1; SF14 rook 
 const QUEEN_MOBILITY_WEIGHT:  i32 = 2; // ~54cp at 27 squares — conservative to avoid instability
 
 // King safety — pawn shield (only when castled) + attack counting.
-const KING_SHIELD_MISSING:  i32 = 15;
-const KING_SHIELD_ADVANCED: i32 =  5;
+const KING_SHIELD_MISSING:  i32 = 20; // cp per missing shield pawn (was 15)
+const KING_SHIELD_ADVANCED: i32 =  7; // cp per advanced shield pawn (was 5)
 
 // Attack weight per piece type attacking king zone.
 const KNIGHT_ATTACK_WEIGHT: i32 = 2;
@@ -144,16 +144,23 @@ const BISHOP_ATTACK_WEIGHT: i32 = 2;
 const ROOK_ATTACK_WEIGHT:   i32 = 3;
 const QUEEN_ATTACK_WEIGHT:  i32 = 5;
 
+// Open/semi-open file bonuses added to attack_weight.
+// An open file toward the king dramatically amplifies existing piece attacks.
+const OPEN_FILE_ATTACK_BONUS:      i32 = 3; // fully open file adjacent to king
+const SEMI_OPEN_FILE_ATTACK_BONUS: i32 = 1; // semi-open file adjacent to king
+
 /// Non-linear safety penalty indexed by total attack weight.
 /// Approximates SF14's quadratic king-danger curve (danger² / 4096).
 /// Ramps slowly for a lone minor piece, steeply when queen + support arrives.
 /// Values in centipawns, applied to MG score only.
 #[rustfmt::skip]
-const SAFETY_TABLE: [i32; 20] = [
+const SAFETY_TABLE: [i32; 24] = [
 //   0    1    2    3    4    5    6    7    8    9
      0,   0,   4,  14,  32,  62, 100, 155, 222, 300,
 //  10   11   12   13   14   15   16   17   18   19
-   390, 490, 590, 685, 770, 845, 905, 955, 995, 1025,
+   390, 490, 590, 685, 770, 845, 905, 955, 995,1025,
+//  20   21   22   23
+  1050,1070,1085,1095,
 ];
 
 const FILE_MASKS: [u64; 8] = [
@@ -502,6 +509,42 @@ mod tests {
             "Re-evaluating the doubled-pawn position must return the same score \
              ({score_doubled} vs {score_doubled_again}), not a stale cache from the other position");
     }
+
+    // ── King safety ─────────────────────────────────────────────────────────
+
+    /// A king with a broken pawn shield (pawns moved away) must score worse
+    /// than the same position with the shield intact.
+    #[test]
+    fn broken_pawn_shield_scores_worse() {
+        // White king on g1, pawns on f2/g2/h2 intact.
+        let intact  = eval("4k3/8/8/8/8/8/5PPP/6K1 w - - 0 1");
+        // White king on g1, f/g/h pawns all advanced.
+        let broken  = eval("4k3/8/8/5ppp/8/8/8/6K1 w - - 0 1");
+        assert!(intact > broken,
+            "Intact shield ({intact}) must score higher than broken shield ({broken})");
+    }
+
+    /// A king attacked by multiple pieces should score worse than an unattacked king.
+    #[test]
+    fn attacked_king_scores_worse() {
+        // Black queen + rook bearing down on white's castled king.
+        let attacked   = eval("4k3/8/8/8/8/8/8/K2r1q2 w - - 0 1");
+        // Same material but pieces far from king.
+        let safe       = eval("3qk3/8/8/8/8/8/8/K7 w - - 0 1");
+        assert!(attacked < safe,
+            "Attacked king ({attacked}) must score worse than safe king ({safe})");
+    }
+
+    /// With no enemy queen the attack penalty should be smaller than with one.
+    #[test]
+    fn queen_presence_amplifies_attack_danger() {
+        // Rook + knight attacking king zone, WITH enemy queen.
+        let with_queen    = eval("4k3/8/8/8/8/2n5/8/K3r1q1 w - - 0 1");
+        // Same rook + knight attacking, WITHOUT enemy queen.
+        let without_queen = eval("4k3/8/8/8/8/2n5/8/K3r3 w - - 0 1");
+        assert!(with_queen < without_queen,
+            "Queen-amplified attack ({with_queen}) must be more dangerous than no-queen attack ({without_queen})");
+    }
 }
 /// Mop-up bonus: drive the losing king to a corner in winning endgames.
 /// The bonus is scaled up as the 50-move clock rises so the engine urgently
@@ -599,8 +642,14 @@ fn king_shield_penalty(king_sq: usize, friendly_pawns: u64, is_white: bool) -> i
 /// Counts how many enemy pieces (knight, bishop, rook, queen) attack the
 /// king zone (the 8 squares around the king + the king square itself).
 /// Each piece type contributes a weight; the total indexes a non-linear
-/// safety table. Only penalises when >= 2 attackers (a lone piece is not
-/// usually dangerous enough to warrant a penalty).
+/// safety table.
+///
+/// Additional weight is added for open/semi-open files adjacent to the king:
+/// an open file acts as a highway for rooks and queens and dramatically
+/// amplifies existing piece attacks.
+///
+/// The total is scaled down by ~50% when the enemy has no queen, since
+/// mating attacks without a queen are much rarer.
 fn king_attack_penalty(
     conductor: &PieceConductor,
     king_sq: usize,
@@ -609,6 +658,8 @@ fn king_attack_penalty(
     enemy_rooks: Bitboard,
     enemy_queens: Bitboard,
     occupied: Bitboard,
+    friendly_pawns: u64,
+    enemy_pawns: u64,
 ) -> i32 {
     // King zone = king square + 8 surrounding squares.
     let zone = conductor.king_lut[king_sq] | Bitboard(1u64 << king_sq);
@@ -652,13 +703,29 @@ fn king_attack_penalty(
         }
     });
 
-    // Zero attackers = no danger. Even a single attacker can be significant
-    // (e.g. queen near exposed king) so don't suppress it.
     if attacker_count == 0 {
         return 0;
     }
 
-    SAFETY_TABLE[attack_weight.min(SAFETY_TABLE.len() as i32 - 1) as usize]
+    // Open / semi-open files near king amplify attack danger.
+    // Check the king file and adjacent files (clamped to board).
+    let king_file = king_sq % 8;
+    let all_pawns = friendly_pawns | enemy_pawns;
+    for f in king_file.saturating_sub(1)..=(king_file + 1).min(7) {
+        let fmask = FILE_MASKS[f];
+        if all_pawns & fmask == 0 {
+            attack_weight += OPEN_FILE_ATTACK_BONUS;
+        } else if friendly_pawns & fmask == 0 {
+            attack_weight += SEMI_OPEN_FILE_ATTACK_BONUS;
+        }
+    }
+
+    // Scale down heavily when the enemy has no queen: mating attacks without
+    // a queen are rare and the danger table is calibrated for queen presence.
+    let has_enemy_queen = enemy_queens.0 != 0;
+    let weight = if has_enemy_queen { attack_weight } else { attack_weight / 2 };
+
+    SAFETY_TABLE[weight.min(SAFETY_TABLE.len() as i32 - 1) as usize]
 }
 
 /// Evaluates the chess board and returns an absolute score:
@@ -790,16 +857,19 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
     mg += king_shield_penalty(black_king_sq, black_pawns_bb, false);
 
     // Attack counting: penalise when multiple enemy pieces aim at the king zone.
+    // Open files near the king and enemy queen presence amplify the danger.
     let occupied = chess_board.get_all_pieces();
     mg -= king_attack_penalty(
         conductor, white_king_sq,
         black & knights, black & bishops, black & rooks, black & queens,
         occupied,
+        white_pawns_bb, black_pawns_bb,
     );
     mg += king_attack_penalty(
         conductor, black_king_sq,
         white & knights, white & bishops, white & rooks, white & queens,
         occupied,
+        black_pawns_bb, white_pawns_bb,
     );
 
     // --- Bishop pair ---
