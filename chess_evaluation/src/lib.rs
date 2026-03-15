@@ -10,6 +10,7 @@ pub use board_evaluation::evaluate_board;
 pub use neural_eval::{
     init_neural_eval, init_neural_eval_from_bytes,
     set_neural_eval_enabled, is_neural_eval_enabled,
+    set_neural_confidence_threshold, get_neural_confidence_threshold,
 };
 pub use alpha_beta::alpha_beta;
 pub use alpha_beta::alpha_beta_root;

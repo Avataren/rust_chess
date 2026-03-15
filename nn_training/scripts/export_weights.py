@@ -85,6 +85,8 @@ def main():
         backbone_3_bias=quantize_int16(state["backbone.3.bias"], args.scale, args.on_overflow, "backbone.3.bias"),
         cp_head_weight=quantize_int16(state["cp_head.weight"], args.scale, args.on_overflow, "cp_head.weight"),
         cp_head_bias=quantize_int16(state["cp_head.bias"], args.scale, args.on_overflow, "cp_head.bias"),
+        wdl_head_weight=quantize_int16(state["wdl_head.weight"], args.scale, args.on_overflow, "wdl_head.weight"),
+        wdl_head_bias=quantize_int16(state["wdl_head.bias"], args.scale, args.on_overflow, "wdl_head.bias"),
     )
 
     print(f"Wrote quantized weights to {out_path}")

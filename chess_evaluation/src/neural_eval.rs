@@ -15,7 +15,7 @@
 //! (positive = good for white), matching the existing `evaluate_board`.
 
 use std::io::{Read, Seek};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 use chess_board::ChessBoard;
@@ -31,6 +31,12 @@ const HIDDEN2: usize = 32;
 
 static NEURAL_ENABLED: AtomicBool = AtomicBool::new(false);
 static EVALUATOR: OnceLock<NeuralEvaluator> = OnceLock::new();
+
+/// Minimum WDL confidence to trust the NN score. When `max(softmax(wdl))`
+/// is below this value the position is too uncertain and the classical
+/// evaluator is used instead. Stored as f32 bits for atomic access.
+/// Default 0.0 = always trust NN (no fallback). Tune after training.
+static CONFIDENCE_THRESHOLD: AtomicU32 = AtomicU32::new(0);
 
 /// Load weights from an NPZ file path.
 ///
@@ -62,23 +68,42 @@ pub fn is_neural_eval_enabled() -> bool {
     NEURAL_ENABLED.load(Ordering::Relaxed)
 }
 
-/// Returns `Some(score)` in centipawns from **white's perspective** when
-/// neural eval is enabled and weights are loaded, `None` otherwise.
+/// Set the minimum WDL confidence required to use the NN score.
 ///
-/// Returning `None` lets the caller fall back to the classical evaluator.
+/// After a forward pass the WDL head produces a 3-class probability
+/// distribution (win / draw / loss). `max(softmax(wdl))` is the
+/// confidence — how sure the model is about the outcome.
+///
+/// - `0.0` (default) — always use NN, never fall back.
+/// - `0.4` — fall back when no single outcome exceeds 40% probability
+///            (the model is nearly equally lost between all three outcomes).
+/// - `0.5` — fall back unless the model leans clearly toward one outcome.
+///
+/// Positions that trigger fallback are unusual structures the model hasn't
+/// learned well; the classical evaluator handles them more reliably.
+pub fn set_neural_confidence_threshold(threshold: f32) {
+    CONFIDENCE_THRESHOLD.store(threshold.to_bits(), Ordering::Relaxed);
+}
+
+pub fn get_neural_confidence_threshold() -> f32 {
+    f32::from_bits(CONFIDENCE_THRESHOLD.load(Ordering::Relaxed))
+}
+
+/// Returns `Some(score)` in centipawns from **white's perspective** when
+/// neural eval is enabled, weights are loaded, and the model is sufficiently
+/// confident. Returns `None` to fall back to the classical evaluator.
 #[inline]
 pub fn try_neural_eval(board: &ChessBoard) -> Option<i32> {
     if !NEURAL_ENABLED.load(Ordering::Relaxed) {
         return None;
     }
-    EVALUATOR.get().map(|e| {
-        // Model output is from side-to-move's perspective; flip for black.
-        let stm_score = e.evaluate(board);
-        if board.is_white_active() {
-            stm_score
-        } else {
-            -stm_score
+    let threshold = f32::from_bits(CONFIDENCE_THRESHOLD.load(Ordering::Relaxed));
+    EVALUATOR.get().and_then(|e| {
+        let (stm_score, confidence) = e.evaluate_with_confidence(board);
+        if confidence < threshold {
+            return None; // uncertain position → classical eval
         }
+        Some(if board.is_white_active() { stm_score } else { -stm_score })
     })
 }
 
@@ -100,6 +125,11 @@ pub struct NeuralEvaluator {
     /// CP head weights: [HIDDEN2] (the single output row, flattened).
     w3: Vec<f32>, // HIDDEN2
     b3: f32,
+
+    /// WDL head weights: [3 × HIDDEN2] row-major.
+    /// Used to compute confidence (max softmax probability).
+    w_wdl: Vec<f32>, // 3 * HIDDEN2
+    b_wdl: Vec<f32>, // 3
 }
 
 impl NeuralEvaluator {
@@ -116,6 +146,8 @@ impl NeuralEvaluator {
         let b2_i16 = read_npy_i16(&mut zip, "backbone_3_bias.npy")?;
         let w3_i16 = read_npy_i16(&mut zip, "cp_head_weight.npy")?;
         let b3_i16 = read_npy_i16(&mut zip, "cp_head_bias.npy")?;
+        let w_wdl_i16 = read_npy_i16(&mut zip, "wdl_head_weight.npy")?;
+        let b_wdl_i16 = read_npy_i16(&mut zip, "wdl_head_bias.npy")?;
 
         let dq = |v: &[i16]| -> Vec<f32> { v.iter().map(|&x| x as f32 / scale).collect() };
 
@@ -136,12 +168,19 @@ impl NeuralEvaluator {
             b2: dq(&b2_i16),
             w3: dq(&w3_i16),
             b3: dq(&b3_i16)[0],
+            w_wdl: dq(&w_wdl_i16),
+            b_wdl: dq(&b_wdl_i16),
         })
     }
 
-    /// Evaluate a position. Returns centipawns from the **side-to-move's**
-    /// perspective (positive = good for the player to move).
-    pub fn evaluate(&self, board: &ChessBoard) -> i32 {
+    /// Evaluate a position.
+    ///
+    /// Returns `(cp, confidence)` where:
+    /// - `cp` is centipawns from the **side-to-move's** perspective.
+    /// - `confidence` is `max(softmax(wdl))` — the probability the model
+    ///   assigns to its most likely outcome (win/draw/loss). Range 0..1;
+    ///   values below ~0.4 indicate the model is uncertain about the position.
+    pub fn evaluate_with_confidence(&self, board: &ChessBoard) -> (i32, f32) {
         let features = encode_features(board);
 
         // ── Layer 1: sparse input accumulation (features are 0 or 1) ──────
@@ -179,7 +218,28 @@ impl NeuralEvaluator {
             cp += self.w3[i] * h2[i];
         }
 
-        cp.round() as i32
+        // ── WDL head → confidence ─────────────────────────────────────────
+        // logits: [3 × HIDDEN2] row-major → win, draw, loss
+        let mut logits = [0.0f32; 3];
+        for k in 0..3 {
+            let row = &self.w_wdl[k * HIDDEN2..(k + 1) * HIDDEN2];
+            let mut acc = self.b_wdl[k];
+            for i in 0..HIDDEN2 {
+                acc += row[i] * h2[i];
+            }
+            logits[k] = acc;
+        }
+        // Numerically stable softmax
+        let max_l = logits[0].max(logits[1]).max(logits[2]);
+        let exps = [
+            (logits[0] - max_l).exp(),
+            (logits[1] - max_l).exp(),
+            (logits[2] - max_l).exp(),
+        ];
+        let sum = exps[0] + exps[1] + exps[2];
+        let confidence = exps[0].max(exps[1]).max(exps[2]) / sum;
+
+        (cp.round() as i32, confidence)
     }
 }
 

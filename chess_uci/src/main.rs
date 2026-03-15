@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
-    init_neural_eval, is_neural_eval_enabled, iterative_deepening_root_with_tt,
+    get_neural_confidence_threshold, init_neural_eval, is_neural_eval_enabled,
+    iterative_deepening_root_with_tt, set_neural_confidence_threshold,
     set_neural_eval_enabled, OpeningBook, TranspositionTable,
 };
 use chess_foundation::{piece::PieceType, ChessMove};
@@ -468,6 +469,7 @@ fn main() {
                 println!("option name Ponder type check default true");
                 println!("option name EvalFile type string default <empty>");
                 println!("option name NeuralEval type check default false");
+                println!("option name NeuralConfidence type string default 0.0");
                 println!("uciok");
             }
             "setoption" => {
@@ -508,6 +510,17 @@ fn main() {
                                 "info string Neural eval {}",
                                 if is_neural_eval_enabled() { "enabled" } else { "disabled" }
                             );
+                        }
+                        "neuralconfidence" => {
+                            if let Ok(t) = value.parse::<f32>() {
+                                let t = t.clamp(0.0, 1.0);
+                                set_neural_confidence_threshold(t);
+                                eprintln!(
+                                    "info string Neural confidence threshold set to {:.2} (fallback rate ~{}%)",
+                                    t,
+                                    ((1.0 - t) * 100.0) as u32,
+                                );
+                            }
                         }
                         _ => {}
                     }
