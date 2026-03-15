@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 data/
 artifacts/
+runs/
+*.pgn
+*.pgn.zst
+*.pgn.bz2
+*.pgn.gz
