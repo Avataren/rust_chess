@@ -13,7 +13,17 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from nnue_train.dataset import JsonlPositionDataset
+from nnue_train.dataset import BinaryPositionDataset, JsonlPositionDataset
+
+
+def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool):
+    """Use fast binary dataset if pre-processed files exist, else fall back to JSONL."""
+    prefix = str(Path(path).with_suffix(""))
+    if all(Path(prefix + ext).exists() for ext in (".indices.npy", ".counts.npy", ".cp.npy")):
+        print(f"  Loading binary dataset: {prefix}.*")
+        return BinaryPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
+    print(f"  Loading JSONL dataset: {path}  (run preprocess_dataset.py for faster training)")
+    return JsonlPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
 from nnue_train.model import EvalNet
 
 
@@ -34,9 +44,24 @@ def soft_target_cross_entropy(logits: torch.Tensor, target_probs: torch.Tensor) 
     return -(target_probs * log_probs).sum(dim=1).mean()
 
 
+def sparse_to_dense(indices: torch.Tensor, feature_dim: int) -> torch.Tensor:
+    """Convert (batch, 32) sparse index tensor to (batch, feature_dim) dense float32.
+
+    Indices equal to feature_dim are padding sentinels and are ignored.
+    Runs on whatever device `indices` lives on (GPU after .to(device)).
+    """
+    mask = indices < feature_dim                          # (B, 32) bool
+    safe = indices.clamp(0, feature_dim - 1)             # avoid OOB scatter
+    x = torch.zeros(indices.size(0), feature_dim,
+                    dtype=torch.float32, device=indices.device)
+    x.scatter_(1, safe, mask.float())
+    return x
+
+
 def train_epoch(model, loader, optimizer, scaler, device, cfg):
     model.train()
     cp_loss_fn = nn.HuberLoss(delta=100.0)
+    feature_dim = cfg["model"]["input_dim"]
 
     total_loss = 0.0
     total_cp_loss = 0.0
@@ -47,6 +72,8 @@ def train_epoch(model, loader, optimizer, scaler, device, cfg):
 
     for x, cp, wdl in tqdm(loader, desc="train", leave=False):
         x = x.to(device, non_blocking=True)
+        if x.dtype == torch.int64 and not model.sparse_input:
+            x = sparse_to_dense(x, feature_dim)
         cp = cp.to(device, non_blocking=True)
         wdl = wdl.to(device, non_blocking=True)
         wdl_idx = torch.argmax(wdl, dim=1)
@@ -91,6 +118,7 @@ def train_epoch(model, loader, optimizer, scaler, device, cfg):
 def eval_epoch(model, loader, device, cfg):
     model.eval()
     cp_loss_fn = nn.HuberLoss(delta=100.0)
+    feature_dim = cfg["model"]["input_dim"]
 
     total_loss = 0.0
     total_cp_loss = 0.0
@@ -101,6 +129,8 @@ def eval_epoch(model, loader, device, cfg):
 
     for x, cp, wdl in tqdm(loader, desc="val", leave=False):
         x = x.to(device, non_blocking=True)
+        if x.dtype == torch.int64 and not model.sparse_input:
+            x = sparse_to_dense(x, feature_dim)
         cp = cp.to(device, non_blocking=True)
         wdl = wdl.to(device, non_blocking=True)
         wdl_idx = torch.argmax(wdl, dim=1)
@@ -148,16 +178,8 @@ def main():
         print(f"CUDA/ROCm device: {torch.cuda.get_device_name(0)}")
 
     use_halfkp = cfg["model"].get("use_halfkp", False)
-    train_ds = JsonlPositionDataset(
-        cfg["data"]["train_file"],
-        max_cp_abs=cfg["data"]["max_cp_abs"],
-        use_halfkp=use_halfkp,
-    )
-    val_ds = JsonlPositionDataset(
-        cfg["data"]["val_file"],
-        max_cp_abs=cfg["data"]["max_cp_abs"],
-        use_halfkp=use_halfkp,
-    )
+    train_ds = load_dataset(cfg["data"]["train_file"], cfg["data"]["max_cp_abs"], use_halfkp)
+    val_ds   = load_dataset(cfg["data"]["val_file"],   cfg["data"]["max_cp_abs"], use_halfkp)
 
 
     if len(train_ds) == 0:
@@ -174,6 +196,8 @@ def main():
     train_workers = int(cfg["training"]["workers"])
     default_val_workers = 0 if train_workers == 0 else max(1, train_workers // 2)
     val_workers = int(cfg["training"].get("val_workers", default_val_workers))
+    persistent = cfg["training"].get("persistent_workers", False) and train_workers > 0
+    prefetch = cfg["training"].get("prefetch_factor", 2) if train_workers > 0 else None
 
     train_loader = DataLoader(
         train_ds,
@@ -182,6 +206,8 @@ def main():
         num_workers=train_workers,
         pin_memory=cfg["training"]["pin_memory"],
         drop_last=False,
+        persistent_workers=persistent,
+        prefetch_factor=prefetch,
     )
     val_loader = DataLoader(
         val_ds,
@@ -189,6 +215,8 @@ def main():
         shuffle=False,
         num_workers=val_workers,
         pin_memory=cfg["training"]["pin_memory"],
+        persistent_workers=persistent,
+        prefetch_factor=prefetch,
     )
 
     mcfg = cfg["model"]
@@ -197,6 +225,7 @@ def main():
         hidden_dim=mcfg["hidden_dim"],
         hidden2_dim=mcfg["hidden2_dim"],
         dropout=mcfg["dropout"],
+        sparse_input=mcfg.get("sparse_input", False),
     ).to(device)
 
     optimizer = torch.optim.AdamW(

@@ -134,6 +134,42 @@ Depth guide:
 
 ---
 
+## Step 2b — Pre-encode to binary (recommended for large datasets)
+
+After labeling, convert JSONL to sparse binary format for ~10-20x faster DataLoader throughput.
+Instead of parsing JSON + running python-chess per sample at training time, workers just do a
+memmap read + scatter of ~32 indices. This keeps the GPU near 100% utilization.
+
+```bash
+# Run train and val in parallel
+PYTHONPATH=. python3 scripts/preprocess_dataset.py \
+  --input data/train_10m.jsonl \
+  --output data/train_10m \
+  --use-halfkp > /tmp/preprocess_train.log 2>&1 &
+
+PYTHONPATH=. python3 scripts/preprocess_dataset.py \
+  --input data/val_10m.jsonl \
+  --output data/val_10m \
+  --use-halfkp > /tmp/preprocess_val.log 2>&1 &
+
+wait && echo "done"
+```
+
+Output files (example for 10M samples):
+```
+data/train_10m.indices.npy   ~633 MB   (N, 32) uint16 active feature indices
+data/train_10m.counts.npy    ~10 MB    (N,)    uint8  active feature count
+data/train_10m.cp.npy        ~40 MB    (N,)    float32 centipawn values
+```
+
+The training script auto-detects binary files: if `train_10m.indices.npy` exists alongside
+`train_10m.jsonl`, `BinaryPositionDataset` is used automatically. No config change needed.
+
+> Note: dense float32 storage would be ~485GB for 12,288-dim HalfKP features.
+> Sparse indices reduce this to ~683MB total — feasible with mmap.
+
+---
+
 ## Step 3 — Split dataset
 
 ```bash

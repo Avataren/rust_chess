@@ -65,6 +65,7 @@ def main():
         hidden_dim=mcfg["hidden_dim"],
         hidden2_dim=mcfg["hidden2_dim"],
         dropout=0.0,
+        sparse_input=mcfg.get("sparse_input", False),
     )
 
     ckpt = torch.load(args.checkpoint, map_location="cpu")
@@ -72,21 +73,33 @@ def main():
     model.eval()
 
     state = model.state_dict()
+    s = args.scale
+    ov = args.on_overflow
+
+    # Extract first-layer weights in a unified shape (hidden, input) regardless of model type.
+    # EmbeddingBag stores (input+1, hidden) — take first input_dim rows and transpose.
+    # Linear stores (hidden, input) — use directly.
+    if model.sparse_input:
+        w1 = state["embedding.weight"][:mcfg["input_dim"]].T.contiguous()
+        b1 = state["bias1"]
+    else:
+        w1 = state["fc1.weight"]
+        b1 = state["fc1.bias"]
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     np.savez_compressed(
         out_path,
-        scale=np.array([args.scale], dtype=np.float32),
-        backbone_0_weight=quantize_int16(state["backbone.0.weight"], args.scale, args.on_overflow, "backbone.0.weight"),
-        backbone_0_bias=quantize_int16(state["backbone.0.bias"], args.scale, args.on_overflow, "backbone.0.bias"),
-        backbone_3_weight=quantize_int16(state["backbone.3.weight"], args.scale, args.on_overflow, "backbone.3.weight"),
-        backbone_3_bias=quantize_int16(state["backbone.3.bias"], args.scale, args.on_overflow, "backbone.3.bias"),
-        cp_head_weight=quantize_int16(state["cp_head.weight"], args.scale, args.on_overflow, "cp_head.weight"),
-        cp_head_bias=quantize_int16(state["cp_head.bias"], args.scale, args.on_overflow, "cp_head.bias"),
-        wdl_head_weight=quantize_int16(state["wdl_head.weight"], args.scale, args.on_overflow, "wdl_head.weight"),
-        wdl_head_bias=quantize_int16(state["wdl_head.bias"], args.scale, args.on_overflow, "wdl_head.bias"),
+        scale=np.array([s], dtype=np.float32),
+        backbone_0_weight=quantize_int16(w1,                  s, ov, "backbone.0.weight"),
+        backbone_0_bias=  quantize_int16(b1,                  s, ov, "backbone.0.bias"),
+        backbone_3_weight=quantize_int16(state["fc2.weight"],  s, ov, "backbone.3.weight"),
+        backbone_3_bias=  quantize_int16(state["fc2.bias"],    s, ov, "backbone.3.bias"),
+        cp_head_weight=   quantize_int16(state["cp_head.weight"],  s, ov, "cp_head.weight"),
+        cp_head_bias=     quantize_int16(state["cp_head.bias"],    s, ov, "cp_head.bias"),
+        wdl_head_weight=  quantize_int16(state["wdl_head.weight"], s, ov, "wdl_head.weight"),
+        wdl_head_bias=    quantize_int16(state["wdl_head.bias"],   s, ov, "wdl_head.bias"),
     )
 
     print(f"Wrote quantized weights to {out_path}")

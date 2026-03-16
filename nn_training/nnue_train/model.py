@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
 class EvalNet(nn.Module):
-    """A small NNUE-like dense model with value and WDL heads.
+    """NNUE-style evaluation network with optional sparse input via EmbeddingBag.
 
-    Input is sparse 12x64 features. For WASM runtime, you can export and run the
-    quantized linear layers directly in Rust.
+    sparse_input=True (recommended for HalfKP training):
+      - First layer uses nn.EmbeddingBag: 32 row lookups directly into the weight
+        matrix, never materializing the 12,288-dim dense input vector on GPU.
+      - Input to forward(): (batch, 32) int64 indices, padding_idx=input_dim.
+      - ~800x less PCIe traffic and no 400MB/batch GPU allocation vs dense path.
+
+    sparse_input=False (legacy / JSONL fallback):
+      - Standard nn.Linear first layer.
+      - Input to forward(): (batch, input_dim) float32 dense tensor.
+
+    Both modes export identical weight shapes to .npz — Rust inference unchanged.
     """
 
     def __init__(
@@ -17,20 +27,31 @@ class EvalNet(nn.Module):
         hidden_dim: int = 512,
         hidden2_dim: int = 32,
         dropout: float = 0.0,
+        sparse_input: bool = False,
     ):
         super().__init__()
-        self.backbone = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, hidden2_dim),
-            nn.ReLU(),
-        )
+        self.sparse_input = sparse_input
+        self.input_dim = input_dim
+
+        if sparse_input:
+            # padding_idx=input_dim: index used to pad variable-length bags is ignored
+            self.embedding = nn.EmbeddingBag(
+                input_dim + 1, hidden_dim, mode="sum", padding_idx=input_dim
+            )
+            self.bias1 = nn.Parameter(torch.zeros(hidden_dim))
+        else:
+            self.fc1 = nn.Linear(input_dim, hidden_dim)
+
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden_dim, hidden2_dim)
         self.cp_head = nn.Linear(hidden2_dim, 1)
         self.wdl_head = nn.Linear(hidden2_dim, 3)
 
     def forward(self, x: torch.Tensor):
-        h = self.backbone(x)
-        cp = self.cp_head(h)
-        wdl_logits = self.wdl_head(h)
-        return cp, wdl_logits
+        if self.sparse_input:
+            h = F.relu(self.embedding(x) + self.bias1)
+        else:
+            h = F.relu(self.fc1(x))
+
+        h = F.relu(self.fc2(self.dropout(h)))
+        return self.cp_head(h), self.wdl_head(h)
