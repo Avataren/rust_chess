@@ -1,0 +1,30 @@
+seed: 42
+
+training:
+  batch_size: 4096
+  epochs: 50
+  lr: 0.001
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  workers: 8
+  pin_memory: true
+  amp: true
+
+model:
+  input_dim: 12288   # 12 piece types × 64 squares × 16 king buckets
+  hidden_dim: 512
+  hidden2_dim: 32
+  dropout: 0.3
+  use_halfkp: true
+
+loss:
+  cp_weight: 0.3
+  wdl_weight: 0.7
+
+data:
+  train_file: data/train_10m.jsonl
+  val_file: data/val_10m.jsonl
+  max_cp_abs: 1500
+
+export:
+  output_path: artifacts/eval_halfkp_10m.onnx

@@ -11,19 +11,20 @@ training:
   amp: true
 
 model:
-  input_dim: 768
+  input_dim: 12288   # 12 piece types × 64 squares × 16 king buckets
   hidden_dim: 512
   hidden2_dim: 32
   dropout: 0.1
+  use_halfkp: true
 
 loss:
   cp_weight: 0.3
   wdl_weight: 0.7
 
 data:
-  train_file: data/train.jsonl
-  val_file: data/val.jsonl
+  train_file: data/train_1m.jsonl
+  val_file: data/val_1m.jsonl
   max_cp_abs: 1500
 
 export:
-  output_path: artifacts/eval.onnx
+  output_path: artifacts/eval_halfkp.onnx

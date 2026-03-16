@@ -135,6 +135,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/default.yaml")
     ap.add_argument("--out", default="artifacts/checkpoint.pt")
+    ap.add_argument("--resume", default=None, help="Resume fine-tuning from a checkpoint (.pt)")
     ap.add_argument("--tb-logdir", default="runs/nn_training", help="TensorBoard log directory")
     args = ap.parse_args()
 
@@ -146,13 +147,16 @@ def main():
     if device.type == "cuda":
         print(f"CUDA/ROCm device: {torch.cuda.get_device_name(0)}")
 
+    use_halfkp = cfg["model"].get("use_halfkp", False)
     train_ds = JsonlPositionDataset(
         cfg["data"]["train_file"],
         max_cp_abs=cfg["data"]["max_cp_abs"],
+        use_halfkp=use_halfkp,
     )
     val_ds = JsonlPositionDataset(
         cfg["data"]["val_file"],
         max_cp_abs=cfg["data"]["max_cp_abs"],
+        use_halfkp=use_halfkp,
     )
 
 
@@ -200,9 +204,19 @@ def main():
         lr=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
     )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=cfg["training"]["epochs"],
+        eta_min=cfg["training"]["lr"] / 100,
+    )
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
     best_val = float("inf")
+    if args.resume:
+        ck = torch.load(args.resume, map_location=device, weights_only=False)
+        model.load_state_dict(ck["model_state"])
+        best_val = ck.get("val_loss", float("inf"))
+        print(f"Resumed from {args.resume}  (val_loss={best_val:.4f})")
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -215,6 +229,7 @@ def main():
         for epoch in range(1, cfg["training"]["epochs"] + 1):
             tr = train_epoch(model, train_loader, optimizer, scaler, device, cfg)
             va = eval_epoch(model, val_loader, device, cfg)
+            scheduler.step()
 
             print(
                 f"epoch={epoch} "
@@ -237,6 +252,7 @@ def main():
             writer.add_scalar("val/cp_mae", va["cp_mae"], epoch)
             writer.add_scalar("val/wdl_acc", va["wdl_acc"], epoch)
             writer.add_scalar("val/wdl_target_confidence", va["wdl_target_confidence"], epoch)
+            writer.add_scalar("train/lr", scheduler.get_last_lr()[0], epoch)
             writer.flush()
 
             if va["loss"] < best_val:
@@ -246,6 +262,7 @@ def main():
                         "model_state": model.state_dict(),
                         "config": cfg,
                         "val_loss": va["loss"],
+                        "val_cp_mae": va["cp_mae"],
                         "epoch": epoch,
                     },
                     out_path,

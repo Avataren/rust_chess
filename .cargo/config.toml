@@ -2,6 +2,12 @@
 # rustflags = [ "--cfg=web_sys_unstable_apis" ]
 # rustdocflags = [ "--cfg=web_sys_unstable_apis" ]
 
+# Use native CPU features (AVX2, etc.) for all non-WASM targets.
+# This enables auto-vectorization of hot loops in neural_eval.rs (Layer 2
+# dot products become 8-wide AVX2 FMAs instead of scalar SSE2).
+[target.'cfg(not(target_arch = "wasm32"))']
+rustflags = ["-C", "target-cpu=native"]
+
 [target.wasm32-unknown-unknown]
 rustflags = [
   "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",

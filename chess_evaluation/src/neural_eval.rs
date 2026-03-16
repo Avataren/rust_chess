@@ -1,6 +1,6 @@
 //! Neural network evaluation for chess positions.
 //!
-//! Implements a small NNUE-like MLP (768 → 512 → 32 → 1) trained with
+//! Implements a small NNUE-like MLP (768 or 12288 → 512 → 32 → 1) trained with
 //! the Python pipeline in `nn_training/`. Weights are loaded from an NPZ
 //! file exported by `scripts/export_weights.py`.
 //!
@@ -21,11 +21,17 @@ use std::sync::OnceLock;
 use chess_board::ChessBoard;
 use chess_foundation::bitboard::Bitboard;
 
-// ── Architecture constants (must match Python model config) ───────────────
+// ── Architecture constants ────────────────────────────────────────────────
 
-const FEATURE_DIM: usize = 768;
+// FEATURE_DIM is now runtime (stored in NeuralEvaluator) to support both
+// the original 768-dim model and the king-bucketed 12,288-dim model.
+// HIDDEN1 and HIDDEN2 remain fixed across architectures.
 const HIDDEN1: usize = 512;
 const HIDDEN2: usize = 32;
+
+// King bucket constants for HalfKP encoding
+const HALFKP_FEATURE_DIM: usize = 12 * 64 * 16; // 12,288
+const LEGACY_FEATURE_DIM: usize = 768;
 
 // ── Global state ──────────────────────────────────────────────────────────
 
@@ -110,12 +116,15 @@ pub fn try_neural_eval(board: &ChessBoard) -> Option<i32> {
 // ── Evaluator ─────────────────────────────────────────────────────────────
 
 pub struct NeuralEvaluator {
-    /// Layer 1 weights stored **transposed**: [FEATURE_DIM × HIDDEN1].
+    /// Number of input features: 768 (legacy) or 12,288 (HalfKP king-bucketed).
+    feature_dim: usize,
+
+    /// Layer 1 weights stored **transposed**: [feature_dim × HIDDEN1].
     ///
     /// Transposing at load time lets us accumulate sparse input features
-    /// with a single contiguous slice read per active feature (~32 active
-    /// out of 768), rather than doing a full dense matrix-vector product.
-    w1_t: Vec<f32>, // FEATURE_DIM * HIDDEN1
+    /// with a single contiguous slice read per active feature (~32 active),
+    /// rather than doing a full dense matrix-vector product.
+    w1_t: Vec<f32>, // feature_dim * HIDDEN1
     b1: Vec<f32>,   // HIDDEN1
 
     /// Layer 2 weights in row-major order: [HIDDEN2 × HIDDEN1].
@@ -151,17 +160,27 @@ impl NeuralEvaluator {
 
         let dq = |v: &[i16]| -> Vec<f32> { v.iter().map(|&x| x as f32 / scale).collect() };
 
-        // w1 is originally [HIDDEN1 × FEATURE_DIM] row-major.
-        // Transpose to [FEATURE_DIM × HIDDEN1] for cache-friendly sparse access.
+        // Detect feature_dim from the w1 weight shape: w1 is [HIDDEN1 × feature_dim].
+        // Total elements = HIDDEN1 × feature_dim, so feature_dim = len / HIDDEN1.
+        let feature_dim = w1_i16.len() / HIDDEN1;
+        if feature_dim != LEGACY_FEATURE_DIM && feature_dim != HALFKP_FEATURE_DIM {
+            return Err(format!(
+                "Unexpected feature_dim {feature_dim} (expected {LEGACY_FEATURE_DIM} or {HALFKP_FEATURE_DIM})"
+            ));
+        }
+
+        // w1 is originally [HIDDEN1 × feature_dim] row-major.
+        // Transpose to [feature_dim × HIDDEN1] for cache-friendly sparse access.
         let w1_row = dq(&w1_i16);
-        let mut w1_t = vec![0.0f32; FEATURE_DIM * HIDDEN1];
+        let mut w1_t = vec![0.0f32; feature_dim * HIDDEN1];
         for j in 0..HIDDEN1 {
-            for i in 0..FEATURE_DIM {
-                w1_t[i * HIDDEN1 + j] = w1_row[j * FEATURE_DIM + i];
+            for i in 0..feature_dim {
+                w1_t[i * HIDDEN1 + j] = w1_row[j * feature_dim + i];
             }
         }
 
         Ok(Self {
+            feature_dim,
             w1_t,
             b1: dq(&b1_i16),
             w2: dq(&w2_i16),
@@ -181,20 +200,24 @@ impl NeuralEvaluator {
     ///   assigns to its most likely outcome (win/draw/loss). Range 0..1;
     ///   values below ~0.4 indicate the model is uncertain about the position.
     pub fn evaluate_with_confidence(&self, board: &ChessBoard) -> (i32, f32) {
-        let features = encode_features(board);
+        let active = if self.feature_dim == HALFKP_FEATURE_DIM {
+            encode_active_features_halfkp(board)
+        } else {
+            encode_active_features_legacy(board)
+        };
 
         // ── Layer 1: sparse input accumulation (features are 0 or 1) ──────
-        // Start with biases, then for each active feature add its column
+        // Start with biases, then for each active feature index add its column
         // from the transposed weight matrix. ~32 active features → ~32 × 512
-        // adds instead of 768 × 512.
+        // adds instead of scanning all 768 slots.
         let mut h1 = [0.0f32; HIDDEN1];
         h1.copy_from_slice(&self.b1);
-        for i in 0..FEATURE_DIM {
-            if features[i] != 0.0 {
-                let src = &self.w1_t[i * HIDDEN1..(i + 1) * HIDDEN1];
-                for j in 0..HIDDEN1 {
-                    h1[j] += src[j];
-                }
+        let (active_indices, active_count) = active;
+        for i in active_indices[..active_count].iter().copied() {
+            debug_assert!(i < self.feature_dim, "feature index {i} out of range {}", self.feature_dim);
+            let src = &self.w1_t[i * HIDDEN1..(i + 1) * HIDDEN1];
+            for j in 0..HIDDEN1 {
+                h1[j] += src[j];
             }
         }
         for v in h1.iter_mut() {
@@ -244,62 +267,147 @@ impl NeuralEvaluator {
 }
 
 // ── Feature encoding ──────────────────────────────────────────────────────
+//
+// Two encoders, selected at runtime based on the loaded model's feature_dim:
+//
+// Legacy (768-dim): 12 piece types × 64 squares, side-to-move normalized.
+//   feature = piece_slot * 64 + square
+//
+// HalfKP (12,288-dim): 12 piece types × 64 squares × 16 king buckets.
+//   feature = piece_slot * 64 * 16 + square * 16 + king_bucket
+//
+// Both encoders flip ranks (sq ^ 56) when black is to move so the model
+// always sees the board from the side-to-move's perspective.
+//
+// King bucket layout (after optional rank flip):
+//   files 0-3 → bucket 0-3 (keep); files 4-7 → bucket 3-0 (mirror queenside)
+//   ranks 0-3 → rank_half 0; ranks 4-7 → rank_half 1
+//   bucket = rank_half * 4 + file_bucket  (0..15)
 
-/// Encode board to a 768-dim binary feature vector from the side-to-move's
-/// perspective, matching Python's `encode_board_12x64`.
-///
-/// Layout (after optional mirror for black-to-move):
-/// - [  0.. 63] side-to-move pawns
-/// - [ 64..127] side-to-move knights
-/// - [128..191] side-to-move bishops
-/// - [192..255] side-to-move rooks
-/// - [256..319] side-to-move queens
-/// - [320..383] side-to-move king
-/// - [384..447] opponent pawns
-/// - [448..511] opponent knights
-/// - [512..575] opponent bishops
-/// - [576..639] opponent rooks
-/// - [640..703] opponent queens
-/// - [704..767] opponent king
-fn encode_features(board: &ChessBoard) -> [f32; FEATURE_DIM] {
-    let mut feat = [0.0f32; FEATURE_DIM];
+const KING_BUCKET: [usize; 64] = {
+    let mut t = [0usize; 64];
+    let mut sq = 0usize;
+    while sq < 64 {
+        let file = sq % 8;
+        let rank = sq / 8;
+        let file_bucket = if file <= 3 { file } else { 7 - file };
+        let rank_half = if rank <= 3 { 0 } else { 1 };
+        t[sq] = rank_half * 4 + file_bucket;
+        sq += 1;
+    }
+    t
+};
 
+/// Legacy 768-dim encoder. Returns active feature indices + count.
+fn encode_active_features_legacy(board: &ChessBoard) -> ([usize; 32], usize) {
     let white_to_move = board.is_white_active();
-    // If black to move, flip square indices vertically (rank mirror, sq ^ 56)
-    // so the model always sees positions from the mover's point of view.
     let flip = !white_to_move;
-
     let (ours, theirs) = if white_to_move {
         (board.get_white(), board.get_black())
     } else {
         (board.get_black(), board.get_white())
     };
 
-    set_features(&mut feat, ours & board.get_pawns(), 0, flip);
-    set_features(&mut feat, ours & board.get_knights(), 64, flip);
-    set_features(&mut feat, ours & board.get_bishops(), 128, flip);
-    set_features(&mut feat, ours & board.get_rooks(), 192, flip);
-    set_features(&mut feat, ours & board.get_queens(), 256, flip);
-    set_features(&mut feat, ours & board.get_kings(), 320, flip);
+    let mut indices = [0usize; 32];
+    let mut count = 0usize;
 
-    set_features(&mut feat, theirs & board.get_pawns(), 384, flip);
-    set_features(&mut feat, theirs & board.get_knights(), 448, flip);
-    set_features(&mut feat, theirs & board.get_bishops(), 512, flip);
-    set_features(&mut feat, theirs & board.get_rooks(), 576, flip);
-    set_features(&mut feat, theirs & board.get_queens(), 640, flip);
-    set_features(&mut feat, theirs & board.get_kings(), 704, flip);
+    macro_rules! push_bb {
+        ($bb:expr, $offset:expr) => {
+            let mut bb: Bitboard = $bb;
+            while bb.0 != 0 {
+                let sq = bb.0.trailing_zeros() as usize;
+                bb.0 &= bb.0 - 1;
+                let mapped = if flip { sq ^ 56 } else { sq };
+                indices[count] = $offset + mapped;
+                count += 1;
+            }
+        };
+    }
 
+    push_bb!(ours  & board.get_pawns(),   0);
+    push_bb!(ours  & board.get_knights(), 64);
+    push_bb!(ours  & board.get_bishops(), 128);
+    push_bb!(ours  & board.get_rooks(),   192);
+    push_bb!(ours  & board.get_queens(),  256);
+    push_bb!(ours  & board.get_kings(),   320);
+    push_bb!(theirs & board.get_pawns(),   384);
+    push_bb!(theirs & board.get_knights(), 448);
+    push_bb!(theirs & board.get_bishops(), 512);
+    push_bb!(theirs & board.get_rooks(),   576);
+    push_bb!(theirs & board.get_queens(),  640);
+    push_bb!(theirs & board.get_kings(),   704);
+
+    (indices, count)
+}
+
+/// HalfKP 12,288-dim king-bucketed encoder. Returns active feature indices + count.
+/// feature = piece_slot(0..11) * 64 * 16 + piece_square * 16 + king_bucket(0..15)
+fn encode_active_features_halfkp(board: &ChessBoard) -> ([usize; 32], usize) {
+    let white_to_move = board.is_white_active();
+    let flip = !white_to_move;
+    let (ours, theirs) = if white_to_move {
+        (board.get_white(), board.get_black())
+    } else {
+        (board.get_black(), board.get_white())
+    };
+
+    // Side-to-move king square (after optional rank flip).
+    let king_raw = (ours & board.get_kings()).0.trailing_zeros() as usize;
+    let king_sq = if flip { king_raw ^ 56 } else { king_raw };
+    let bucket = KING_BUCKET[king_sq];
+
+    let mut indices = [0usize; 32];
+    let mut count = 0usize;
+
+    macro_rules! push_bb_halfkp {
+        ($bb:expr, $slot:expr) => {
+            let mut bb: Bitboard = $bb;
+            while bb.0 != 0 {
+                let sq = bb.0.trailing_zeros() as usize;
+                bb.0 &= bb.0 - 1;
+                let mapped = if flip { sq ^ 56 } else { sq };
+                indices[count] = $slot * 64 * 16 + mapped * 16 + bucket;
+                count += 1;
+            }
+        };
+    }
+
+    push_bb_halfkp!(ours  & board.get_pawns(),    0);
+    push_bb_halfkp!(ours  & board.get_knights(),  1);
+    push_bb_halfkp!(ours  & board.get_bishops(),  2);
+    push_bb_halfkp!(ours  & board.get_rooks(),    3);
+    push_bb_halfkp!(ours  & board.get_queens(),   4);
+    push_bb_halfkp!(ours  & board.get_kings(),    5);
+    push_bb_halfkp!(theirs & board.get_pawns(),   6);
+    push_bb_halfkp!(theirs & board.get_knights(), 7);
+    push_bb_halfkp!(theirs & board.get_bishops(), 8);
+    push_bb_halfkp!(theirs & board.get_rooks(),   9);
+    push_bb_halfkp!(theirs & board.get_queens(),  10);
+    push_bb_halfkp!(theirs & board.get_kings(),   11);
+
+    (indices, count)
+}
+
+/// Dense feature vector — only used by unit tests (legacy 768-dim).
+#[cfg(test)]
+fn encode_features_legacy(board: &ChessBoard) -> [f32; LEGACY_FEATURE_DIM] {
+    let mut feat = [0.0f32; LEGACY_FEATURE_DIM];
+    let (indices, count) = encode_active_features_legacy(board);
+    for i in indices[..count].iter().copied() {
+        feat[i] = 1.0;
+    }
     feat
 }
 
-#[inline]
-fn set_features(feat: &mut [f32; FEATURE_DIM], mut bb: Bitboard, offset: usize, flip: bool) {
-    while bb.0 != 0 {
-        let sq = bb.0.trailing_zeros() as usize;
-        bb.0 &= bb.0 - 1;
-        let mapped = if flip { sq ^ 56 } else { sq };
-        feat[offset + mapped] = 1.0;
+/// Dense feature vector — only used by unit tests (HalfKP 12,288-dim).
+#[cfg(test)]
+fn encode_features_halfkp(board: &ChessBoard) -> [f32; HALFKP_FEATURE_DIM] {
+    let mut feat = [0.0f32; HALFKP_FEATURE_DIM];
+    let (indices, count) = encode_active_features_halfkp(board);
+    for i in indices[..count].iter().copied() {
+        feat[i] = 1.0;
     }
+    feat
 }
 
 // ── NPY parsing ───────────────────────────────────────────────────────────
@@ -423,45 +531,79 @@ mod tests {
     use super::*;
     use chess_board::ChessBoard;
 
-    /// Smoke-test: feature encoding of the starting position should have
-    /// exactly 32 active features (16 white pieces + 16 black pieces).
+    // ── Legacy 768-dim tests ──────────────────────────────────────────────
+
     #[test]
-    fn test_feature_count_starting_position() {
+    fn test_legacy_feature_count_starting_position() {
         let board = ChessBoard::new();
-        let features = encode_features(&board);
+        let features = encode_features_legacy(&board);
         let active: usize = features.iter().filter(|&&v| v != 0.0).count();
         assert_eq!(active, 32, "Starting position should have 32 active features");
     }
 
-    /// From black's perspective the board is mirrored, but still 32 features.
     #[test]
-    fn test_feature_count_black_to_move() {
+    fn test_legacy_feature_count_black_to_move() {
         let mut board = ChessBoard::new();
         board.toggle_turn();
-        let features = encode_features(&board);
+        let features = encode_features_legacy(&board);
         let active: usize = features.iter().filter(|&&v| v != 0.0).count();
         assert_eq!(active, 32);
     }
 
-    /// White king starts on e1 (square 4). When white to move (no flip),
-    /// it should appear at offset 320 + 4 = 324.
     #[test]
-    fn test_white_king_feature_white_to_move() {
+    fn test_legacy_white_king_feature_white_to_move() {
         let board = ChessBoard::new();
         assert!(board.is_white_active());
-        let features = encode_features(&board);
+        let features = encode_features_legacy(&board);
         // White king on e1 = square 4, side-to-move king offset = 320
         assert_eq!(features[320 + 4], 1.0, "White king should be at feature 324");
     }
 
-    /// When it's black's turn the board is mirrored: black king on e8
-    /// (square 60) maps to sq ^ 56 = 4, in side-to-move king slot (offset 320).
     #[test]
-    fn test_black_king_feature_black_to_move() {
+    fn test_legacy_black_king_feature_black_to_move() {
         let mut board = ChessBoard::new();
         board.toggle_turn();
-        let features = encode_features(&board);
+        let features = encode_features_legacy(&board);
         // Black king on e8 = square 60; flipped: 60 ^ 56 = 4; offset 320
         assert_eq!(features[320 + 4], 1.0, "Black king (mirrored) should be at feature 324");
+    }
+
+    // ── HalfKP 12,288-dim tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_halfkp_feature_count_starting_position() {
+        let board = ChessBoard::new();
+        let features = encode_features_halfkp(&board);
+        let active: usize = features.iter().filter(|&&v| v != 0.0).count();
+        assert_eq!(active, 32, "HalfKP starting position should have 32 active features");
+    }
+
+    #[test]
+    fn test_halfkp_feature_count_black_to_move() {
+        let mut board = ChessBoard::new();
+        board.toggle_turn();
+        let features = encode_features_halfkp(&board);
+        let active: usize = features.iter().filter(|&&v| v != 0.0).count();
+        assert_eq!(active, 32, "HalfKP black-to-move should have 32 active features");
+    }
+
+    #[test]
+    fn test_halfkp_features_in_range() {
+        let board = ChessBoard::new();
+        let features = encode_features_halfkp(&board);
+        // No feature index should exceed HALFKP_FEATURE_DIM
+        for (i, &v) in features.iter().enumerate() {
+            if v != 0.0 {
+                assert!(i < HALFKP_FEATURE_DIM, "HalfKP feature index {i} out of range");
+            }
+        }
+    }
+
+    #[test]
+    fn test_halfkp_king_bucket_consistency() {
+        // All 16 buckets are valid indices
+        for sq in 0..64 {
+            assert!(KING_BUCKET[sq] < 16, "KING_BUCKET[{sq}] = {} out of range", KING_BUCKET[sq]);
+        }
     }
 }

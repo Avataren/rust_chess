@@ -1,0 +1,14 @@
+[package]
+name = "pgn_extract"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pgn_extract"
+path = "src/main.rs"
+
+[dependencies]
+pgn-reader = "0.24"
+shakmaty = "0.25"
+rand = "0.8"
+clap = { version = "4", features = ["derive"] }

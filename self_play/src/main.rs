@@ -1,6 +1,7 @@
 //! self_play — pit two UCI engines against each other and report results.
 //!
 //! Usage: self_play <engine1> <engine2> [--games N] [--movetime MS] [--no-ponder]
+//!        [--engine1-opt "Name=Value"] [--engine2-opt "Name=Value"]
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -135,10 +136,19 @@ impl Engine {
         }
     }
 
-    fn init(&mut self) {
+    fn init(&mut self, opts: &[String]) {
         self.send("uci");
         self.wait_for("uciok", Duration::from_secs(10))
             .unwrap_or_else(|| panic!("'{}' did not respond to uci", self.name));
+        for opt in opts {
+            // Accept either "Name=Value" or "Name Value" formats
+            let cmd = if let Some((name, value)) = opt.split_once('=') {
+                format!("setoption name {} value {}", name.trim(), value.trim())
+            } else {
+                format!("setoption name {}", opt.trim())
+            };
+            self.send(&cmd);
+        }
         self.send("isready");
         self.wait_for("readyok", Duration::from_secs(10))
             .unwrap_or_else(|| panic!("'{}' did not respond to isready", self.name));
@@ -497,6 +507,8 @@ fn main() {
     let mut movetime_ms: u64 = 100;
     let mut start_fen: Option<String> = None;
     let mut ponder = true; // enabled by default
+    let mut engine1_opts: Vec<String> = Vec::new();
+    let mut engine2_opts: Vec<String> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -520,6 +532,18 @@ fn main() {
             "--ponder" => {
                 ponder = true;
                 i += 1;
+            }
+            "--engine1-opt" => {
+                if let Some(v) = args.get(i + 1) {
+                    engine1_opts.push(v.clone());
+                }
+                i += 2;
+            }
+            "--engine2-opt" => {
+                if let Some(v) = args.get(i + 1) {
+                    engine2_opts.push(v.clone());
+                }
+                i += 2;
             }
             s if !s.starts_with("--") && engine1_path.is_none() => {
                 engine1_path = Some(s.to_string());
@@ -545,8 +569,8 @@ fn main() {
     // Start engines once and reuse across all games.
     let mut engine1 = Engine::start(&e1);
     let mut engine2 = Engine::start(&e2);
-    engine1.init();
-    engine2.init();
+    engine1.init(&engine1_opts);
+    engine2.init(&engine2_opts);
 
     let e1_name = engine1.name.clone();
     let e2_name = engine2.name.clone();

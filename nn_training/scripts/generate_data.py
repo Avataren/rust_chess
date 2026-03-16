@@ -5,6 +5,7 @@ import argparse
 import io
 import json
 import random
+from multiprocessing import Pool
 from pathlib import Path
 
 import chess
@@ -13,18 +14,32 @@ import chess.pgn
 from tqdm import tqdm
 
 
-def evaluate_with_stockfish(
-    engine: chess.engine.SimpleEngine,
-    board: chess.Board,
-    depth: int,
-) -> float:
-    info = engine.analyse(board, chess.engine.Limit(depth=depth))
-    score = info["score"].pov(board.turn)
-    cp = score.score(mate_score=10000)
-    return float(cp)
+# ── Per-worker Stockfish state ─────────────────────────────────────────────
+
+_engine: chess.engine.SimpleEngine | None = None
+_eval_depth: int = 12
 
 
-def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_elo: int):
+def _worker_init(stockfish_path: str, depth: int) -> None:
+    global _engine, _eval_depth
+    _engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+    _eval_depth = depth
+
+
+def _label_fen(fen: str) -> dict | None:
+    try:
+        board = chess.Board(fen)
+        info = _engine.analyse(board, chess.engine.Limit(depth=_eval_depth))
+        score = info["score"].pov(board.turn)
+        cp = float(score.score(mate_score=10000))
+        return {"fen": fen, "cp": cp}
+    except Exception:
+        return None
+
+
+# ── PGN position iterator ──────────────────────────────────────────────────
+
+def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_elo: int, max_elo: int = 0):
     """Yield sampled chess.Board positions from a PGN file.
 
     Uses a line-level state machine so move text is only parsed for games
@@ -32,17 +47,15 @@ def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_
     full python-chess parse.  This is ~50-100x faster than read_game() on
     large files with a strict Elo threshold.
     """
-    # States
-    HEADER = 0   # reading PGN header tags
-    COLLECT = 1  # reading move text for a qualifying game
-    SKIP = 2     # skipping move text for a disqualified game
+    HEADER = 0
+    COLLECT = 1
+    SKIP = 2
 
     state = HEADER
     w_elo = 0
     b_elo = 0
     game_lines: list[str] = []
     found = 0
-    scanned = 0
     skipped = 0
 
     with pgn_path.open("r", encoding="utf-8", errors="ignore", buffering=1 << 20) as f:
@@ -52,7 +65,6 @@ def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_
 
             stripped = raw_line.strip()
 
-            # ── HEADER state ──────────────────────────────────────────────
             if state == HEADER:
                 if stripped.startswith("["):
                     game_lines.append(raw_line)
@@ -67,22 +79,19 @@ def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_
                         except (IndexError, ValueError):
                             b_elo = 0
                 elif stripped == "":
-                    # Blank line: end of header block — decide whether to keep
-                    if min_elo > 0 and (w_elo < min_elo or b_elo < min_elo):
+                    elo_fail = (min_elo > 0 and (w_elo < min_elo or b_elo < min_elo)) or \
+                               (max_elo > 0 and (w_elo > max_elo or b_elo > max_elo))
+                    if elo_fail:
                         state = SKIP
                         game_lines = []
                         w_elo = b_elo = 0
                         skipped += 1
                     else:
                         state = COLLECT
-                        # blank line is part of valid PGN; include it
                         game_lines.append(raw_line)
 
-            # ── COLLECT state ─────────────────────────────────────────────
             elif state == COLLECT:
                 if stripped == "":
-                    # Blank line: end of move text — parse and sample
-                    scanned += 1
                     try:
                         game = chess.pgn.read_game(io.StringIO("".join(game_lines)))
                         if game is not None:
@@ -103,13 +112,10 @@ def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_
                 else:
                     game_lines.append(raw_line)
 
-            # ── SKIP state ────────────────────────────────────────────────
             elif state == SKIP:
                 if stripped == "":
-                    # End of skipped game's move text — back to header mode
                     state = HEADER
 
-    # Handle file that ends without a trailing blank line
     if state == COLLECT and game_lines and found < max_positions:
         try:
             game = chess.pgn.read_game(io.StringIO("".join(game_lines)))
@@ -125,8 +131,10 @@ def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_
         except Exception:
             pass
 
-    print(f"PGN scan: {found} positions collected, {skipped} games skipped (Elo < {min_elo})")
+    print(f"PGN scan: {found} positions collected, {skipped} games skipped (Elo filter)")
 
+
+# ── Self-play position generator ───────────────────────────────────────────
 
 def selfplay_positions(
     engine: chess.engine.SimpleEngine,
@@ -153,64 +161,77 @@ def selfplay_positions(
     return out
 
 
+# ── Main ───────────────────────────────────────────────────────────────────
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--label-engine",
-        required=True,
-        help="Path to UCI engine used for evaluation labels (typically Stockfish)",
-    )
-    ap.add_argument(
-        "--selfplay-engine",
-        help=(
-            "Optional path to UCI engine used for self-play move generation. "
-            "If omitted, the label engine is used."
-        ),
-    )
+    ap.add_argument("--label-engine", required=True,
+                    help="Path to Stockfish (or any UCI engine) for labeling")
+    ap.add_argument("--selfplay-engine",
+                    help="Optional UCI engine for self-play move generation (default: label engine)")
+    ap.add_argument("--selfplay-engine-opt", action="append", default=[], metavar="NAME=VALUE",
+                    help="UCI setoption for the self-play engine (repeatable)")
     ap.add_argument("--output", required=True, help="Output JSONL path")
-    ap.add_argument("--pgn", help="Optional PGN source")
+    ap.add_argument("--pgn", help="Optional PGN source file")
+    ap.add_argument("--fens", help="Optional pre-extracted FENs file (one FEN per line) — skips PGN scan")
     ap.add_argument("--min-elo", type=int, default=2200,
-                    help="Minimum Elo for both players when sampling from PGN (default 2200, 0 to disable)")
+                    help="Minimum Elo for both players (default 2200, 0 to disable)")
+    ap.add_argument("--max-elo", type=int, default=0,
+                    help="Maximum Elo for both players (default 0 = no limit)")
     ap.add_argument("--max-positions", type=int, default=200000)
     ap.add_argument("--eval-depth", type=int, default=12)
+    ap.add_argument("--workers", type=int, default=1,
+                    help="Number of parallel Stockfish labeling workers (default 1)")
     ap.add_argument("--selfplay-games", type=int, default=50000)
     ap.add_argument("--selfplay-movetime-ms", type=int, default=20)
     ap.add_argument("--positions-per-game", type=int, default=1,
-                    help="Positions sampled per self-play game (default 1). "
-                         "Increase to get more data from fewer games.")
+                    help="Positions sampled per self-play game (default 1)")
     args = ap.parse_args()
 
     random.seed(42)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    label_engine = chess.engine.SimpleEngine.popen_uci(args.label_engine)
-    selfplay_engine = (
-        chess.engine.SimpleEngine.popen_uci(args.selfplay_engine)
-        if args.selfplay_engine
-        else label_engine
-    )
+    # ── Collect FENs first (fast, no engine needed) ────────────────────────
+    fens: list[str] = []
 
     pgn_cap = args.max_positions if args.selfplay_games == 0 else args.max_positions // 2
 
-    written = 0
-    with output.open("w", encoding="utf-8") as out_f:
+    if args.fens:
+        print(f"Loading pre-extracted FENs from {args.fens}...")
+        with open(args.fens, "r") as f:
+            for line in tqdm(f, desc="loading-fens"):
+                fen = line.strip()
+                if fen:
+                    fens.append(fen)
+                    if len(fens) >= pgn_cap:
+                        break
+    elif args.pgn and pgn_cap > 0:
+        print(f"Scanning PGN for up to {pgn_cap} positions...")
+        pbar = tqdm(total=pgn_cap, desc="pgn-scan")
+        for board in _iter_pgn_positions(
+            Path(args.pgn), pgn_cap, plies_min=12,
+            min_elo=args.min_elo, max_elo=args.max_elo,
+        ):
+            fens.append(board.fen())
+            pbar.update(1)
+        pbar.close()
 
-        # ── PGN path: stream scan → label → write ────────────────────────
-        if args.pgn and pgn_cap > 0:
-            pbar = tqdm(total=pgn_cap, desc="pgn-label")
-            for board in _iter_pgn_positions(
-                Path(args.pgn), pgn_cap, plies_min=12, min_elo=args.min_elo
-            ):
-                cp = evaluate_with_stockfish(label_engine, board, depth=args.eval_depth)
-                out_f.write(json.dumps({"fen": board.fen(), "cp": cp}) + "\n")
-                written += 1
-                pbar.update(1)
-            pbar.close()
+    if args.selfplay_games > 0:
+        selfplay_engine = chess.engine.SimpleEngine.popen_uci(args.label_engine)
+        if args.selfplay_engine:
+            selfplay_engine.quit()
+            selfplay_engine = chess.engine.SimpleEngine.popen_uci(args.selfplay_engine)
+        if args.selfplay_engine_opt:
+            opts = {}
+            for opt in args.selfplay_engine_opt:
+                if "=" in opt:
+                    name, value = opt.split("=", 1)
+                    opts[name.strip()] = value.strip()
+            selfplay_engine.configure(opts)
 
-        # ── Self-play path ────────────────────────────────────────────────
-        selfplay_cap = args.max_positions - written
-        if args.selfplay_games > 0 and selfplay_cap > 0:
+        selfplay_cap = args.max_positions - len(fens)
+        if selfplay_cap > 0:
             boards = selfplay_positions(
                 selfplay_engine,
                 games=args.selfplay_games,
@@ -220,15 +241,30 @@ def main():
                 positions_per_game=args.positions_per_game,
             )
             random.shuffle(boards)
-            boards = boards[:selfplay_cap]
-            for board in tqdm(boards, desc="selfplay-label"):
-                cp = evaluate_with_stockfish(label_engine, board, depth=args.eval_depth)
-                out_f.write(json.dumps({"fen": board.fen(), "cp": cp}) + "\n")
-                written += 1
-
-    if selfplay_engine is not label_engine:
+            fens.extend(b.fen() for b in boards[:selfplay_cap])
         selfplay_engine.quit()
-    label_engine.quit()
+
+    print(f"Collected {len(fens)} positions — labeling with {args.workers} worker(s) at depth {args.eval_depth}...")
+
+    # ── Label in parallel ──────────────────────────────────────────────────
+    written = 0
+    chunksize = max(1, len(fens) // (args.workers * 8))
+
+    with output.open("w", encoding="utf-8") as out_f:
+        with Pool(
+            processes=args.workers,
+            initializer=_worker_init,
+            initargs=(args.label_engine, args.eval_depth),
+        ) as pool:
+            for result in tqdm(
+                pool.imap(_label_fen, fens, chunksize=chunksize),
+                total=len(fens),
+                desc="labeling",
+            ):
+                if result is not None:
+                    out_f.write(json.dumps(result) + "\n")
+                    written += 1
+
     print(f"Wrote {written} samples to {output}")
 
 
