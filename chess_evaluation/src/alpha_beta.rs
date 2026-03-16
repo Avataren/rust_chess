@@ -12,7 +12,7 @@ use crate::{
     evaluate_board,
     opening_book::OpeningBook,
     see::see,
-    transposition_table::{set_main_thread, TranspositionTable, TtFlag},
+    transposition_table::{TranspositionTable, TtFlag},
 };
 
 // ── LMR lookup table ──────────────────────────────────────────────────────────
@@ -689,7 +689,7 @@ pub fn alpha_beta(
         // Adaptive R: larger when static eval is far above beta (we're clearly winning),
         // allowing more aggressive pruning of already-dominant positions.
         let excess = if let Some(se) = static_eval {
-            if is_white { (se - beta) / 200 } else { (alpha - se) / 200 }
+            if is_white { se.saturating_sub(beta) / 200 } else { alpha.saturating_sub(se) / 200 }
         } else { 0 };
         let r = (3 + depth / 3 + excess.clamp(0, 3)).min(depth - 1);
 
@@ -710,9 +710,9 @@ pub fn alpha_beta(
     // confirm with a shallow reduced search.  Avoids spending full depth on obvious
     // wins/losses.  Only at depth >= 5, not in check, not in a singular extension.
     if depth >= 5 && !in_check && null_move_allowed && ctx.excluded_move[p].is_none() {
-        let pc_threshold = if is_white { beta + PROBCUT_MARGIN } else { alpha - PROBCUT_MARGIN };
+        let pc_threshold = if is_white { beta.saturating_add(PROBCUT_MARGIN) } else { alpha.saturating_sub(PROBCUT_MARGIN) };
         // Quick guard: only enter if static eval suggests a capture MIGHT reach the threshold.
-        let pc_feasible = pc_threshold.abs() < MATE_SCORE_THRESHOLD && static_eval.map_or(true, |se| {
+        let pc_feasible = pc_threshold.saturating_abs() < MATE_SCORE_THRESHOLD && static_eval.map_or(true, |se| {
             if is_white { se + 900 >= pc_threshold } else { se - 900 <= pc_threshold }
         });
         if pc_feasible {
@@ -1296,7 +1296,6 @@ pub fn alpha_beta_root(
     }
     let tt = TranspositionTable::new(TT_SIZE);
     let mut ctx = SearchContext::new();
-    set_main_thread(true);
     search_root(chess_board, conductor, &tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, None, None)
 }
 
@@ -1386,7 +1385,6 @@ pub fn iterative_deepening_root(
     stop: Option<Arc<AtomicBool>>,
 ) -> SearchResult {
     let tt = TranspositionTable::new(TT_SIZE);
-    set_main_thread(true);
     iterative_deepening_root_with_tt(
         chess_board, conductor, book, &tt, max_depth, is_white,
         deadline, stop, 1, None,
@@ -1431,7 +1429,6 @@ pub fn iterative_deepening_root_with_tt(
     }
 
     if num_threads <= 1 {
-        set_main_thread(true);
         return id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop, on_depth);
     }
 
@@ -1452,13 +1449,11 @@ pub fn iterative_deepening_root_with_tt(
             let hs = Arc::clone(&helper_stop);
             let ext = stop.clone();
             s.spawn(move |_| {
-                set_main_thread(false); // helpers must not overwrite main-thread TT entries
                 smp_helper(&mut board, &cond, tt, max_depth, is_white, hs, ext, i);
             });
         }
 
         // Main thread: full iterative deepening with aspiration & deadline.
-        set_main_thread(true);
         result = id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop.clone(), on_depth);
 
         // Main thread done — signal helpers to stop.

@@ -14,36 +14,13 @@ pub enum TtFlag {
 /// A 3-gen-old depth-12 entry becomes depth-0, replaceable by any new entry.
 const AGE_COST: i32 = 4;
 
-// ── Thread identity for Lazy SMP ────────────────────────────────────────────
 
-thread_local! {
-    /// Set to `true` on the main search thread, `false` on SMP helper threads.
-    /// Helper threads must never overwrite entries written by the main thread
-    /// for the same position — doing so contaminates the main thread's TT with
-    /// entries computed under different alpha/beta windows, causing incorrect
-    /// cutoffs (the "draws in winning positions" regression).
-    static IS_MAIN_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Declare the calling thread as the main search thread (or a helper).
-/// Must be called before entering `id_search_single` / `smp_helper`.
-pub fn set_main_thread(is_main: bool) {
-    IS_MAIN_THREAD.with(|f| f.set(is_main));
-}
-
-/// A transposition table entry — 24 bytes.
+/// A transposition table entry — 16 bytes.
 ///
 /// The best move is stored as a raw `u16` (the `move_value` field of
 /// `ChessMove`) rather than `Option<ChessMove>`.  `Option<ChessMove>` costs
 /// 8 bytes because `ChessMove` has no niche; a bare `u16` costs 2 bytes and
 /// the sentinel value 0 (a1→a1, never a legal move) represents "no move".
-/// This compacts the entry from 32 → 24 bytes, giving 33% more TT capacity
-/// for the same memory budget.
-///
-/// `thread_quality`: 1 = written by the main thread, 0 = written by a helper.
-/// Helpers may not overwrite main-thread entries, preventing TT contamination.
-/// This field fits in the padding that already existed after `best_move_raw`,
-/// keeping total size at 24 bytes.
 #[derive(Clone, Copy)]
 pub struct TtEntry {
     pub hash:       u64,
@@ -55,10 +32,6 @@ pub struct TtEntry {
     /// Packed move: bits[5:0]=start, bits[11:6]=target, bits[15:12]=flag.
     /// 0 means no best move recorded.
     best_move_raw:  u16,
-    /// 1 = main thread wrote this, 0 = helper thread.
-    /// Only main-thread entries trigger TT cutoffs; helper entries are used
-    /// solely for move ordering (best-move hint).
-    pub thread_quality: u8,
 }
 
 impl TtEntry {
@@ -91,7 +64,6 @@ impl Default for TtEntry {
             flag: TtFlag::Exact,
             generation: 0,
             best_move_raw: 0,
-            thread_quality: 0,
         }
     }
 }
@@ -162,7 +134,6 @@ impl TranspositionTable {
         flag: TtFlag,
         best_move: Option<ChessMove>,
     ) {
-        let is_main = IS_MAIN_THREAD.with(|f| f.get());
         let idx = (hash as usize) % self.size;
         // Safety: concurrent reads/writes accepted (benign data race).
         let table = unsafe { &mut *self.table.get() };
@@ -177,7 +148,6 @@ impl TranspositionTable {
                 hash, depth, score, flag,
                 generation: self.generation.load(Ordering::Relaxed),
                 best_move_raw: best_move.map_or(0, |m| m.value()),
-                thread_quality: if is_main { 1 } else { 0 },
             };
         }
     }

@@ -793,11 +793,6 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
     let n = count(black & rooks);   mg -= n * MG_ROOK_VALUE;   eg -= n * EG_ROOK_VALUE;
     let n = count(black & queens);  mg -= n * MG_QUEEN_VALUE;  eg -= n * EG_QUEEN_VALUE;
 
-    // Safety: if a king is missing (null-move search artifacts),
-    // return raw material score to avoid out-of-bounds panics.
-    if white_king_sq >= 64 || black_king_sq >= 64 {
-        return (mg * mg_phase + eg * eg_phase) / 24;
-    }
 
     // --- PSTs (non-pawn pieces computed fresh; pawns via pawn hash) ---
     for_each_sq(white & knights, |sq| { mg += mg_knight_table(sq, true); eg += eg_knight_table(sq, true); });

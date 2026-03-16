@@ -14,7 +14,7 @@ pub use alpha_beta::search_root;
 pub use alpha_beta::{ASPIRATION_DELTA, TT_SIZE, TT_SIZE_DEFAULT, SearchContext, SearchResult, available_threads};
 pub use alpha_beta::extract_ponder_move;
 pub use opening_book::OpeningBook;
-pub use transposition_table::{TranspositionTable, set_main_thread};
+pub use transposition_table::TranspositionTable;
 pub use piece_tables::{
     evaluate_pawn_position, evaluate_knight_position,
     pawn_table_value, knight_table_value, bishop_table_value,
