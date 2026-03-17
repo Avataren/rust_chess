@@ -17,7 +17,7 @@ model:
   hidden_dim: 512          # safe choice for 20M positions; upgrade to 1024 at 50M+
   hidden2_dim: 32
   dropout: 0.3
-  dual_perspective: true   # EvalNetDual: shared EmbeddingBag, fc2=2048→32
+  dual_perspective: true   # EvalNetDual: shared EmbeddingBag, fc2=1024→32
   n_output_buckets: 8      # separate output weights per game phase
 
 loss:
@@ -25,6 +25,6 @@ loss:
   wdl_weight: 0.7
 
 data:
-  train_file: data/train_20m.jsonl
-  val_file: data/val_20m.jsonl
+  train_file: data/train_d14_20m.jsonl
+  val_file: data/val_d14_20m.jsonl
   max_cp_abs: 1500
