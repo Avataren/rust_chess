@@ -14,7 +14,7 @@ training:
 
 model:
   input_dim: 12288         # 12 piece types × 64 squares × 16 king buckets
-  hidden_dim: 1024         # was 512; doubled L1 capacity (~25 MB model)
+  hidden_dim: 512          # safe choice for 20M positions; upgrade to 1024 at 50M+
   hidden2_dim: 32
   dropout: 0.3
   dual_perspective: true   # EvalNetDual: shared EmbeddingBag, fc2=2048→32
