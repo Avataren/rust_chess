@@ -49,6 +49,7 @@ if command -v wasm-opt &>/dev/null; then
         --enable-sign-ext \
         --enable-threads \
         --enable-mutable-globals \
+        --enable-simd \
         "${WASM_OUT}" -o "${WASM_OUT}"
 else
     echo "wasm-opt not found — skipping (install binaryen to reduce binary size)"

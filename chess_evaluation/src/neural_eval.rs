@@ -101,12 +101,12 @@ pub fn try_neural_eval(board: &ChessBoard) -> Option<i32> {
     })
 }
 
-/// Try neural eval using pre-computed accumulators (Phase 3 incremental path).
+/// Try neural eval using pre-computed accumulators (Phase 4 i16 incremental path).
 /// Returns white-absolute centipawns or None if unavailable.
 #[inline]
 pub fn try_neural_eval_accum(
-    acc_white: &[f32; HIDDEN1],
-    acc_black: &[f32; HIDDEN1],
+    acc_white: &[i16; HIDDEN1],
+    acc_black: &[i16; HIDDEN1],
     _is_white: bool,
 ) -> Option<i32> {
     if !NEURAL_ENABLED.load(Ordering::Relaxed) {
@@ -127,11 +127,11 @@ pub fn try_neural_eval_accum(
 
 /// Initialize both accumulators from scratch for the given board position.
 /// Returns true iff neural eval is enabled, a dual model is loaded, and
-/// initialization succeeded.
+/// initialization succeeded.  Accumulators hold raw i16 quantized values.
 pub fn init_accumulators_for_board(
     board: &ChessBoard,
-    acc_white: &mut [f32; HIDDEN1],
-    acc_black: &mut [f32; HIDDEN1],
+    acc_white: &mut [i16; HIDDEN1],
+    acc_black: &mut [i16; HIDDEN1],
 ) -> bool {
     if !NEURAL_ENABLED.load(Ordering::Relaxed) {
         return false;
@@ -142,46 +142,147 @@ pub fn init_accumulators_for_board(
     };
     let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(board);
 
-    acc_white.copy_from_slice(&evaluator.b1);
+    acc_white.copy_from_slice(&evaluator.b1_i16);
     for &i in &w_idx[..wc] {
-        let src = &evaluator.w1_t[i * HIDDEN1..(i + 1) * HIDDEN1];
-        for j in 0..HIDDEN1 {
-            acc_white[j] += src[j];
-        }
+        let col = &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
+        add_col(acc_white, col);
     }
 
-    acc_black.copy_from_slice(&evaluator.b1);
+    acc_black.copy_from_slice(&evaluator.b1_i16);
     for &i in &b_idx[..bc] {
-        let src = &evaluator.w1_t[i * HIDDEN1..(i + 1) * HIDDEN1];
-        for j in 0..HIDDEN1 {
-            acc_black[j] += src[j];
-        }
+        let col = &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
+        add_col(acc_black, col);
     }
     true
 }
 
-/// Add a feature column from w1_t into an accumulator (in-place).
+/// Add a feature column into an i16 accumulator (in-place, SIMD-dispatched).
 /// No-op if evaluator not loaded.
 #[inline]
-pub fn acc_add_feature(acc: &mut [f32; HIDDEN1], feature_idx: usize) {
+pub fn acc_add_feature(acc: &mut [i16; HIDDEN1], feature_idx: usize) {
     if let Some(e) = EVALUATOR.get() {
-        let src = &e.w1_t[feature_idx * HIDDEN1..(feature_idx + 1) * HIDDEN1];
-        for j in 0..HIDDEN1 {
-            acc[j] += src[j];
-        }
+        let col = &e.w1_t_i16[feature_idx * HIDDEN1..(feature_idx + 1) * HIDDEN1];
+        add_col(acc, col);
     }
 }
 
-/// Subtract a feature column from w1_t from an accumulator (in-place).
+/// Subtract a feature column from an i16 accumulator (in-place, SIMD-dispatched).
 /// No-op if evaluator not loaded.
 #[inline]
-pub fn acc_sub_feature(acc: &mut [f32; HIDDEN1], feature_idx: usize) {
+pub fn acc_sub_feature(acc: &mut [i16; HIDDEN1], feature_idx: usize) {
     if let Some(e) = EVALUATOR.get() {
-        let src = &e.w1_t[feature_idx * HIDDEN1..(feature_idx + 1) * HIDDEN1];
-        for j in 0..HIDDEN1 {
-            acc[j] -= src[j];
-        }
+        let col = &e.w1_t_i16[feature_idx * HIDDEN1..(feature_idx + 1) * HIDDEN1];
+        sub_col(acc, col);
     }
+}
+
+// ── SIMD column accumulator operations ───────────────────────────────────
+//
+// Three compile-time paths selected by cfg:
+//   x86_64 + avx2    → _mm256_adds_epi16  (16 i16/reg, 32 instr/col)
+//   wasm32 + simd128 → i16x8_add_sat       (8 i16/reg, 64 instr/col)
+//   fallback         → scalar saturating_add (1 i16/iter, 512 instr/col)
+//
+// `add_col` / `sub_col` are the public dispatch functions used everywhere.
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn add_col_avx2(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    use std::arch::x86_64::*;
+    for i in (0..HIDDEN1).step_by(16) {
+        let a = _mm256_loadu_si256(acc[i..].as_ptr() as *const __m256i);
+        let b = _mm256_loadu_si256(col[i..].as_ptr() as *const __m256i);
+        _mm256_storeu_si256(acc[i..].as_mut_ptr() as *mut __m256i, _mm256_adds_epi16(a, b));
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn sub_col_avx2(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    use std::arch::x86_64::*;
+    for i in (0..HIDDEN1).step_by(16) {
+        let a = _mm256_loadu_si256(acc[i..].as_ptr() as *const __m256i);
+        let b = _mm256_loadu_si256(col[i..].as_ptr() as *const __m256i);
+        _mm256_storeu_si256(acc[i..].as_mut_ptr() as *mut __m256i, _mm256_subs_epi16(a, b));
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+unsafe fn add_col_wasm(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    use core::arch::wasm32::*;
+    for i in (0..HIDDEN1).step_by(8) {
+        let a = v128_load(acc[i..].as_ptr() as *const v128);
+        let b = v128_load(col[i..].as_ptr() as *const v128);
+        v128_store(acc[i..].as_mut_ptr() as *mut v128, i16x8_add_sat(a, b));
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+unsafe fn sub_col_wasm(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    use core::arch::wasm32::*;
+    for i in (0..HIDDEN1).step_by(8) {
+        let a = v128_load(acc[i..].as_ptr() as *const v128);
+        let b = v128_load(col[i..].as_ptr() as *const v128);
+        v128_store(acc[i..].as_mut_ptr() as *mut v128, i16x8_sub_sat(a, b));
+    }
+}
+
+#[allow(dead_code)]
+fn add_col_scalar(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    for (a, &b) in acc.iter_mut().zip(col) {
+        *a = a.saturating_add(b);
+    }
+}
+
+#[allow(dead_code)]
+fn sub_col_scalar(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    for (a, &b) in acc.iter_mut().zip(col) {
+        *a = a.saturating_sub(b);
+    }
+}
+
+// Compile-time dispatch: each target gets exactly one definition.
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[inline(always)]
+fn add_col(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    unsafe { add_col_avx2(acc, col) }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[inline(always)]
+fn add_col(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    unsafe { add_col_wasm(acc, col) }
+}
+
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "avx2"),
+    all(target_arch = "wasm32", target_feature = "simd128"),
+)))]
+#[inline(always)]
+fn add_col(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    add_col_scalar(acc, col)
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[inline(always)]
+fn sub_col(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    unsafe { sub_col_avx2(acc, col) }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[inline(always)]
+fn sub_col(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    unsafe { sub_col_wasm(acc, col) }
+}
+
+#[cfg(not(any(
+    all(target_arch = "x86_64", target_feature = "avx2"),
+    all(target_arch = "wasm32", target_feature = "simd128"),
+)))]
+#[inline(always)]
+fn sub_col(acc: &mut [i16; HIDDEN1], col: &[i16]) {
+    sub_col_scalar(acc, col)
 }
 
 // ── Evaluator ─────────────────────────────────────────────────────────────
@@ -193,10 +294,19 @@ pub struct NeuralEvaluator {
     /// True when `backbone_3_weight` is (32, 1024) instead of (32, 512).
     pub dual_perspective: bool,
 
-    /// Layer 1 weights stored **transposed**: [feature_dim × HIDDEN1].
-    /// Shared between both perspectives in dual mode.
+    /// Quantization scale: raw_i16 / scale = f32 value.
+    scale: f32,
+
+    /// Layer 1 weights stored **transposed** as f32: [feature_dim × HIDDEN1].
+    /// Used by the scratch evaluation path (evaluate_with_confidence).
     w1_t: Vec<f32>,
     b1: Vec<f32>,
+
+    /// Layer 1 weights stored **transposed** as raw i16: [feature_dim × HIDDEN1].
+    /// Used by the incremental SIMD path (acc_add/sub_feature, init_accumulators).
+    w1_t_i16: Vec<i16>,
+    /// Raw i16 biases for Layer 1 accumulator initialization.
+    b1_i16: Vec<i16>,
 
     /// Layer 2 weights: [HIDDEN2 × HIDDEN1] (single) or [HIDDEN2 × HIDDEN1_DUAL] (dual).
     w2: Vec<f32>,
@@ -219,8 +329,8 @@ impl NeuralEvaluator {
 
         let scale = read_npy_f32_scalar(&mut zip, "scale.npy")?;
 
-        let w1_i16   = read_npy_i16(&mut zip, "backbone_0_weight.npy")?;
-        let b1_i16   = read_npy_i16(&mut zip, "backbone_0_bias.npy")?;
+        let w1_raw    = read_npy_i16(&mut zip, "backbone_0_weight.npy")?;
+        let b1_raw    = read_npy_i16(&mut zip, "backbone_0_bias.npy")?;
         let w2_i16   = read_npy_i16(&mut zip, "backbone_3_weight.npy")?;
         let b2_i16   = read_npy_i16(&mut zip, "backbone_3_bias.npy")?;
         let w3_i16   = read_npy_i16(&mut zip, "cp_head_weight.npy")?;
@@ -241,27 +351,35 @@ impl NeuralEvaluator {
         }
 
         // Detect feature_dim from w1 weight shape
-        let feature_dim = w1_i16.len() / HIDDEN1;
+        let feature_dim = w1_raw.len() / HIDDEN1;
         if feature_dim != LEGACY_FEATURE_DIM && feature_dim != HALFKP_FEATURE_DIM {
             return Err(format!(
                 "Unexpected feature_dim {feature_dim} (expected {LEGACY_FEATURE_DIM} or {HALFKP_FEATURE_DIM})"
             ));
         }
 
-        // Transpose w1: [HIDDEN1 × feature_dim] → [feature_dim × HIDDEN1]
-        let w1_row = dq(&w1_i16);
+        // Transpose w1 into two forms:
+        //   w1_t     (f32, dequantized) — used by scratch evaluation path
+        //   w1_t_i16 (i16, raw)         — used by SIMD incremental path
+        // Input layout from NPZ: [HIDDEN1 × feature_dim] (row-major)
+        let w1_row_f32 = dq(&w1_raw);
         let mut w1_t = vec![0.0f32; feature_dim * HIDDEN1];
+        let mut w1_t_i16 = vec![0i16; feature_dim * HIDDEN1];
         for j in 0..HIDDEN1 {
             for i in 0..feature_dim {
-                w1_t[i * HIDDEN1 + j] = w1_row[j * feature_dim + i];
+                w1_t[i * HIDDEN1 + j] = w1_row_f32[j * feature_dim + i];
+                w1_t_i16[i * HIDDEN1 + j] = w1_raw[j * feature_dim + i];
             }
         }
 
         Ok(Self {
             feature_dim,
             dual_perspective: dual,
+            scale,
             w1_t,
-            b1: dq(&b1_i16),
+            b1: dq(&b1_raw),
+            w1_t_i16,
+            b1_i16: b1_raw,
             w2: dq(&w2_i16),
             b2: dq(&b2_i16),
             w3: dq(&w3_i16),
@@ -327,21 +445,23 @@ impl NeuralEvaluator {
         }
     }
 
-    /// Evaluate from pre-ReLU accumulators (Phase 3 incremental path).
+    /// Evaluate from pre-ReLU i16 accumulators (Phase 4 incremental path).
+    /// ReLU-clamps and dequantizes each element, then runs the f32 L2 heads.
     /// Only valid for dual-perspective models.
     pub fn evaluate_from_accumulators(
         &self,
-        acc_white: &[f32; HIDDEN1],
-        acc_black: &[f32; HIDDEN1],
+        acc_white: &[i16; HIDDEN1],
+        acc_black: &[i16; HIDDEN1],
     ) -> (i32, f32) {
         debug_assert!(self.dual_perspective);
-        let mut h_w = *acc_white;
-        let mut h_b = *acc_black;
-        for v in h_w.iter_mut() {
-            *v = v.max(0.0);
+        let s = self.scale;
+        let mut h_w = [0.0f32; HIDDEN1];
+        let mut h_b = [0.0f32; HIDDEN1];
+        for (h, &a) in h_w.iter_mut().zip(acc_white.iter()) {
+            *h = a.max(0) as f32 / s;
         }
-        for v in h_b.iter_mut() {
-            *v = v.max(0.0);
+        for (h, &a) in h_b.iter_mut().zip(acc_black.iter()) {
+            *h = a.max(0) as f32 / s;
         }
         self.forward_l2_heads_dual(&h_w, &h_b)
     }
@@ -965,5 +1085,116 @@ mod tests {
 
         w.windows(2).for_each(|p| assert_ne!(p[0], p[1], "Duplicate in white-pov"));
         b.windows(2).for_each(|p| assert_ne!(p[0], p[1], "Duplicate in black-pov"));
+    }
+
+    // ── Phase 4: i16 SIMD accumulator tests ──────────────────────────────
+
+    #[test]
+    fn test_add_col_correctness() {
+        // Smoke test: add_col on zero accumulator equals the column.
+        let mut acc = [0i16; HIDDEN1];
+        let col: Vec<i16> = (0..HIDDEN1 as i16).collect();
+        add_col(&mut acc, &col);
+        assert_eq!(acc[0], 0);
+        assert_eq!(acc[1], 1);
+        assert_eq!(acc[HIDDEN1 - 1], (HIDDEN1 - 1) as i16);
+    }
+
+    #[test]
+    fn test_sub_col_correctness() {
+        // Smoke test: sub_col on an accumulator equal to col yields zero.
+        let col: Vec<i16> = (1..=HIDDEN1 as i16).collect();
+        let mut acc: [i16; HIDDEN1] = col.as_slice().try_into().unwrap();
+        sub_col(&mut acc, &col);
+        for v in acc.iter() {
+            assert_eq!(*v, 0, "acc should be zero after subtracting itself");
+        }
+    }
+
+    #[test]
+    fn test_add_col_saturates_at_max() {
+        let mut acc = [i16::MAX; HIDDEN1];
+        let col = [1i16; HIDDEN1];
+        add_col(&mut acc, &col);
+        assert_eq!(acc[0], i16::MAX, "saturating add must not overflow i16::MAX");
+    }
+
+    #[test]
+    fn test_sub_col_saturates_at_min() {
+        let mut acc = [i16::MIN; HIDDEN1];
+        let col = [1i16; HIDDEN1];
+        sub_col(&mut acc, &col);
+        assert_eq!(acc[0], i16::MIN, "saturating sub must not underflow i16::MIN");
+    }
+
+    #[test]
+    fn test_acc_add_feature_noop_without_evaluator() {
+        // Without a loaded evaluator the function must be a no-op.
+        let mut acc = [42i16; HIDDEN1];
+        acc_add_feature(&mut acc, 0);
+        assert!(acc.iter().all(|&v| v == 42), "acc_add_feature must be no-op with no evaluator");
+    }
+
+    #[test]
+    fn test_acc_sub_feature_noop_without_evaluator() {
+        let mut acc = [7i16; HIDDEN1];
+        acc_sub_feature(&mut acc, 0);
+        assert!(acc.iter().all(|&v| v == 7), "acc_sub_feature must be no-op with no evaluator");
+    }
+
+    /// Full equivalence test: i16 incremental path vs f32 scratch path.
+    ///
+    /// Requires the weights file at `src/eval.npz` (relative to crate root).
+    /// Run with: `cargo test -p chess_evaluation -- --include-ignored i16_accum_equivalence`
+    #[test]
+    #[ignore = "requires src/eval.npz — run with --include-ignored"]
+    fn test_i16_accum_equivalence() {
+        let bytes = match std::fs::read("src/eval.npz") {
+            Ok(b) => b,
+            Err(_) => { println!("skipping: src/eval.npz not found"); return; }
+        };
+        let eval = NeuralEvaluator::from_npz_bytes(&bytes).unwrap();
+        if !eval.dual_perspective {
+            println!("skipping: model is single-perspective (backbone_3 is 32×512, need 32×1024)");
+            return;
+        }
+
+        let positions = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
+            "r3r1k1/pp3pbp/1qp3p1/2B5/2BP2b1/Q1n2N2/P4PPP/3RR1K1 w - - 0 1",
+            "8/8/4k3/8/8/4K3/8/8 w - - 0 1",
+        ];
+
+        for fen in positions {
+            let mut board = ChessBoard::new();
+            board.set_from_fen(fen);
+
+            // f32 scratch path
+            let (scratch_score, _) = eval.evaluate_with_confidence(&board);
+
+            // i16 incremental path
+            let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(&board);
+            let mut acc_w = [0i16; HIDDEN1];
+            let mut acc_b = [0i16; HIDDEN1];
+            acc_w.copy_from_slice(&eval.b1_i16);
+            acc_b.copy_from_slice(&eval.b1_i16);
+            for &i in &w_idx[..wc] {
+                let col = &eval.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
+                add_col(&mut acc_w, col);
+            }
+            for &i in &b_idx[..bc] {
+                let col = &eval.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
+                add_col(&mut acc_b, col);
+            }
+            let (i16_score, _) = eval.evaluate_from_accumulators(&acc_w, &acc_b);
+
+            let diff = (scratch_score - i16_score).unsigned_abs();
+            assert!(
+                diff <= 2,
+                "FEN {fen}: scratch={scratch_score} i16={i16_score} diff={diff}cp (expected ≤2cp)"
+            );
+        }
     }
 }

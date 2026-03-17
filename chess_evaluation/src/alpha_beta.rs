@@ -213,13 +213,14 @@ pub struct SearchContext {
     /// the top of each call.  Useful for NPS benchmarking.
     pub nodes: u64,
 
-    // ── Incremental accumulator stack (Phase 3) ───────────────────────────
+    // ── Incremental accumulator stack (Phase 4) ───────────────────────────
     // Pre-ReLU L1 accumulators for the dual-perspective neural model.
-    // Heap-allocated to avoid ~330 KB stack pressure.
+    // Stored as raw i16 (quantized, not dequantized) for SIMD efficiency.
+    // Heap-allocated to avoid stack pressure (~80 KB vs ~330 KB for f32).
     // acc_white[ply] / acc_black[ply] reflect the board state at search ply `ply`.
     // acc_valid=true iff a dual model is loaded and init_accumulators has been called.
-    pub acc_white: Box<[[f32; ACCUM_DIM]; ACC_SIZE]>,
-    pub acc_black: Box<[[f32; ACCUM_DIM]; ACC_SIZE]>,
+    pub acc_white: Box<[[i16; ACCUM_DIM]; ACC_SIZE]>,
+    pub acc_black: Box<[[i16; ACCUM_DIM]; ACC_SIZE]>,
     pub acc_valid: bool,
 }
 
@@ -236,8 +237,8 @@ impl SearchContext {
             excluded_move: [None; MAX_PLY],
             static_evals: [i32::MIN; MAX_PLY],
             nodes: 0,
-            acc_white: Box::new([[0.0f32; ACCUM_DIM]; ACC_SIZE]),
-            acc_black: Box::new([[0.0f32; ACCUM_DIM]; ACC_SIZE]),
+            acc_white: Box::new([[0i16; ACCUM_DIM]; ACC_SIZE]),
+            acc_black: Box::new([[0i16; ACCUM_DIM]; ACC_SIZE]),
             acc_valid: false,
         }
     }
@@ -3588,8 +3589,8 @@ mod tests {
 
         // Seed the parent accumulator at ply 0 with recognisable values.
         for j in 0..ACCUM_DIM {
-            ctx.acc_white[0][j] = j as f32 * 0.5;
-            ctx.acc_black[0][j] = j as f32 * 1.5;
+            ctx.acc_white[0][j] = j as i16;
+            ctx.acc_black[0][j] = (j * 2) as i16;
         }
 
         let board = ChessBoard::new();
@@ -3613,7 +3614,7 @@ mod tests {
         ctx.acc_valid = true;
 
         for j in 0..ACCUM_DIM {
-            ctx.acc_white[0][j] = j as f32;
+            ctx.acc_white[0][j] = j as i16;
         }
         let original = ctx.acc_white[0];
 
