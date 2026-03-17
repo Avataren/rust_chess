@@ -848,4 +848,122 @@ mod tests {
         assert_eq!(&w_idx_w[..wc_w], &w_idx_b[..wc_b]);
         assert_eq!(&b_idx_w[..bc_w], &b_idx_b[..bc_b]);
     }
+
+    // ── Cross-encoder parity: dual must agree with single-perspective ─────
+    //
+    // The single-perspective encoder is the ground truth (deployed and tested).
+    // When white is to move:  dual white-pov  == single-perspective
+    // When black is to move:  dual black-pov  == single-perspective
+    // These tests catch any divergence between the two code paths.
+
+    fn sorted(indices: &[usize], count: usize) -> Vec<usize> {
+        let mut v = indices[..count].to_vec();
+        v.sort_unstable();
+        v
+    }
+
+    #[test]
+    fn test_dual_white_pov_matches_single_when_white_to_move() {
+        let board = ChessBoard::new();
+        assert!(board.is_white_active());
+
+        let ((w_idx, wc), _) = encode_dual_halfkp(&board);
+        let (s_idx, sc)      = encode_active_features_halfkp(&board);
+
+        assert_eq!(wc, sc, "Feature count must match");
+        assert_eq!(
+            sorted(&w_idx, wc),
+            sorted(&s_idx, sc),
+            "Dual white-pov must produce identical features to single-perspective when white to move"
+        );
+    }
+
+    #[test]
+    fn test_dual_black_pov_matches_single_when_black_to_move() {
+        let mut board = ChessBoard::new();
+        board.toggle_turn();
+        assert!(!board.is_white_active());
+
+        let (_, (b_idx, bc)) = encode_dual_halfkp(&board);
+        let (s_idx, sc)      = encode_active_features_halfkp(&board);
+
+        assert_eq!(bc, sc, "Feature count must match");
+        assert_eq!(
+            sorted(&b_idx, bc),
+            sorted(&s_idx, sc),
+            "Dual black-pov must produce identical features to single-perspective when black to move"
+        );
+    }
+
+    #[test]
+    fn test_dual_parity_after_e4() {
+        // Non-symmetric position — both parity properties must still hold.
+        // Position after 1.e4, black to move.
+        let mut board_w = ChessBoard::new();
+        board_w.set_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+
+        // black to move after 1.e4 → test black-pov parity
+        let (_, (b_idx, bc)) = encode_dual_halfkp(&board_w);
+        let (s_idx, sc)      = encode_active_features_halfkp(&board_w);
+        assert_eq!(sorted(&b_idx, bc), sorted(&s_idx, sc),
+            "Dual black-pov must match single-perspective after 1.e4 (black to move)");
+
+        // flip to white to move → test white-pov parity
+        let mut board_b = ChessBoard::new();
+        board_b.set_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1");
+        let ((w_idx, wc), _) = encode_dual_halfkp(&board_b);
+        let (s_idx2, sc2)    = encode_active_features_halfkp(&board_b);
+        assert_eq!(sorted(&w_idx, wc), sorted(&s_idx2, sc2),
+            "Dual white-pov must match single-perspective (white to move, same pieces)");
+    }
+
+    #[test]
+    fn test_dual_white_king_feature_index() {
+        // White king on e1 (sq=4).  King bucket for e1: file=4→mirror→3, rank=0→half=0 → bucket=3.
+        // White king is slot 5 (ours).  Expected index = 5*64*16 + 4*16 + 3 = 5200.
+        let board = ChessBoard::new();
+        assert!(board.is_white_active());
+        let ((w_idx, wc), _) = encode_dual_halfkp(&board);
+        let king_sq: usize = 4;  // e1
+        let file_bucket = if king_sq % 8 <= 3 { king_sq % 8 } else { 7 - king_sq % 8 };
+        let rank_half   = if king_sq / 8 <= 3 { 0 } else { 1 };
+        let bucket      = rank_half * 4 + file_bucket;
+        let expected    = 5 * 64 * 16 + king_sq * 16 + bucket;
+        assert!(
+            w_idx[..wc].contains(&expected),
+            "White king index {expected} not found in dual white-pov features"
+        );
+    }
+
+    #[test]
+    fn test_dual_black_king_feature_index() {
+        // Black king on e8 (sq=60).  After rank-flip: 60^56=4.
+        // Bucket for sq=4: file=4→mirror→3, rank=0→half=0 → bucket=3.
+        // Black king is slot 5 (ours in black-pov).  Expected = 5*64*16 + 4*16 + 3 = 5200.
+        // This must equal the white king index (symmetric starting position).
+        let board = ChessBoard::new();
+        let (_, (b_idx, bc)) = encode_dual_halfkp(&board);
+        let bk_sq: usize     = 60; // e8
+        let flipped          = bk_sq ^ 56; // 4
+        let file_bucket      = if flipped % 8 <= 3 { flipped % 8 } else { 7 - flipped % 8 };
+        let rank_half        = if flipped / 8 <= 3 { 0 } else { 1 };
+        let bucket           = rank_half * 4 + file_bucket;
+        let expected         = 5 * 64 * 16 + flipped * 16 + bucket;
+        assert!(
+            b_idx[..bc].contains(&expected),
+            "Black king index {expected} not found in dual black-pov features"
+        );
+    }
+
+    #[test]
+    fn test_dual_no_duplicate_indices() {
+        let board = ChessBoard::new();
+        let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(&board);
+
+        let mut w = w_idx[..wc].to_vec(); w.sort_unstable();
+        let mut b = b_idx[..bc].to_vec(); b.sort_unstable();
+
+        w.windows(2).for_each(|p| assert_ne!(p[0], p[1], "Duplicate in white-pov"));
+        b.windows(2).for_each(|p| assert_ne!(p[0], p[1], "Duplicate in black-pov"));
+    }
 }

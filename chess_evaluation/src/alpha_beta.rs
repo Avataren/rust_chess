@@ -3501,4 +3501,127 @@ mod tests {
         assert!(mv.is_some(), "Must find a move in K+Q vs K at depth 3");
         assert!(score > 500, "K+Q vs K must score very high, got {score}");
     }
+
+    // ── halfkp_piece_slot ─────────────────────────────────────────────────
+    // This mapping is load-bearing: wrong slots corrupt both accumulator
+    // updates and the Python/Rust feature encoding contract.
+
+    #[test]
+    fn halfkp_piece_slot_ours() {
+        assert_eq!(halfkp_piece_slot(PieceType::Pawn,   true), 0);
+        assert_eq!(halfkp_piece_slot(PieceType::Knight, true), 1);
+        assert_eq!(halfkp_piece_slot(PieceType::Bishop, true), 2);
+        assert_eq!(halfkp_piece_slot(PieceType::Rook,   true), 3);
+        assert_eq!(halfkp_piece_slot(PieceType::Queen,  true), 4);
+        assert_eq!(halfkp_piece_slot(PieceType::King,   true), 5);
+    }
+
+    #[test]
+    fn halfkp_piece_slot_theirs() {
+        assert_eq!(halfkp_piece_slot(PieceType::Pawn,   false), 6);
+        assert_eq!(halfkp_piece_slot(PieceType::Knight, false), 7);
+        assert_eq!(halfkp_piece_slot(PieceType::Bishop, false), 8);
+        assert_eq!(halfkp_piece_slot(PieceType::Rook,   false), 9);
+        assert_eq!(halfkp_piece_slot(PieceType::Queen,  false), 10);
+        assert_eq!(halfkp_piece_slot(PieceType::King,   false), 11);
+    }
+
+    // ── Accumulator stack ─────────────────────────────────────────────────
+
+    #[test]
+    fn acc_size_covers_max_ply_plus_quiescence() {
+        // ACC_SIZE must be big enough for MAX_PLY main-search plies + 12 qsearch plies.
+        assert!(ACC_SIZE >= MAX_PLY + 12,
+            "ACC_SIZE={ACC_SIZE} too small; need at least MAX_PLY+12={}", MAX_PLY + 12);
+    }
+
+    #[test]
+    fn acc_push_returns_false_when_acc_invalid() {
+        use chess_foundation::piece::ChessPiece;
+        let mut ctx = SearchContext::new();
+        assert!(!ctx.acc_valid, "acc_valid must start false");
+
+        let board = ChessBoard::new();
+        // King move — but acc_valid=false means early return of false, no work done.
+        let mut mv = ChessMove::new(4, 6);
+        mv.set_piece(ChessPiece::new(PieceType::King, true));
+
+        assert!(!ctx.acc_push(0, &mv, &board),
+            "acc_push must return false (no-op) when acc_valid=false");
+    }
+
+    #[test]
+    fn acc_push_king_move_returns_true() {
+        use chess_foundation::piece::ChessPiece;
+        let mut ctx = SearchContext::new();
+        ctx.acc_valid = true; // force valid (no model loaded → add/sub are no-ops)
+
+        let board = ChessBoard::new();
+        let mut mv = ChessMove::new(4, 6); // e1→g1, king
+        mv.set_piece(ChessPiece::new(PieceType::King, true));
+
+        assert!(ctx.acc_push(0, &mv, &board),
+            "King move must return true (signals caller to call acc_recompute)");
+    }
+
+    #[test]
+    fn acc_push_non_king_returns_false() {
+        use chess_foundation::piece::ChessPiece;
+        let mut ctx = SearchContext::new();
+        ctx.acc_valid = true;
+
+        let board = ChessBoard::new();
+        let mut mv = ChessMove::new(12, 28); // e2→e4, pawn
+        mv.set_piece(ChessPiece::new(PieceType::Pawn, true));
+
+        assert!(!ctx.acc_push(0, &mv, &board),
+            "Non-king move must return false (incremental update applied, no recompute needed)");
+    }
+
+    #[test]
+    fn acc_push_copies_parent_to_child() {
+        // Without a loaded model, acc_add/sub_feature are no-ops, so child[ply+1]
+        // ends up identical to parent[ply].  This verifies the copy step.
+        use chess_foundation::piece::ChessPiece;
+        let mut ctx = SearchContext::new();
+        ctx.acc_valid = true;
+
+        // Seed the parent accumulator at ply 0 with recognisable values.
+        for j in 0..ACCUM_DIM {
+            ctx.acc_white[0][j] = j as f32 * 0.5;
+            ctx.acc_black[0][j] = j as f32 * 1.5;
+        }
+
+        let board = ChessBoard::new();
+        let mut mv = ChessMove::new(12, 28); // e2→e4, pawn
+        mv.set_piece(ChessPiece::new(PieceType::Pawn, true));
+
+        ctx.acc_push(0, &mv, &board);
+
+        // No model → delta operations are no-ops → child must equal parent.
+        assert_eq!(ctx.acc_white[1], ctx.acc_white[0],
+            "acc_white[1] must be initialised from acc_white[0]");
+        assert_eq!(ctx.acc_black[1], ctx.acc_black[0],
+            "acc_black[1] must be initialised from acc_black[0]");
+    }
+
+    #[test]
+    fn acc_push_does_not_mutate_parent() {
+        // Whatever happens in acc_push, ply=0 must be untouched afterwards.
+        use chess_foundation::piece::ChessPiece;
+        let mut ctx = SearchContext::new();
+        ctx.acc_valid = true;
+
+        for j in 0..ACCUM_DIM {
+            ctx.acc_white[0][j] = j as f32;
+        }
+        let original = ctx.acc_white[0];
+
+        let board = ChessBoard::new();
+        let mut mv = ChessMove::new(12, 28);
+        mv.set_piece(ChessPiece::new(PieceType::Pawn, true));
+        ctx.acc_push(0, &mv, &board);
+
+        assert_eq!(ctx.acc_white[0], original, "acc_push must never modify the parent ply");
+    }
 }
