@@ -1,4 +1,30 @@
-# Benchmark Results  (depth=7, sequential fixed-depth)
+# Benchmark Results
+
+## Running the benchmark
+
+```bash
+# Standard baseline (depth 7, single-threaded, deterministic node count)
+cargo run --release -p chess_evaluation --bin bench
+
+# Fixed depth, specific thread count
+cargo run --release -p chess_evaluation --bin bench -- --depth 7 --threads 4
+
+# Multi-thread comparison (forces iterative-deepening for fair comparison)
+cargo run --release -p chess_evaluation --bin bench -- --depth 7 --threads 1,2,4,8
+
+# Hash + thread sweep — finds optimal TT size and thread count
+# Runs depth 12 across all combinations, prints top-5 ranked by NPS
+cargo run --release -p chess_evaluation --bin bench -- \
+  --depth 12 --hash 64,128,256,512,1024 --threads 1,4,8,16
+
+# Full predefined sweep (depth=12, hash=16–2048 MB, threads=1/4/8/16, 28 configs)
+cargo run --release -p chess_evaluation --bin bench -- --hash-sweep
+```
+
+**Note:** Use `--depth 10` or higher for hash-size benchmarks — at depth 7 the TT
+fills too quickly to show meaningful hit-rate differences across sizes.
+
+---
 
 ## chunk0 — baseline (2026-03-13)
 
