@@ -8,6 +8,13 @@
 //!   cargo run -p chess_evaluation --bin bench --release -- --depth 7
 //!   cargo run -p chess_evaluation --bin bench --release -- --depth 7 --threads 4
 //!   cargo run -p chess_evaluation --bin bench --release -- --threads 1,2,4,8
+//!
+//! Hash + thread sweep (always uses iterative deepening — TT hit rates matter):
+//!   cargo run -p chess_evaluation --bin bench --release -- \
+//!     --depth 12 --hash 64,128,256,512,1024 --threads 1,4,8,16
+//!
+//! Shortcut for a full hash/thread grid (depth 12 recommended for TT benchmarks):
+//!   cargo run -p chess_evaluation --bin bench --release -- --hash-sweep
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
@@ -107,11 +114,13 @@ fn bench_sequential(fen: &str, is_white: bool, depth: i32) -> (u64, u128, i32) {
 
 /// Run a multi-threaded iterative-deepening search up to `depth`.
 /// Returns (main_thread_nodes_at_final_depth, elapsed_ms, score).
-fn bench_threaded(fen: &str, is_white: bool, depth: i32, num_threads: usize) -> (u64, u128, i32) {
+/// `tt_entries` overrides TT_SIZE when non-zero.
+fn bench_threaded(fen: &str, is_white: bool, depth: i32, num_threads: usize, tt_entries: usize) -> (u64, u128, i32) {
     let mut board = ChessBoard::new();
     board.set_from_fen(fen);
     let conductor = PieceConductor::new();
-    let tt = TranspositionTable::new(TT_SIZE);
+    let entries = if tt_entries > 0 { tt_entries } else { TT_SIZE };
+    let tt = TranspositionTable::new(entries);
 
     // Capture nodes & ms from the last completed depth via on_depth callback.
     let last_nodes: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
@@ -139,15 +148,32 @@ fn bench_threaded(fen: &str, is_white: bool, depth: i32, num_threads: usize) -> 
     (nodes, elapsed_ms, result.score)
 }
 
+/// Result of one (hash, threads, depth) configuration.
+#[derive(Clone)]
+struct BenchResult {
+    hash_mb:     usize,
+    threads:     usize,
+    depth:       i32,
+    total_nodes: u64,
+    total_ms:    u128,
+    avg_nps:     u128,
+}
+
 /// `force_id`: when true, always use iterative-deepening path (even for 1 thread)
 ///             so all thread counts are directly comparable.
-fn run_suite(depth: i32, num_threads: usize, force_id: bool) {
-    let mode = if !force_id && num_threads <= 1 {
+/// `hash_mb`: transposition table size in MiB (0 = use TT_SIZE default).
+/// Returns a BenchResult for the whole suite.
+fn run_suite(depth: i32, num_threads: usize, force_id: bool, hash_mb: usize) -> BenchResult {
+    let entries_for_mb = |mb: usize| mb * 1024 * 1024 / 24;
+    let tt_entries = if hash_mb > 0 { entries_for_mb(hash_mb) } else { 0 };
+
+    let hash_str = if hash_mb > 0 { format!("{}MB", hash_mb) } else { "default".to_string() };
+    let mode = if !force_id && num_threads <= 1 && hash_mb == 0 {
         "sequential fixed-depth (1 thread, deterministic)".to_string()
     } else if num_threads <= 1 {
-        "iterative deepening (1 thread)".to_string()
+        format!("iterative deepening (1 thread, hash={hash_str})")
     } else {
-        format!("Lazy SMP ({num_threads} threads)")
+        format!("Lazy SMP ({num_threads} threads, hash={hash_str})")
     };
     println!("\n=== depth={depth}  {mode} ===\n");
     println!("{:<28} {:>12} {:>10} {:>12}", "Position", "Nodes", "ms", "NPS");
@@ -157,10 +183,10 @@ fn run_suite(depth: i32, num_threads: usize, force_id: bool) {
     let mut total_ms    = 0u128;
 
     for &(fen, is_white, label) in POSITIONS {
-        let (nodes, ms, _score) = if !force_id && num_threads <= 1 {
+        let (nodes, ms, _score) = if !force_id && num_threads <= 1 && hash_mb == 0 {
             bench_sequential(fen, is_white, depth)
         } else {
-            bench_threaded(fen, is_white, depth, num_threads)
+            bench_threaded(fen, is_white, depth, num_threads, tt_entries)
         };
         let nps = if ms > 0 { nodes as u128 * 1000 / ms } else { 0 };
         total_nodes += nodes;
@@ -173,37 +199,116 @@ fn run_suite(depth: i32, num_threads: usize, force_id: bool) {
     println!("{:<28} {:>12} {:>10} {:>12}", "TOTAL / AVG NPS",
              total_nodes, total_ms, avg_nps);
     println!();
-    println!("depth={depth}  threads={num_threads}  positions={}  total_nodes={total_nodes}  avg_nps={avg_nps}  total_ms={total_ms}",
+    println!("depth={depth}  threads={num_threads}  hash={hash_str}  positions={}  \
+              total_nodes={total_nodes}  avg_nps={avg_nps}  total_ms={total_ms}",
              POSITIONS.len());
+
+    BenchResult { hash_mb, threads: num_threads, depth, total_nodes, total_ms, avg_nps }
+}
+
+fn print_top_results(results: &[BenchResult], n: usize) {
+    let mut sorted = results.to_vec();
+    sorted.sort_by(|a, b| b.avg_nps.cmp(&a.avg_nps));
+
+    println!("\n{}", "═".repeat(72));
+    println!("  TOP {} CONFIGURATIONS  (sorted by avg NPS)", n.min(sorted.len()));
+    println!("{}", "═".repeat(72));
+    println!("{:>4}  {:>8}  {:>8}  {:>7}  {:>12}  {:>10}  {:>12}",
+             "Rank", "Hash", "Threads", "Depth", "Nodes", "ms", "Avg NPS");
+    println!("{}", "-".repeat(72));
+
+    for (i, r) in sorted.iter().take(n).enumerate() {
+        let hash_str = if r.hash_mb > 0 { format!("{}MB", r.hash_mb) } else { "default".to_string() };
+        println!("{:>4}  {:>8}  {:>8}  {:>7}  {:>12}  {:>10}  {:>12}",
+                 i + 1,
+                 hash_str,
+                 r.threads,
+                 r.depth,
+                 r.total_nodes,
+                 r.total_ms,
+                 r.avg_nps);
+    }
+    println!("{}", "═".repeat(72));
+
+    if let Some(best) = sorted.first() {
+        let hash_str = if best.hash_mb > 0 { format!("{}MB", best.hash_mb) } else { "default".to_string() };
+        println!("\n  Best: hash={hash_str}  threads={}  avg_nps={}", best.threads, best.avg_nps);
+        if let Some(baseline) = sorted.last() {
+            if baseline.avg_nps > 0 {
+                let gain = best.avg_nps * 100 / baseline.avg_nps;
+                println!("  Best vs worst: {gain}% ({}x speedup)",
+                         best.avg_nps / baseline.avg_nps.max(1));
+            }
+        }
+    }
+    println!();
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    // --hash-sweep: predefined grid of hash sizes and thread counts at depth 12.
+    // The right depth to show meaningful TT hit rate differences.
+    let hash_sweep = args.iter().any(|a| a == "--hash-sweep");
+
     let depth: i32 = args.windows(2)
         .find(|w| w[0] == "--depth")
         .and_then(|w| w[1].parse().ok())
-        .unwrap_or(7);
+        .unwrap_or(if hash_sweep { 12 } else { 7 });
 
-    // --threads accepts a single value (e.g. 4) or a comma-separated list (e.g. 1,2,4,8).
+    // --threads: single value or comma-separated list.
     let threads_str = args.windows(2)
         .find(|w| w[0] == "--threads")
         .map(|w| w[1].as_str())
-        .unwrap_or("1");
+        .unwrap_or(if hash_sweep { "1,4,8,16" } else { "1" });
 
     let thread_counts: Vec<usize> = threads_str
         .split(',')
         .filter_map(|s| s.trim().parse().ok())
+        .filter(|&n| n >= 1)
         .collect();
-
     let thread_counts = if thread_counts.is_empty() { vec![1] } else { thread_counts };
 
-    // If --threads is explicitly given, use iterative-deepening for all counts
-    // so results are directly comparable.  Without --threads, use the
-    // deterministic sequential fixed-depth path as the canonical baseline.
-    let threads_explicit = args.iter().any(|a| a == "--threads");
+    // --hash: single MB value or comma-separated list (e.g. 64,128,256,512).
+    // 0 = use engine default (TT_SIZE).  Only used with iterative-deepening path.
+    let hash_str = args.windows(2)
+        .find(|w| w[0] == "--hash")
+        .map(|w| w[1].as_str())
+        .unwrap_or(if hash_sweep { "16,64,128,256,512,1024,2048" } else { "0" });
 
-    for &tc in &thread_counts {
-        run_suite(depth, tc, threads_explicit);
+    let hash_sizes: Vec<usize> = hash_str
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    let hash_sizes = if hash_sizes.is_empty() { vec![0] } else { hash_sizes };
+
+    // When hash sizes or multiple thread counts are specified, always use ID
+    // so comparisons are apples-to-apples across configurations.
+    let force_id = args.iter().any(|a| a == "--threads")
+        || args.iter().any(|a| a == "--hash")
+        || hash_sweep
+        || thread_counts.len() > 1
+        || hash_sizes.iter().any(|&h| h > 0);
+
+    let total_runs = hash_sizes.len() * thread_counts.len();
+    if total_runs > 1 {
+        println!("Hash × thread sweep: {} configurations  depth={}",
+                 total_runs, depth);
+        println!("Hash sizes (MB): {hash_sizes:?}");
+        println!("Thread counts:   {thread_counts:?}");
+    }
+
+    let mut all_results: Vec<BenchResult> = Vec::with_capacity(total_runs);
+
+    for &hash_mb in &hash_sizes {
+        for &tc in &thread_counts {
+            let result = run_suite(depth, tc, force_id, hash_mb);
+            all_results.push(result);
+        }
+    }
+
+    // Summary report when we ran multiple configurations.
+    if all_results.len() > 1 {
+        print_top_results(&all_results, 5);
     }
 }
