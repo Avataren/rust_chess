@@ -2,7 +2,7 @@ use bevy::{ecs::message::MessageWriter, prelude::*};
 
 use crate::{
     game_events::{ChessAction, ChessEvent},
-    game_resources::{Difficulty, GamePhase, PlayerColor},
+    game_resources::{GameClocks, GamePhase, GameSettings, PlayerColor, Strength, TimeControl},
 };
 
 #[derive(Component)]
@@ -15,22 +15,39 @@ pub enum ColorButton {
 }
 
 #[derive(Component, PartialEq, Clone, Copy)]
-pub enum DifficultyButton {
-    VeryEasy,
-    Easy,
-    Medium,
-    Hard,
-    VeryHard,
+pub enum TimeControlButton {
+    Bullet,
+    Blitz,
+    Rapid,
 }
 
-impl DifficultyButton {
-    fn to_difficulty(self) -> Difficulty {
+impl TimeControlButton {
+    fn to_time_control(self) -> TimeControl {
         match self {
-            DifficultyButton::VeryEasy => Difficulty::VeryEasy,
-            DifficultyButton::Easy     => Difficulty::Easy,
-            DifficultyButton::Medium   => Difficulty::Medium,
-            DifficultyButton::Hard     => Difficulty::Hard,
-            DifficultyButton::VeryHard => Difficulty::VeryHard,
+            TimeControlButton::Bullet => TimeControl::Bullet,
+            TimeControlButton::Blitz  => TimeControl::Blitz,
+            TimeControlButton::Rapid  => TimeControl::Rapid,
+        }
+    }
+}
+
+#[derive(Component, PartialEq, Clone, Copy)]
+pub enum StrengthButton {
+    S1,
+    S2,
+    S3,
+    S4,
+    S5,
+}
+
+impl StrengthButton {
+    fn to_strength(self) -> Strength {
+        match self {
+            StrengthButton::S1 => Strength::S1,
+            StrengthButton::S2 => Strength::S2,
+            StrengthButton::S3 => Strength::S3,
+            StrengthButton::S4 => Strength::S4,
+            StrengthButton::S5 => Strength::S5,
         }
     }
 }
@@ -60,14 +77,14 @@ pub fn spawn_start_screen(mut commands: Commands) {
                 TextColor(Color::WHITE),
             ));
 
-            // Difficulty label
+            // Time Control label
             parent.spawn((
-                Text::new("Difficulty"),
+                Text::new("Time Control"),
                 TextFont { font_size: 22.0, ..default() },
                 TextColor(Color::srgba(0.75, 0.75, 0.75, 1.0)),
             ));
 
-            // Difficulty buttons row
+            // Time Control buttons row
             parent
                 .spawn(Node {
                     flex_direction: FlexDirection::Row,
@@ -78,11 +95,34 @@ pub fn spawn_start_screen(mut commands: Commands) {
                     ..default()
                 })
                 .with_children(|row| {
-                    spawn_difficulty_button(row, "Very Easy", DifficultyButton::VeryEasy, false);
-                    spawn_difficulty_button(row, "Easy",      DifficultyButton::Easy,     false);
-                    spawn_difficulty_button(row, "Medium",    DifficultyButton::Medium,   true);
-                    spawn_difficulty_button(row, "Hard",      DifficultyButton::Hard,     false);
-                    spawn_difficulty_button(row, "Very Hard", DifficultyButton::VeryHard, false);
+                    spawn_option_button(row, "Bullet  2+1", TimeControlButton::Bullet, false);
+                    spawn_option_button(row, "Blitz   5+3", TimeControlButton::Blitz,  true);
+                    spawn_option_button(row, "Rapid 10+5",  TimeControlButton::Rapid,  false);
+                });
+
+            // Strength label
+            parent.spawn((
+                Text::new("Strength"),
+                TextFont { font_size: 22.0, ..default() },
+                TextColor(Color::srgba(0.75, 0.75, 0.75, 1.0)),
+            ));
+
+            // Strength buttons row
+            parent
+                .spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    justify_content: JustifyContent::Center,
+                    column_gap: Val::Px(12.0),
+                    row_gap: Val::Px(10.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    spawn_option_button(row, "Beginner", StrengthButton::S1, false);
+                    spawn_option_button(row, "Casual",   StrengthButton::S2, false);
+                    spawn_option_button(row, "Club",     StrengthButton::S3, true);
+                    spawn_option_button(row, "Strong",   StrengthButton::S4, false);
+                    spawn_option_button(row, "Maximum",  StrengthButton::S5, false);
                 });
 
             // Color label
@@ -109,13 +149,21 @@ pub fn spawn_start_screen(mut commands: Commands) {
         });
 }
 
-fn spawn_difficulty_button(
+fn button_colors(selected: bool) -> (Color, Color) {
+    if selected {
+        (Color::srgb(0.95, 0.95, 0.95), Color::srgb(0.08, 0.08, 0.08))
+    } else {
+        (Color::srgb(0.18, 0.18, 0.20), Color::srgb(0.60, 0.60, 0.65))
+    }
+}
+
+fn spawn_option_button<C: Component>(
     parent: &mut ChildSpawnerCommands,
     label: &str,
-    button: DifficultyButton,
+    button: C,
     selected: bool,
 ) {
-    let (bg, text_color) = difficulty_colors(button, selected);
+    let (bg, text_color) = button_colors(selected);
     parent
         .spawn((
             Button,
@@ -133,16 +181,6 @@ fn spawn_difficulty_button(
                 TextColor(text_color),
             ));
         });
-}
-
-fn difficulty_colors(_button: DifficultyButton, selected: bool) -> (Color, Color) {
-    if selected {
-        // Bright white background, dark text — clearly active.
-        (Color::srgb(0.95, 0.95, 0.95), Color::srgb(0.08, 0.08, 0.08))
-    } else {
-        // Neutral dark background, muted text — clearly inactive.
-        (Color::srgb(0.18, 0.18, 0.20), Color::srgb(0.60, 0.60, 0.65))
-    }
 }
 
 fn spawn_color_button(parent: &mut ChildSpawnerCommands, label: &str, button: ColorButton) {
@@ -170,16 +208,18 @@ fn spawn_color_button(parent: &mut ChildSpawnerCommands, label: &str, button: Co
         });
 }
 
-pub fn handle_difficulty_buttons(
-    interaction_query: Query<(&Interaction, &DifficultyButton), Changed<Interaction>>,
-    mut difficulty: ResMut<Difficulty>,
-    mut button_query: Query<(&DifficultyButton, &mut BackgroundColor, &Children)>,
+pub fn handle_time_control_buttons(
+    interaction_query: Query<(&Interaction, &TimeControlButton), Changed<Interaction>>,
+    mut game_settings: ResMut<GameSettings>,
+    mut game_clocks: ResMut<GameClocks>,
+    mut button_query: Query<(&TimeControlButton, &mut BackgroundColor, &Children)>,
     mut text_query: Query<&mut TextColor>,
 ) {
     let mut changed = false;
     for (interaction, btn) in interaction_query.iter() {
         if *interaction == Interaction::Pressed {
-            *difficulty = btn.to_difficulty();
+            game_settings.time_control = btn.to_time_control();
+            game_clocks.set_time_control(btn.to_time_control());
             changed = true;
         }
     }
@@ -187,8 +227,36 @@ pub fn handle_difficulty_buttons(
         return;
     }
     for (btn, mut bg, children) in button_query.iter_mut() {
-        let selected = btn.to_difficulty() == *difficulty;
-        let (new_bg, new_text_color) = difficulty_colors(*btn, selected);
+        let selected = btn.to_time_control() == game_settings.time_control;
+        let (new_bg, new_text_color) = button_colors(selected);
+        *bg = BackgroundColor(new_bg);
+        for child in children.iter() {
+            if let Ok(mut tc) = text_query.get_mut(child) {
+                *tc = TextColor(new_text_color);
+            }
+        }
+    }
+}
+
+pub fn handle_strength_buttons(
+    interaction_query: Query<(&Interaction, &StrengthButton), Changed<Interaction>>,
+    mut game_settings: ResMut<GameSettings>,
+    mut button_query: Query<(&StrengthButton, &mut BackgroundColor, &Children)>,
+    mut text_query: Query<&mut TextColor>,
+) {
+    let mut changed = false;
+    for (interaction, btn) in interaction_query.iter() {
+        if *interaction == Interaction::Pressed {
+            game_settings.strength = btn.to_strength();
+            changed = true;
+        }
+    }
+    if !changed {
+        return;
+    }
+    for (btn, mut bg, children) in button_query.iter_mut() {
+        let selected = btn.to_strength() == game_settings.strength;
+        let (new_bg, new_text_color) = button_colors(selected);
         *bg = BackgroundColor(new_bg);
         for child in children.iter() {
             if let Ok(mut tc) = text_query.get_mut(child) {
@@ -204,6 +272,7 @@ pub fn handle_start_buttons(
     mut game_phase: ResMut<GamePhase>,
     mut player_color: ResMut<PlayerColor>,
     mut chess_ew: MessageWriter<ChessEvent>,
+    mut game_clocks: ResMut<GameClocks>,
 ) {
     for (interaction, button) in interaction_query.iter() {
         if *interaction != Interaction::Pressed {
@@ -218,6 +287,7 @@ pub fn handle_start_buttons(
                 chess_ew.write(ChessEvent::new(ChessAction::MakeMove));
             }
         }
+        game_clocks.reset();
         *game_phase = GamePhase::Playing;
         for mut vis in overlay_query.iter_mut() {
             *vis = Visibility::Hidden;

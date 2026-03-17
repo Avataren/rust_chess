@@ -5,6 +5,8 @@ pub mod opening_book;
 pub mod piece_tables;
 pub mod see;
 pub mod transposition_table;
+#[cfg(feature = "classical-eval")]
+pub mod classical_eval;
 
 pub use board_evaluation::evaluate_board;
 pub use neural_eval::{

@@ -244,8 +244,16 @@ impl SearchContext {
     }
 
     /// Initialize accumulators from the root board position.
-    /// Sets acc_valid=true if a dual neural model is loaded and enabled.
     pub fn init_accumulators(&mut self, board: &ChessBoard) {
+        #[cfg(feature = "nn-incremental")]
+        {
+            self.acc_valid = crate::neural_eval::init_accumulators_direct(
+                board,
+                &mut self.acc_white[0],
+                &mut self.acc_black[0],
+            );
+            return;
+        }
         self.acc_valid = crate::neural_eval::init_accumulators_for_board(
             board,
             &mut self.acc_white[0],
@@ -333,12 +341,20 @@ impl SearchContext {
     /// Recompute accumulator at `ply` from scratch (called after king moves).
     pub fn acc_recompute(&mut self, ply: usize, board: &ChessBoard) {
         let p = ply.min(ACC_SIZE - 1);
+        #[cfg(feature = "nn-incremental")]
+        if !crate::neural_eval::init_accumulators_direct(
+            board,
+            &mut self.acc_white[p],
+            &mut self.acc_black[p],
+        ) {
+            self.acc_valid = false;
+        }
+        #[cfg(not(feature = "nn-incremental"))]
         if !crate::neural_eval::init_accumulators_for_board(
             board,
             &mut self.acc_white[p],
             &mut self.acc_black[p],
         ) {
-            // Model unavailable — disable incremental path
             self.acc_valid = false;
         }
     }
@@ -446,7 +462,7 @@ fn halfkp_piece_slot(pt: PieceType, is_ours: bool) -> usize {
 }
 
 /// Evaluate the current position using accumulators when available,
-/// otherwise falling back to the classical/neural evaluate_board.
+/// Evaluate the current position, using the compile-time-selected backend.
 #[inline(always)]
 fn eval_node(
     board: &ChessBoard,
@@ -454,16 +470,13 @@ fn eval_node(
     ctx: &SearchContext,
     ply: usize,
 ) -> i32 {
+    #[cfg(feature = "nn-incremental")]
     if ctx.acc_valid {
         let p = ply.min(ACC_SIZE - 1);
-        let is_white = board.is_white_active();
-        if let Some(score) = crate::neural_eval::try_neural_eval_accum(
+        return crate::neural_eval::eval_accum_direct(
             &ctx.acc_white[p],
             &ctx.acc_black[p],
-            is_white,
-        ) {
-            return score;
-        }
+        );
     }
     evaluate_board(board, conductor)
 }

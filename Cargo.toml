@@ -4,9 +4,22 @@ members = [
 ]
 resolver = "2"
 
+# ── Eval-mode selector ─────────────────────────────────────────────────────────
+# Change the ONE feature here to switch the evaluation backend for:
+#   chess_uci, self_play, and bench (they all read this via `workspace = true`)
+# The chess app is independent (always nn-incremental, weights embedded).
+#
+# Options (pick exactly one):
+#   "classical-eval"  — hand-crafted HCE only, no NN code compiled
+#   "nn-full-forward" — full NN forward pass per call, no runtime checks
+#   "nn-incremental"  — incremental i16 accumulator in search (fastest NN mode)
+#   "runtime-switch"  — HCE + NN toggled via UCI setoptions / set_neural_eval_enabled()
+[workspace.dependencies]
+chess_evaluation = { path = "chess_evaluation", default-features = false, features = ["runtime-switch"] }
+
 [profile.release]
 strip = true
-lto = true
+# lto = true
 opt-level = 3
 
 [profile.wasm-release]

@@ -9,6 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 chess_board      = { path = "../chess_board" }
-chess_evaluation = { path = "../chess_evaluation" }
+chess_evaluation = { workspace = true }
 chess_foundation = { path = "../chess_foundation" }
 move_generator   = { path = "../move_generator" }

@@ -12,6 +12,21 @@ use std::time::{Duration, Instant};
 
 use chess_board::ChessBoard;
 use chess_evaluation::{evaluate_board, iterative_deepening_root, SearchResult};
+
+#[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
+static NNUE_WEIGHTS: &[u8] = include_bytes!("../../chess_evaluation/src/eval.npz");
+
+#[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
+fn init_nn() {
+    match chess_evaluation::init_neural_eval_from_bytes(NNUE_WEIGHTS) {
+        Ok(()) => {
+            #[cfg(feature = "runtime-switch")]
+            chess_evaluation::set_neural_eval_enabled(true);
+            eprintln!("Neural eval loaded ({} KB).", NNUE_WEIGHTS.len() / 1024);
+        }
+        Err(e) => eprintln!("warn: neural eval not loaded: {e}"),
+    }
+}
 use chess_foundation::{piece::PieceType, ChessMove};
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
@@ -499,6 +514,9 @@ fn play_game(
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 fn main() {
+    #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
+    init_nn();
+
     let args: Vec<String> = std::env::args().collect();
 
     let mut engine1_path: Option<String> = None;

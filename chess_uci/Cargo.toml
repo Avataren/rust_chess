@@ -6,5 +6,5 @@ edition = "2021"
 [dependencies]
 chess_foundation = { path = "../chess_foundation" }
 chess_board     = { path = "../chess_board" }
-chess_evaluation = { path = "../chess_evaluation" }
+chess_evaluation = { workspace = true }
 move_generator  = { path = "../move_generator" }

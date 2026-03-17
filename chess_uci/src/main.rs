@@ -10,6 +10,11 @@ use chess_evaluation::{
     iterative_deepening_root_with_tt, set_neural_confidence_threshold,
     set_neural_eval_enabled, OpeningBook, TranspositionTable,
 };
+
+/// Weights embedded at compile time for direct NN features (nn-full-forward / nn-incremental).
+/// With runtime-switch the weights are loaded later via `setoption name EvalFile`.
+#[cfg(any(feature = "nn-full-forward", feature = "nn-incremental"))]
+static NNUE_WEIGHTS: &[u8] = include_bytes!("../../chess_evaluation/src/eval.npz");
 use chess_foundation::{piece::PieceType, ChessMove};
 use move_generator::{move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor};
 
@@ -427,6 +432,10 @@ fn ponder_and_respond(
 // ── Main loop ────────────────────────────────────────────────────────────────
 
 fn main() {
+    #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental"))]
+    chess_evaluation::init_neural_eval_from_bytes(NNUE_WEIGHTS)
+        .expect("failed to load embedded neural eval weights");
+
     let conductor = PieceConductor::new();
     let book = OpeningBook::build(&conductor);
     let mut board = ChessBoard::new();

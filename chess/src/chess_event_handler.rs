@@ -12,13 +12,14 @@ use chess_foundation::ChessMove;
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
 };
+use rand::Rng;
 use std::time::Duration;
 
 use crate::{
     board::BoardDimensions,
     game_events::{AiMoveAnimEvent, ChessAction, ChessEvent, RefreshPiecesFromBoardEvent},
     game_resources::{
-        CurrentOpening, Difficulty, GameOverState, GamePhase, IsAiThinking, LastMove,
+        CurrentOpening, GameClocks, GameOverState, GamePhase, GameSettings, IsAiThinking, LastMove,
         OpeningBookRes, PendingGameOver, PendingMoveSound, PlayerColor, PonderState,
     },
     pieces::ChessPieceComponent,
@@ -29,7 +30,6 @@ use crate::{
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// How many opponent candidate positions to ponder simultaneously.
-/// Both native and WASM use rayon workers so the count only affects memory.
 #[cfg(not(target_arch = "wasm32"))]
 const PONDER_CANDIDATES: usize = 4;
 #[cfg(target_arch = "wasm32")]
@@ -76,7 +76,6 @@ pub fn on_tween_completed(
 
 // ── AI piece tween — separate system to stay within Bevy's param limit ───────
 
-/// Applies the piece-movement tween for the AI's chosen move.
 pub fn apply_ai_move_animation(
     mut anim_events: MessageReader<AiMoveAnimEvent>,
     mut piece_query: Query<(Entity, &mut Transform, &mut ChessPieceComponent)>,
@@ -119,11 +118,43 @@ pub fn apply_ai_move_animation(
 
 // ── Search task output type ───────────────────────────────────────────────────
 
-/// Shared return type for both main search and ponder tasks.
-/// `is_ponder` distinguishes ponder results; `board_hash` is the Zobrist
-/// hash of the position that was searched (for ponder-hit matching).
 pub type SearchTaskOutput = (i32, Option<ChessMove>, Option<ChessMove>, bool, u64);
 //                          score  best_move  ponder_move  is_ponder  board_hash
+
+// ── Eval noise helper ─────────────────────────────────────────────────────────
+
+/// After the main search, re-score all legal root moves with a fast 1-ply
+/// static evaluation and add uniform random noise.  The move with the best
+/// noisy score is returned.  When `noise_cp == 0` the original `best_move` is
+/// returned unchanged.
+fn apply_noise_move(
+    chess_board: &ChessBoard,
+    conductor: &PieceConductor,
+    best_move: Option<ChessMove>,
+    is_white: bool,
+    noise_cp: i32,
+) -> Option<ChessMove> {
+    if noise_cp == 0 {
+        return best_move;
+    }
+    let legal = get_all_legal_moves_for_color(&mut chess_board.clone(), conductor, is_white);
+    if legal.len() <= 1 {
+        return best_move.or_else(|| legal.into_iter().next());
+    }
+    let mut rng = rand::thread_rng();
+    let scored = legal.into_iter().map(|mut m| {
+        let mut b = chess_board.clone();
+        b.make_move(&mut m);
+        let eval = evaluate_board(&b, conductor);
+        let noisy = eval + rng.gen_range(-noise_cp..=noise_cp);
+        (m, noisy)
+    });
+    if is_white {
+        scored.max_by_key(|(_, s)| *s).map(|(m, _)| m)
+    } else {
+        scored.min_by_key(|(_, s)| *s).map(|(m, _)| m)
+    }
+}
 
 // ── Main search task ──────────────────────────────────────────────────────────
 
@@ -156,9 +187,6 @@ async fn alpha_beta_task(
             }
         }
 
-        // Run the full iterative-deepening search in a Rayon web worker so the
-        // browser's main thread is never blocked. The polling loop here yields
-        // every 5 ms and enforces the hard deadline via stop flag.
         let stop = Arc::new(AtomicBool::new(false));
         let result: Arc<Mutex<Option<(i32, Option<ChessMove>, Option<ChessMove>)>>> =
             Arc::new(Mutex::new(None));
@@ -192,7 +220,6 @@ async fn alpha_beta_task(
 
 // ── Ponder search task ────────────────────────────────────────────────────────
 
-/// Thinks indefinitely on a predicted opponent position until `stop` fires.
 async fn ponder_search_task(
     mut board: ChessBoard,
     conductor: PieceConductor,
@@ -213,8 +240,6 @@ async fn ponder_search_task(
 
     #[cfg(target_arch = "wasm32")]
     {
-        // Run in a Rayon web worker; poll every 5 ms, stop flag is set by
-        // launch_multi_ponder when the player makes a move.
         let result: Arc<Mutex<Option<(i32, Option<ChessMove>, Option<ChessMove>)>>> =
             Arc::new(Mutex::new(None));
         {
@@ -241,8 +266,6 @@ async fn ponder_search_task(
 
 // ── Multi-ponder launch ───────────────────────────────────────────────────────
 
-/// Scores the opponent's legal moves by static eval, picks the top
-/// `PONDER_CANDIDATES`, and spawns one ponder search per candidate.
 fn launch_multi_ponder(
     task_pool: &mut TaskPool<SearchTaskOutput>,
     ponder_state: &mut PonderState,
@@ -252,7 +275,6 @@ fn launch_multi_ponder(
     depth: i32,
     ai_is_white: bool,
 ) {
-    // Abort any existing ponder tasks and drop their receivers.
     for s in &ponder_state.stops {
         s.store(true, Ordering::Relaxed);
     }
@@ -268,7 +290,6 @@ fn launch_multi_ponder(
         return;
     }
 
-    // Rank opponent moves by static eval (best for opponent first).
     let mut scored: Vec<(ChessMove, i32)> = legal
         .into_iter()
         .map(|mut m| {
@@ -310,31 +331,29 @@ fn launch_multi_ponder(
 
 // ── Main async-move handler ───────────────────────────────────────────────────
 // Exactly 16 system parameters (Bevy's limit).
-// Uses TaskPool so multiple ponder tasks can run concurrently.
 
 pub fn handle_async_moves(
     mut task_pool: TaskPool<SearchTaskOutput>,         // 1
     mut chess_board: ResMut<ChessBoardRes>,            // 2
-    _board_dimensions: Res<BoardDimensions>,           // 3
-    move_generator: ResMut<PieceConductorRes>,         // 4
-    mut chess_ew: MessageReader<ChessEvent>,           // 5
-    mut anim_ew: MessageWriter<AiMoveAnimEvent>,       // 6
-    mut last_move: ResMut<LastMove>,                   // 7
-    mut game_over_state: ResMut<GameOverState>,        // 8
-    mut pending_game_over: ResMut<PendingGameOver>,    // 9
-    player_color: Res<PlayerColor>,                    // 10
-    game_phase: Res<GamePhase>,                        // 11
-    opening_book: Res<OpeningBookRes>,                 // 12
-    mut is_ai_thinking: ResMut<IsAiThinking>,          // 13
-    difficulty: Res<Difficulty>,                       // 14
-    mut pending_move_sound: ResMut<PendingMoveSound>,  // 15
-    mut ponder_state: ResMut<PonderState>,             // 16
+    move_generator: ResMut<PieceConductorRes>,         // 3
+    mut chess_ew: MessageReader<ChessEvent>,           // 4
+    mut anim_ew: MessageWriter<AiMoveAnimEvent>,       // 5
+    mut last_move: ResMut<LastMove>,                   // 6
+    mut game_over_state: ResMut<GameOverState>,        // 7
+    mut pending_game_over: ResMut<PendingGameOver>,    // 8
+    player_color: Res<PlayerColor>,                    // 9
+    game_phase: Res<GamePhase>,                        // 10
+    opening_book: Res<OpeningBookRes>,                 // 11
+    mut is_ai_thinking: ResMut<IsAiThinking>,          // 12
+    game_settings: Res<GameSettings>,                  // 13
+    mut pending_move_sound: ResMut<PendingMoveSound>,  // 14
+    mut ponder_state: ResMut<PonderState>,             // 15
+    mut game_clocks: ResMut<GameClocks>,               // 16
 ) {
     let ai_is_white = *player_color == PlayerColor::Black;
     let player_is_white = !ai_is_white;
 
     // ── 1. Poll pool — route results ─────────────────────────────────────────
-    // Ponder tasks go to ponder_state.results; main search result is captured.
     let mut pending: Option<SearchTaskOutput> = None;
     for poll_result in task_pool.iter_poll() {
         if let Poll::Ready((score, bm, pm, is_ponder, board_hash)) = poll_result {
@@ -343,7 +362,6 @@ pub fn handle_async_moves(
                     ponder_state.results.insert(board_hash, (score, bm, pm));
                     eprintln!("Ponder done hash={board_hash:#x} score={score}");
                 }
-                // else: stale result after stop — discard
             } else if ponder_state.main_search_active {
                 ponder_state.main_search_active = false;
                 is_ai_thinking.0 = false;
@@ -358,7 +376,7 @@ pub fn handle_async_moves(
         return;
     }
 
-    // ── 3. Process player move events (if no result yet from ponder hit) ─────
+    // ── 3. Process player move events ────────────────────────────────────────
     if pending.is_none() {
         for event in chess_ew.read() {
             if let ChessAction::MakeMove = event.action {
@@ -368,7 +386,6 @@ pub fn handle_async_moves(
                     break;
                 }
 
-                // Stop all ponder tasks and drop their receivers.
                 for s in &ponder_state.stops {
                     s.store(true, Ordering::Relaxed);
                 }
@@ -376,7 +393,6 @@ pub fn handle_async_moves(
                 ponder_state.stops.clear();
                 ponder_state.ponder_active = false;
 
-                // Ponder hit? Check if a completed result covers this position.
                 let current_hash = chess_board.chess_board.current_hash();
                 let ponder_hit = ponder_state.results.remove(&current_hash);
                 ponder_state.results.clear();
@@ -385,7 +401,6 @@ pub fn handle_async_moves(
                     eprintln!("Ponder hit! hash={current_hash:#x} score={score}");
                     pending = Some((score, bm, pm, false, 0));
                 } else {
-                    // No hit — start fresh main search.
                     let forced = {
                         let moves = get_all_legal_moves_for_color(
                             &mut chess_board.chess_board,
@@ -398,9 +413,9 @@ pub fn handle_async_moves(
                     let mut board_c = chess_board.chess_board.clone();
                     let conductor_c = move_generator.magic.clone();
                     let book_c = opening_book.book.clone();
-                    let depth = difficulty.search_depth();
-                    let deadline =
-                        difficulty.time_limit().map(|d| web_time::Instant::now() + d);
+                    let depth = game_settings.strength.max_depth();
+                    let budget = game_clocks.move_budget(ai_is_white);
+                    let deadline = Some(web_time::Instant::now() + budget);
 
                     task_pool.spawn(async move {
                         if let Some(m) = forced {
@@ -428,6 +443,15 @@ pub fn handle_async_moves(
     let (score, mut best_move, _ponder_move, _, _) = pending.unwrap();
     eprintln!("AI result: score={score}");
 
+    // Apply eval noise — perturbs root-move selection without affecting search.
+    let noise_cp = game_settings.strength.eval_noise_cp();
+    if noise_cp > 0 {
+        best_move = apply_noise_move(
+            &chess_board.chess_board, &move_generator.magic,
+            best_move, ai_is_white, noise_cp,
+        );
+    }
+
     if best_move.is_none() {
         let all_moves = get_all_legal_moves_for_color(
             &mut chess_board.chess_board, &move_generator.magic, ai_is_white,
@@ -451,6 +475,9 @@ pub fn handle_async_moves(
     if chess_board.chess_board.make_move(&mut engine_move) {
         last_move.start_square = Some(engine_move.start_square());
         last_move.target_square = Some(engine_move.target_square());
+
+        // Add increment after the AI's move.
+        game_clocks.add_increment(ai_is_white);
 
         let sound = if engine_move.has_flag(ChessMove::CASTLE_FLAG) {
             "castle.ogg"
@@ -486,8 +513,8 @@ pub fn handle_async_moves(
 
         anim_ew.write(AiMoveAnimEvent { engine_move });
 
-        // ── Launch multi-ponder for the next half-move ────────────────────────
-        if difficulty.ponders()
+        // Launch multi-ponder for the next half-move.
+        if game_settings.strength.ponders()
             && pending_game_over.0.is_none()
             && *game_over_state == GameOverState::Playing
         {
@@ -497,7 +524,7 @@ pub fn handle_async_moves(
                 &chess_board.chess_board,
                 &move_generator.magic,
                 &opening_book.book,
-                difficulty.search_depth(),
+                game_settings.strength.max_depth(),
                 ai_is_white,
             );
         }
@@ -516,9 +543,16 @@ pub fn handle_chess_events(
     mut game_phase: ResMut<GamePhase>,
     mut current_opening: ResMut<CurrentOpening>,
     mut ponder_state: ResMut<PonderState>,
+    mut game_clocks: ResMut<GameClocks>,
+    player_color: Res<PlayerColor>,
 ) {
+    let player_is_white = *player_color == PlayerColor::White;
     for event in chess_ew.read() {
         match event.action {
+            ChessAction::MakeMove => {
+                // Add increment for the human player's move.
+                game_clocks.add_increment(player_is_white);
+            }
             ChessAction::Undo => {
                 eprintln!("Undoing move");
                 for s in &ponder_state.stops {
@@ -546,9 +580,9 @@ pub fn handle_chess_events(
                 *last_move = LastMove::default();
                 *game_phase = GamePhase::StartScreen;
                 current_opening.0.clear();
+                game_clocks.reset();
                 refresh_pieces_events.write(RefreshPiecesFromBoardEvent);
             }
-            _ => {}
         }
     }
 }

@@ -156,6 +156,64 @@ pub fn init_accumulators_for_board(
     true
 }
 
+// ── Compile-time-feature direct evaluation (no NEURAL_ENABLED check) ─────────
+//
+// These functions are used by the nn-full-forward and nn-incremental features.
+// They bypass the NEURAL_ENABLED AtomicBool and confidence-threshold checks that
+// exist for runtime switching (chess_uci). The weights are embedded at startup
+// so the evaluator is always present when these features are selected.
+
+/// Direct full-forward NN evaluation — no NEURAL_ENABLED check, no confidence
+/// threshold.  Panics in debug if weights are not loaded.
+#[cfg(any(feature = "nn-full-forward", feature = "nn-incremental"))]
+#[inline]
+pub fn eval_direct(board: &ChessBoard) -> i32 {
+    let e = EVALUATOR.get()
+        .expect("neural eval not loaded — call init_neural_eval_from_bytes at startup");
+    let (score, _) = e.evaluate_with_confidence(board);
+    if e.dual_perspective {
+        score
+    } else {
+        if board.is_white_active() { score } else { -score }
+    }
+}
+
+/// Direct accumulator-based evaluation — no runtime checks.
+/// Only valid for dual-perspective models (eval.npz).
+#[cfg(feature = "nn-incremental")]
+#[inline]
+pub fn eval_accum_direct(acc_white: &[i16; HIDDEN1], acc_black: &[i16; HIDDEN1]) -> i32 {
+    let e = EVALUATOR.get()
+        .expect("neural eval not loaded — call init_neural_eval_from_bytes at startup");
+    e.evaluate_from_accumulators(acc_white, acc_black).0
+}
+
+/// Initialize accumulators from a board position — no NEURAL_ENABLED check.
+/// Returns false only if the loaded model is not dual-perspective.
+#[cfg(feature = "nn-incremental")]
+pub fn init_accumulators_direct(
+    board: &ChessBoard,
+    acc_white: &mut [i16; HIDDEN1],
+    acc_black: &mut [i16; HIDDEN1],
+) -> bool {
+    let evaluator = match EVALUATOR.get() {
+        Some(e) if e.dual_perspective => e,
+        _ => return false,
+    };
+    let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(board);
+    acc_white.copy_from_slice(&evaluator.b1_i16);
+    for &i in &w_idx[..wc] {
+        let col = &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
+        add_col(acc_white, col);
+    }
+    acc_black.copy_from_slice(&evaluator.b1_i16);
+    for &i in &b_idx[..bc] {
+        let col = &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
+        add_col(acc_black, col);
+    }
+    true
+}
+
 /// Add a feature column into an i16 accumulator (in-place, SIMD-dispatched).
 /// No-op if evaluator not loaded.
 #[inline]

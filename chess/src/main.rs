@@ -6,6 +6,7 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 mod board;
 mod board_accessories;
 mod chess_event_handler;
+mod clock_ui;
 mod game_events;
 mod game_over_ui;
 mod game_resources;
@@ -26,7 +27,11 @@ use embed_plugin::EmbeddedAssetPlugin;
 use game_events::{
    RefreshPiecesFromBoardEvent,
 };
-use game_resources::{CurrentOpening, Difficulty, GameOverState, GamePhase, IsAiThinking, OpeningBookRes, PendingGameOver, PendingMoveSound, PlayerColor, PonderState};
+use chess_evaluation::{init_neural_eval_from_bytes, set_neural_eval_enabled};
+use game_resources::{
+    CurrentOpening, GameClocks, GameOverState, GamePhase, GameSettings, IsAiThinking,
+    OpeningBookRes, PendingGameOver, PendingMoveSound, PlayerColor, PonderState, TimeControl,
+};
 use input_plugin::ChessInputPlugin;
 use move_generator::piece_conductor::PieceConductor;
 use preload_assets_plugin::PreloadAssetsPlugin;
@@ -53,18 +58,31 @@ fn reposition_fps_counter(mut q: Query<&mut Node, With<FpsCounterText>>) {
     }
 }
 
+/// NNUE weights embedded at compile time.
+/// Update by copying a new .npz to chess_evaluation/src/eval.npz and rebuilding.
+static NNUE_WEIGHTS: &[u8] = include_bytes!("../../chess_evaluation/src/eval.npz");
+
+fn init_neural_eval() {
+    match init_neural_eval_from_bytes(NNUE_WEIGHTS) {
+        Ok(()) => {
+            set_neural_eval_enabled(true);
+            eprintln!("Neural eval loaded ({} KB)", NNUE_WEIGHTS.len() / 1024);
+        }
+        Err(e) => eprintln!("Neural eval failed to load: {e}"),
+    }
+}
+
 fn main() {
+    init_neural_eval();
     if cfg!(debug_assertions) {
         std::env::set_var("RUST_BACKTRACE", "1");
     }
-    //env::set_var("WGPU_BACKEND", "dx12");
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 canvas: Some("#game-canvas".to_string()),
                 title: "XavChess".to_string(),
                 resizable: true,
-                //mode: WindowMode::BorderlessFullscreen,
                 resolution: WindowResolution::new(1280, 1280),
                 prevent_default_event_handling: true,
                 present_mode: bevy::window::PresentMode::AutoNoVsync,
@@ -91,6 +109,7 @@ fn main() {
                 opening_name_ui::spawn_opening_name_ui,
                 opening_name_ui::spawn_thinking_indicator,
                 material_ui::spawn_material_ui,
+                clock_ui::spawn_clock_ui,
             )
         )
         .add_systems(
@@ -110,6 +129,8 @@ fn main() {
                 opening_name_ui::update_opening_name_ui,
                 opening_name_ui::update_thinking_ui,
                 material_ui::update_material_ui,
+                clock_ui::update_clocks,
+                clock_ui::update_clock_ui,
             ).chain(),
         )
         .add_systems(
@@ -117,11 +138,11 @@ fn main() {
             (
                 game_over_ui::handle_game_over_input,
                 game_over_ui::handle_restart_button,
-                start_screen_ui::handle_difficulty_buttons,
+                start_screen_ui::handle_time_control_buttons,
+                start_screen_ui::handle_strength_buttons,
                 start_screen_ui::handle_start_buttons,
             ),
         )
-        //.add_systems(PreUpdate, ())
         .run();
 }
 
@@ -131,8 +152,6 @@ fn initialize_game(mut refresh_pieces_events: MessageWriter<RefreshPiecesFromBoa
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn(Camera2d);
-    //setup_ui(&mut commands);
-    // Resources
 
     commands.insert_resource(piece_picker::PieceIsPickedUp::default());
     commands.insert_resource(board::BoardDimensions::default());
@@ -146,7 +165,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(CurrentOpening::default());
     commands.insert_resource(IsAiThinking::default());
     commands.insert_resource(PendingMoveSound::default());
-    commands.insert_resource(Difficulty::default());
+    commands.insert_resource(GameSettings::default());
+    commands.insert_resource(GameClocks::new(TimeControl::Blitz));
     commands.insert_resource(PonderState::default());
     commands.insert_resource(ResolutionInfo {
         width: 1280.0,
@@ -154,21 +174,8 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     });
 
     let chessboard = chess_board::ChessBoard::new();
-    //let fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq";
-    //let fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-    // chessboard.set_from_fen("8/8/8/8/7q/8/6k1/4K3 w  - 0 1");
-    //chessboard.set_from_fen("5K2/4Q3/3q4/1k6/8/8/8/8 w  - 0 1");
-    //chessboard.set_from_fen("4K3/4Q3/3q4/1k6/8/8/8/8 w  - 0 1");
-    //chessboard.set_from_fen("3Q1K2/8/3q4/1k6/8/8/8/8 w  - 0 1");
-    //chessboard.set_from_fen("8/8/5p1/4p3/4K3/8/8/8 w KQkq - 0 1");
-    // chessboard.clear();
-    // chessboard.set_piece_at_square(4, chess_foundation::piece::PieceType::King, true);
-    // chessboard.set_piece_at_square(19, chess_foundation::piece::PieceType::Pawn, false);
-    // chessboard.set_piece_at_square(20, chess_foundation::piece::PieceType::Queen, false);
-    //chessboard.set_from_fen("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8");
     commands.insert_resource(ChessBoardRes {
         chess_board: chessboard,
-        //chess_board: chess_board::ChessBoard::new(),
     });
 
     let magic = PieceConductor::new();
@@ -178,29 +185,3 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
     board::spawn_board(&mut commands, asset_server);
 }
-
-// fn setup_ui(commands: &mut Commands) {
-//     // Node that fills entire background
-//     commands
-//         .spawn(NodeBundle {
-//             style: Style {
-//                 width: Val::Percent(100.),
-//                 top: Val::Px(50.0),
-//                 ..default()
-//             },
-//             ..default()
-//         })
-//         .with_children(|root| {
-//             // Text where we display current resolution
-//             root.spawn((
-//                 TextBundle::from_section(
-//                     "Resolution",
-//                     TextStyle {
-//                         font_size: 20.0,
-//                         ..default()
-//                     },
-//                 ),
-//                 board::ResolutionText,
-//             ));
-//         });
-// }
