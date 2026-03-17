@@ -37,6 +37,29 @@ For ROCm/CUDA, install the appropriate PyTorch build first.
 
 ---
 
+## Quick start — one command
+
+```bash
+# Full pipeline: PGN → FENs → label → split → encode (single + dual)
+PYTHONPATH=. python3 scripts/make_dataset.py \
+  --positions 10_000_000 \
+  --pgn /data/lichess_db_standard_rated_2024-01.pgn \
+  --depth 12 \
+  --workers 32
+
+# Re-label an existing FENs file at a different depth
+PYTHONPATH=. python3 scripts/make_dataset.py \
+  --positions 10_000_000 \
+  --fens data/fens_10m.txt \
+  --depth 16 \
+  --workers 32
+```
+
+Key options: `--positions N`, `--depth D`, `--workers W`, `--pgn / --fens`,
+`--min-elo`, `--no-dual`, `--skip-extract/label/split/preprocess`.
+
+---
+
 ## Step 0 — Download and extract Lichess data
 
 Lichess publishes monthly PGN dumps of all rated standard games at:

@@ -13,18 +13,22 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from nnue_train.dataset import BinaryPositionDataset, JsonlPositionDataset
+from nnue_train.dataset import BinaryPositionDataset, BinaryDualPositionDataset, JsonlPositionDataset
+from nnue_train.model import EvalNet, EvalNetDual
 
 
-def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool):
+def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool, dual: bool = False):
     """Use fast binary dataset if pre-processed files exist, else fall back to JSONL."""
     prefix = str(Path(path).with_suffix(""))
+    if dual and all(Path(prefix + ext).exists()
+                    for ext in (".white_indices.npy", ".black_indices.npy", ".counts.npy", ".cp.npy")):
+        print(f"  Loading dual binary dataset: {prefix}.*")
+        return BinaryDualPositionDataset(path, max_cp_abs=max_cp_abs)
     if all(Path(prefix + ext).exists() for ext in (".indices.npy", ".counts.npy", ".cp.npy")):
         print(f"  Loading binary dataset: {prefix}.*")
         return BinaryPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
     print(f"  Loading JSONL dataset: {path}  (run preprocess_dataset.py for faster training)")
     return JsonlPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
-from nnue_train.model import EvalNet
 
 
 def set_seed(seed: int):
@@ -58,6 +62,26 @@ def sparse_to_dense(indices: torch.Tensor, feature_dim: int) -> torch.Tensor:
     return x
 
 
+def _forward_batch(model, batch, device, feature_dim):
+    """Run model forward pass, handling both single and dual perspective models."""
+    if isinstance(model, EvalNetDual):
+        x_white, x_black, cp, wdl = batch
+        x_white = x_white.to(device, non_blocking=True)
+        x_black = x_black.to(device, non_blocking=True)
+        cp = cp.to(device, non_blocking=True)
+        wdl = wdl.to(device, non_blocking=True)
+        cp_pred, wdl_logits = model(x_white, x_black)
+    else:
+        x, cp, wdl = batch
+        x = x.to(device, non_blocking=True)
+        if x.dtype == torch.int64 and not model.sparse_input:
+            x = sparse_to_dense(x, feature_dim)
+        cp = cp.to(device, non_blocking=True)
+        wdl = wdl.to(device, non_blocking=True)
+        cp_pred, wdl_logits = model(x)
+    return cp_pred, wdl_logits, cp, wdl
+
+
 def train_epoch(model, loader, optimizer, scaler, device, cfg):
     model.train()
     cp_loss_fn = nn.HuberLoss(delta=100.0)
@@ -70,18 +94,12 @@ def train_epoch(model, loader, optimizer, scaler, device, cfg):
     total_wdl_acc = 0.0
     total_wdl_target_confidence = 0.0
 
-    for x, cp, wdl in tqdm(loader, desc="train", leave=False):
-        x = x.to(device, non_blocking=True)
-        if x.dtype == torch.int64 and not model.sparse_input:
-            x = sparse_to_dense(x, feature_dim)
-        cp = cp.to(device, non_blocking=True)
-        wdl = wdl.to(device, non_blocking=True)
-        wdl_idx = torch.argmax(wdl, dim=1)
-
+    for batch in tqdm(loader, desc="train", leave=False):
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(device_type=device.type, enabled=cfg["training"]["amp"] and device.type == "cuda"):
-            cp_pred, wdl_logits = model(x)
+            cp_pred, wdl_logits, cp, wdl = _forward_batch(model, batch, device, feature_dim)
+            wdl_idx = torch.argmax(wdl, dim=1)
             cp_loss = cp_loss_fn(cp_pred, cp)
             wdl_loss = soft_target_cross_entropy(wdl_logits, wdl)
             loss = cfg["loss"]["cp_weight"] * cp_loss + cfg["loss"]["wdl_weight"] * wdl_loss
@@ -127,15 +145,9 @@ def eval_epoch(model, loader, device, cfg):
     total_wdl_acc = 0.0
     total_wdl_target_confidence = 0.0
 
-    for x, cp, wdl in tqdm(loader, desc="val", leave=False):
-        x = x.to(device, non_blocking=True)
-        if x.dtype == torch.int64 and not model.sparse_input:
-            x = sparse_to_dense(x, feature_dim)
-        cp = cp.to(device, non_blocking=True)
-        wdl = wdl.to(device, non_blocking=True)
+    for batch in tqdm(loader, desc="val", leave=False):
+        cp_pred, wdl_logits, cp, wdl = _forward_batch(model, batch, device, feature_dim)
         wdl_idx = torch.argmax(wdl, dim=1)
-
-        cp_pred, wdl_logits = model(x)
         cp_loss = cp_loss_fn(cp_pred, cp)
         wdl_loss = soft_target_cross_entropy(wdl_logits, wdl)
         loss = cfg["loss"]["cp_weight"] * cp_loss + cfg["loss"]["wdl_weight"] * wdl_loss
@@ -178,8 +190,9 @@ def main():
         print(f"CUDA/ROCm device: {torch.cuda.get_device_name(0)}")
 
     use_halfkp = cfg["model"].get("use_halfkp", False)
-    train_ds = load_dataset(cfg["data"]["train_file"], cfg["data"]["max_cp_abs"], use_halfkp)
-    val_ds   = load_dataset(cfg["data"]["val_file"],   cfg["data"]["max_cp_abs"], use_halfkp)
+    dual = cfg["model"].get("dual_perspective", False)
+    train_ds = load_dataset(cfg["data"]["train_file"], cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
+    val_ds   = load_dataset(cfg["data"]["val_file"],   cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
 
 
     if len(train_ds) == 0:
@@ -220,13 +233,21 @@ def main():
     )
 
     mcfg = cfg["model"]
-    model = EvalNet(
-        input_dim=mcfg["input_dim"],
-        hidden_dim=mcfg["hidden_dim"],
-        hidden2_dim=mcfg["hidden2_dim"],
-        dropout=mcfg["dropout"],
-        sparse_input=mcfg.get("sparse_input", False),
-    ).to(device)
+    if mcfg.get("dual_perspective", False):
+        model = EvalNetDual(
+            input_dim=mcfg["input_dim"],
+            hidden_dim=mcfg["hidden_dim"],
+            hidden2_dim=mcfg["hidden2_dim"],
+            dropout=mcfg["dropout"],
+        ).to(device)
+    else:
+        model = EvalNet(
+            input_dim=mcfg["input_dim"],
+            hidden_dim=mcfg["hidden_dim"],
+            hidden2_dim=mcfg["hidden2_dim"],
+            dropout=mcfg["dropout"],
+            sparse_input=mcfg.get("sparse_input", False),
+        ).to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),

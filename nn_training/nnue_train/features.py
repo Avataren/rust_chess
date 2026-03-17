@@ -88,6 +88,46 @@ _PIECE_SLOT = {
 }
 
 
+def encode_board_halfkp_dual(board: chess.Board) -> tuple[np.ndarray, np.ndarray]:
+    """Encode board from both white and black absolute perspectives.
+
+    Unlike encode_board_halfkp, no side-to-move mirroring is applied here.
+    The white perspective always has white king as 'ours'; the black perspective
+    mirrors the board first (so black king becomes 'ours') then encodes identically.
+
+    Returns (white_indices, black_indices), each an int64 array of length 32
+    padded with sentinel HALFKP_FEATURE_DIM (12288).
+
+    CP targets for dual-perspective training must be white-absolute
+    (positive = good for white), not side-to-move perspective.
+    """
+    SENTINEL = HALFKP_FEATURE_DIM  # 12288
+
+    def _encode_white_pov(b: chess.Board) -> np.ndarray:
+        """Encode from white's view: white king = 'ours', no side-to-move flip."""
+        king_squares = b.pieces(chess.KING, chess.WHITE)
+        if not king_squares:
+            return np.full(32, SENTINEL, dtype=np.int64)
+        king_sq = next(iter(king_squares))
+        bucket = KING_BUCKET[king_sq]
+
+        result = np.full(32, SENTINEL, dtype=np.int64)
+        count = 0
+        for square, piece in b.piece_map().items():
+            if count >= 32:
+                break
+            slot = _PIECE_SLOT[(piece.piece_type, piece.color)]
+            result[count] = slot * 64 * 16 + square * 16 + bucket
+            count += 1
+        return result
+
+    # White perspective: board as-is (white king = ours)
+    white_indices = _encode_white_pov(board)
+    # Black perspective: mirror board (black king becomes white king = ours)
+    black_indices = _encode_white_pov(board.mirror())
+    return white_indices, black_indices
+
+
 def encode_board_halfkp(board: chess.Board) -> np.ndarray:
     """Encode board to a 12,288-dim sparse feature vector.
 

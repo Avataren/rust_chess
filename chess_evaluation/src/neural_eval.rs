@@ -1,10 +1,17 @@
 //! Neural network evaluation for chess positions.
 //!
-//! Implements a small NNUE-like MLP (768 or 12288 → 512 → 32 → 1) trained with
-//! the Python pipeline in `nn_training/`. Weights are loaded from an NPZ
-//! file exported by `scripts/export_weights.py`.
+//! Implements a small NNUE-like MLP trained with the Python pipeline in
+//! `nn_training/`. Two model variants are supported:
 //!
-//! The evaluator is off by default. Load weights, then enable:
+//! **Single-perspective (Phase 1):** `12288 → 512 → 32 → 1`
+//!   Weights: `backbone_3_weight` shape (32, 512)
+//!
+//! **Dual-perspective (Phase 2+3):** `[12288|12288] → 512+512 → 32 → 1`
+//!   Shared EmbeddingBag; two accumulators concat'd before fc2.
+//!   Weights: `backbone_3_weight` shape (32, 1024)
+//!   CP output is white-absolute (positive = good for white).
+//!
+//! Weights are loaded from an NPZ file exported by `scripts/export_weights.py`.
 //!
 //! ```ignore
 //! init_neural_eval("path/to/nnue_like_weights.npz").unwrap();
@@ -23,13 +30,10 @@ use chess_foundation::bitboard::Bitboard;
 
 // ── Architecture constants ────────────────────────────────────────────────
 
-// FEATURE_DIM is now runtime (stored in NeuralEvaluator) to support both
-// the original 768-dim model and the king-bucketed 12,288-dim model.
-// HIDDEN1 and HIDDEN2 remain fixed across architectures.
-const HIDDEN1: usize = 512;
+pub(crate) const HIDDEN1: usize = 512;
 const HIDDEN2: usize = 32;
+const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 1024
 
-// King bucket constants for HalfKP encoding
 const HALFKP_FEATURE_DIM: usize = 12 * 64 * 16; // 12,288
 const LEGACY_FEATURE_DIM: usize = 768;
 
@@ -38,24 +42,17 @@ const LEGACY_FEATURE_DIM: usize = 768;
 static NEURAL_ENABLED: AtomicBool = AtomicBool::new(false);
 static EVALUATOR: OnceLock<NeuralEvaluator> = OnceLock::new();
 
-/// Minimum WDL confidence to trust the NN score. When `max(softmax(wdl))`
-/// is below this value the position is too uncertain and the classical
-/// evaluator is used instead. Stored as f32 bits for atomic access.
-/// Default 0.0 = always trust NN (no fallback). Tune after training.
+/// Minimum WDL confidence to trust the NN score.
+/// Default 0.0 = always trust NN (no fallback).
 static CONFIDENCE_THRESHOLD: AtomicU32 = AtomicU32::new(0);
 
 /// Load weights from an NPZ file path.
-///
-/// Does NOT automatically enable neural eval — call
-/// `set_neural_eval_enabled(true)` afterwards.
 pub fn init_neural_eval(path: &str) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("Failed to read {path}: {e}"))?;
     init_neural_eval_from_bytes(&bytes)
 }
 
-/// Load weights from an in-memory NPZ blob (e.g. `include_bytes!`).
-///
-/// Useful for WASM builds where file I/O is unavailable.
+/// Load weights from an in-memory NPZ blob.
 pub fn init_neural_eval_from_bytes(bytes: &[u8]) -> Result<(), String> {
     let evaluator = NeuralEvaluator::from_npz_bytes(bytes)?;
     EVALUATOR
@@ -64,7 +61,6 @@ pub fn init_neural_eval_from_bytes(bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Enable or disable neural network evaluation at runtime.
-/// Has no effect if weights were never loaded.
 pub fn set_neural_eval_enabled(enabled: bool) {
     NEURAL_ENABLED.store(enabled, Ordering::Relaxed);
 }
@@ -75,18 +71,6 @@ pub fn is_neural_eval_enabled() -> bool {
 }
 
 /// Set the minimum WDL confidence required to use the NN score.
-///
-/// After a forward pass the WDL head produces a 3-class probability
-/// distribution (win / draw / loss). `max(softmax(wdl))` is the
-/// confidence — how sure the model is about the outcome.
-///
-/// - `0.0` (default) — always use NN, never fall back.
-/// - `0.4` — fall back when no single outcome exceeds 40% probability
-///            (the model is nearly equally lost between all three outcomes).
-/// - `0.5` — fall back unless the model leans clearly toward one outcome.
-///
-/// Positions that trigger fallback are unusual structures the model hasn't
-/// learned well; the classical evaluator handles them more reliably.
 pub fn set_neural_confidence_threshold(threshold: f32) {
     CONFIDENCE_THRESHOLD.store(threshold.to_bits(), Ordering::Relaxed);
 }
@@ -96,8 +80,7 @@ pub fn get_neural_confidence_threshold() -> f32 {
 }
 
 /// Returns `Some(score)` in centipawns from **white's perspective** when
-/// neural eval is enabled, weights are loaded, and the model is sufficiently
-/// confident. Returns `None` to fall back to the classical evaluator.
+/// neural eval is enabled, weights are loaded, and confidence passes.
 #[inline]
 pub fn try_neural_eval(board: &ChessBoard) -> Option<i32> {
     if !NEURAL_ENABLED.load(Ordering::Relaxed) {
@@ -105,40 +88,127 @@ pub fn try_neural_eval(board: &ChessBoard) -> Option<i32> {
     }
     let threshold = f32::from_bits(CONFIDENCE_THRESHOLD.load(Ordering::Relaxed));
     EVALUATOR.get().and_then(|e| {
-        let (stm_score, confidence) = e.evaluate_with_confidence(board);
+        let (score, confidence) = e.evaluate_with_confidence(board);
         if confidence < threshold {
-            return None; // uncertain position → classical eval
+            return None;
         }
-        Some(if board.is_white_active() { stm_score } else { -stm_score })
+        // Dual model returns white-absolute; single-perspective model returns stm-relative.
+        if e.dual_perspective {
+            Some(score) // already white-absolute
+        } else {
+            Some(if board.is_white_active() { score } else { -score })
+        }
     })
+}
+
+/// Try neural eval using pre-computed accumulators (Phase 3 incremental path).
+/// Returns white-absolute centipawns or None if unavailable.
+#[inline]
+pub fn try_neural_eval_accum(
+    acc_white: &[f32; HIDDEN1],
+    acc_black: &[f32; HIDDEN1],
+    _is_white: bool,
+) -> Option<i32> {
+    if !NEURAL_ENABLED.load(Ordering::Relaxed) {
+        return None;
+    }
+    let threshold = f32::from_bits(CONFIDENCE_THRESHOLD.load(Ordering::Relaxed));
+    EVALUATOR.get().and_then(|e| {
+        if !e.dual_perspective {
+            return None;
+        }
+        let (score, confidence) = e.evaluate_from_accumulators(acc_white, acc_black);
+        if confidence < threshold {
+            return None;
+        }
+        Some(score) // dual model output is always white-absolute
+    })
+}
+
+/// Initialize both accumulators from scratch for the given board position.
+/// Returns true iff neural eval is enabled, a dual model is loaded, and
+/// initialization succeeded.
+pub fn init_accumulators_for_board(
+    board: &ChessBoard,
+    acc_white: &mut [f32; HIDDEN1],
+    acc_black: &mut [f32; HIDDEN1],
+) -> bool {
+    if !NEURAL_ENABLED.load(Ordering::Relaxed) {
+        return false;
+    }
+    let evaluator = match EVALUATOR.get() {
+        Some(e) if e.dual_perspective => e,
+        _ => return false,
+    };
+    let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(board);
+
+    acc_white.copy_from_slice(&evaluator.b1);
+    for &i in &w_idx[..wc] {
+        let src = &evaluator.w1_t[i * HIDDEN1..(i + 1) * HIDDEN1];
+        for j in 0..HIDDEN1 {
+            acc_white[j] += src[j];
+        }
+    }
+
+    acc_black.copy_from_slice(&evaluator.b1);
+    for &i in &b_idx[..bc] {
+        let src = &evaluator.w1_t[i * HIDDEN1..(i + 1) * HIDDEN1];
+        for j in 0..HIDDEN1 {
+            acc_black[j] += src[j];
+        }
+    }
+    true
+}
+
+/// Add a feature column from w1_t into an accumulator (in-place).
+/// No-op if evaluator not loaded.
+#[inline]
+pub fn acc_add_feature(acc: &mut [f32; HIDDEN1], feature_idx: usize) {
+    if let Some(e) = EVALUATOR.get() {
+        let src = &e.w1_t[feature_idx * HIDDEN1..(feature_idx + 1) * HIDDEN1];
+        for j in 0..HIDDEN1 {
+            acc[j] += src[j];
+        }
+    }
+}
+
+/// Subtract a feature column from w1_t from an accumulator (in-place).
+/// No-op if evaluator not loaded.
+#[inline]
+pub fn acc_sub_feature(acc: &mut [f32; HIDDEN1], feature_idx: usize) {
+    if let Some(e) = EVALUATOR.get() {
+        let src = &e.w1_t[feature_idx * HIDDEN1..(feature_idx + 1) * HIDDEN1];
+        for j in 0..HIDDEN1 {
+            acc[j] -= src[j];
+        }
+    }
 }
 
 // ── Evaluator ─────────────────────────────────────────────────────────────
 
 pub struct NeuralEvaluator {
-    /// Number of input features: 768 (legacy) or 12,288 (HalfKP king-bucketed).
+    /// Number of input features: 768 (legacy) or 12,288 (HalfKP).
     feature_dim: usize,
 
+    /// True when `backbone_3_weight` is (32, 1024) instead of (32, 512).
+    pub dual_perspective: bool,
+
     /// Layer 1 weights stored **transposed**: [feature_dim × HIDDEN1].
-    ///
-    /// Transposing at load time lets us accumulate sparse input features
-    /// with a single contiguous slice read per active feature (~32 active),
-    /// rather than doing a full dense matrix-vector product.
-    w1_t: Vec<f32>, // feature_dim * HIDDEN1
-    b1: Vec<f32>,   // HIDDEN1
+    /// Shared between both perspectives in dual mode.
+    w1_t: Vec<f32>,
+    b1: Vec<f32>,
 
-    /// Layer 2 weights in row-major order: [HIDDEN2 × HIDDEN1].
-    w2: Vec<f32>, // HIDDEN2 * HIDDEN1
-    b2: Vec<f32>, // HIDDEN2
+    /// Layer 2 weights: [HIDDEN2 × HIDDEN1] (single) or [HIDDEN2 × HIDDEN1_DUAL] (dual).
+    w2: Vec<f32>,
+    b2: Vec<f32>,
 
-    /// CP head weights: [HIDDEN2] (the single output row, flattened).
-    w3: Vec<f32>, // HIDDEN2
+    /// CP head: [HIDDEN2]
+    w3: Vec<f32>,
     b3: f32,
 
-    /// WDL head weights: [3 × HIDDEN2] row-major.
-    /// Used to compute confidence (max softmax probability).
-    w_wdl: Vec<f32>, // 3 * HIDDEN2
-    b_wdl: Vec<f32>, // 3
+    /// WDL head: [3 × HIDDEN2]
+    w_wdl: Vec<f32>,
+    b_wdl: Vec<f32>,
 }
 
 impl NeuralEvaluator {
@@ -149,19 +219,28 @@ impl NeuralEvaluator {
 
         let scale = read_npy_f32_scalar(&mut zip, "scale.npy")?;
 
-        let w1_i16 = read_npy_i16(&mut zip, "backbone_0_weight.npy")?;
-        let b1_i16 = read_npy_i16(&mut zip, "backbone_0_bias.npy")?;
-        let w2_i16 = read_npy_i16(&mut zip, "backbone_3_weight.npy")?;
-        let b2_i16 = read_npy_i16(&mut zip, "backbone_3_bias.npy")?;
-        let w3_i16 = read_npy_i16(&mut zip, "cp_head_weight.npy")?;
-        let b3_i16 = read_npy_i16(&mut zip, "cp_head_bias.npy")?;
+        let w1_i16   = read_npy_i16(&mut zip, "backbone_0_weight.npy")?;
+        let b1_i16   = read_npy_i16(&mut zip, "backbone_0_bias.npy")?;
+        let w2_i16   = read_npy_i16(&mut zip, "backbone_3_weight.npy")?;
+        let b2_i16   = read_npy_i16(&mut zip, "backbone_3_bias.npy")?;
+        let w3_i16   = read_npy_i16(&mut zip, "cp_head_weight.npy")?;
+        let b3_i16   = read_npy_i16(&mut zip, "cp_head_bias.npy")?;
         let w_wdl_i16 = read_npy_i16(&mut zip, "wdl_head_weight.npy")?;
         let b_wdl_i16 = read_npy_i16(&mut zip, "wdl_head_bias.npy")?;
 
         let dq = |v: &[i16]| -> Vec<f32> { v.iter().map(|&x| x as f32 / scale).collect() };
 
-        // Detect feature_dim from the w1 weight shape: w1 is [HIDDEN1 × feature_dim].
-        // Total elements = HIDDEN1 × feature_dim, so feature_dim = len / HIDDEN1.
+        // Detect dual from w2 size: HIDDEN2×HIDDEN1_DUAL vs HIDDEN2×HIDDEN1
+        let dual = w2_i16.len() == HIDDEN2 * HIDDEN1_DUAL;
+        let expected_w2 = if dual { HIDDEN2 * HIDDEN1_DUAL } else { HIDDEN2 * HIDDEN1 };
+        if w2_i16.len() != expected_w2 {
+            return Err(format!(
+                "Unexpected backbone_3 size {} (expected {} single or {} dual)",
+                w2_i16.len(), HIDDEN2 * HIDDEN1, HIDDEN2 * HIDDEN1_DUAL
+            ));
+        }
+
+        // Detect feature_dim from w1 weight shape
         let feature_dim = w1_i16.len() / HIDDEN1;
         if feature_dim != LEGACY_FEATURE_DIM && feature_dim != HALFKP_FEATURE_DIM {
             return Err(format!(
@@ -169,8 +248,7 @@ impl NeuralEvaluator {
             ));
         }
 
-        // w1 is originally [HIDDEN1 × feature_dim] row-major.
-        // Transpose to [feature_dim × HIDDEN1] for cache-friendly sparse access.
+        // Transpose w1: [HIDDEN1 × feature_dim] → [feature_dim × HIDDEN1]
         let w1_row = dq(&w1_i16);
         let mut w1_t = vec![0.0f32; feature_dim * HIDDEN1];
         for j in 0..HIDDEN1 {
@@ -181,6 +259,7 @@ impl NeuralEvaluator {
 
         Ok(Self {
             feature_dim,
+            dual_perspective: dual,
             w1_t,
             b1: dq(&b1_i16),
             w2: dq(&w2_i16),
@@ -192,39 +271,98 @@ impl NeuralEvaluator {
         })
     }
 
-    /// Evaluate a position.
+    /// Evaluate a position from scratch.
     ///
-    /// Returns `(cp, confidence)` where:
-    /// - `cp` is centipawns from the **side-to-move's** perspective.
-    /// - `confidence` is `max(softmax(wdl))` — the probability the model
-    ///   assigns to its most likely outcome (win/draw/loss). Range 0..1;
-    ///   values below ~0.4 indicate the model is uncertain about the position.
+    /// Returns `(score, confidence)` where:
+    /// - For dual model: `score` is centipawns from **white's** perspective.
+    /// - For single model: `score` is centipawns from **side-to-move's** perspective.
     pub fn evaluate_with_confidence(&self, board: &ChessBoard) -> (i32, f32) {
-        let active = if self.feature_dim == HALFKP_FEATURE_DIM {
-            encode_active_features_halfkp(board)
-        } else {
-            encode_active_features_legacy(board)
-        };
+        if self.dual_perspective {
+            let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(board);
 
-        // ── Layer 1: sparse input accumulation (features are 0 or 1) ──────
-        // Start with biases, then for each active feature index add its column
-        // from the transposed weight matrix. ~32 active features → ~32 × 512
-        // adds instead of scanning all 768 slots.
-        let mut h1 = [0.0f32; HIDDEN1];
-        h1.copy_from_slice(&self.b1);
-        let (active_indices, active_count) = active;
-        for i in active_indices[..active_count].iter().copied() {
-            debug_assert!(i < self.feature_dim, "feature index {i} out of range {}", self.feature_dim);
-            let src = &self.w1_t[i * HIDDEN1..(i + 1) * HIDDEN1];
-            for j in 0..HIDDEN1 {
-                h1[j] += src[j];
+            let mut h_w = [0.0f32; HIDDEN1];
+            let mut h_b = [0.0f32; HIDDEN1];
+            h_w.copy_from_slice(&self.b1);
+            h_b.copy_from_slice(&self.b1);
+
+            for &i in &w_idx[..wc] {
+                let src = &self.w1_t[i * HIDDEN1..(i + 1) * HIDDEN1];
+                for j in 0..HIDDEN1 {
+                    h_w[j] += src[j];
+                }
             }
-        }
-        for v in h1.iter_mut() {
-            *v = v.max(0.0); // ReLU
-        }
+            for &i in &b_idx[..bc] {
+                let src = &self.w1_t[i * HIDDEN1..(i + 1) * HIDDEN1];
+                for j in 0..HIDDEN1 {
+                    h_b[j] += src[j];
+                }
+            }
+            for v in h_w.iter_mut() {
+                *v = v.max(0.0);
+            }
+            for v in h_b.iter_mut() {
+                *v = v.max(0.0);
+            }
+            self.forward_l2_heads_dual(&h_w, &h_b)
+        } else {
+            let active = if self.feature_dim == HALFKP_FEATURE_DIM {
+                encode_active_features_halfkp(board)
+            } else {
+                encode_active_features_legacy(board)
+            };
 
-        // ── Layer 2: dense [HIDDEN2 × HIDDEN1] ────────────────────────────
+            let mut h1 = [0.0f32; HIDDEN1];
+            h1.copy_from_slice(&self.b1);
+            let (active_indices, active_count) = active;
+            for &i in active_indices[..active_count].iter() {
+                let src = &self.w1_t[i * HIDDEN1..(i + 1) * HIDDEN1];
+                for j in 0..HIDDEN1 {
+                    h1[j] += src[j];
+                }
+            }
+            for v in h1.iter_mut() {
+                *v = v.max(0.0);
+            }
+            self.forward_l2_heads_single(&h1)
+        }
+    }
+
+    /// Evaluate from pre-ReLU accumulators (Phase 3 incremental path).
+    /// Only valid for dual-perspective models.
+    pub fn evaluate_from_accumulators(
+        &self,
+        acc_white: &[f32; HIDDEN1],
+        acc_black: &[f32; HIDDEN1],
+    ) -> (i32, f32) {
+        debug_assert!(self.dual_perspective);
+        let mut h_w = *acc_white;
+        let mut h_b = *acc_black;
+        for v in h_w.iter_mut() {
+            *v = v.max(0.0);
+        }
+        for v in h_b.iter_mut() {
+            *v = v.max(0.0);
+        }
+        self.forward_l2_heads_dual(&h_w, &h_b)
+    }
+
+    /// Layer 2 + heads for dual model: input is [h_w(512) | h_b(512)].
+    fn forward_l2_heads_dual(&self, h_w: &[f32; HIDDEN1], h_b: &[f32; HIDDEN1]) -> (i32, f32) {
+        let mut h2 = [0.0f32; HIDDEN2];
+        for j in 0..HIDDEN2 {
+            let row = &self.w2[j * HIDDEN1_DUAL..(j + 1) * HIDDEN1_DUAL];
+            let mut acc = self.b2[j];
+            for i in 0..HIDDEN1 {
+                acc += row[i] * h_w[i];
+                acc += row[HIDDEN1 + i] * h_b[i];
+            }
+            h2[j] = acc.max(0.0);
+        }
+        self.forward_heads(&h2)
+    }
+
+    /// Layer 2 + heads for single-perspective model: input is h1(512).
+    fn forward_l2_heads_single(&self, h1: &[f32; HIDDEN1]) -> (i32, f32) {
         let mut h2 = [0.0f32; HIDDEN2];
         for j in 0..HIDDEN2 {
             let row = &self.w2[j * HIDDEN1..(j + 1) * HIDDEN1];
@@ -232,17 +370,19 @@ impl NeuralEvaluator {
             for i in 0..HIDDEN1 {
                 acc += row[i] * h1[i];
             }
-            h2[j] = acc.max(0.0); // ReLU
+            h2[j] = acc.max(0.0);
         }
+        self.forward_heads(&h2)
+    }
 
-        // ── CP head: dot(w3, h2) + b3 ─────────────────────────────────────
+    /// CP head + WDL head from h2.
+    #[inline]
+    fn forward_heads(&self, h2: &[f32; HIDDEN2]) -> (i32, f32) {
         let mut cp = self.b3;
         for i in 0..HIDDEN2 {
             cp += self.w3[i] * h2[i];
         }
 
-        // ── WDL head → confidence ─────────────────────────────────────────
-        // logits: [3 × HIDDEN2] row-major → win, draw, loss
         let mut logits = [0.0f32; 3];
         for k in 0..3 {
             let row = &self.w_wdl[k * HIDDEN2..(k + 1) * HIDDEN2];
@@ -252,7 +392,6 @@ impl NeuralEvaluator {
             }
             logits[k] = acc;
         }
-        // Numerically stable softmax
         let max_l = logits[0].max(logits[1]).max(logits[2]);
         let exps = [
             (logits[0] - max_l).exp(),
@@ -261,30 +400,13 @@ impl NeuralEvaluator {
         ];
         let sum = exps[0] + exps[1] + exps[2];
         let confidence = exps[0].max(exps[1]).max(exps[2]) / sum;
-
         (cp.round() as i32, confidence)
     }
 }
 
 // ── Feature encoding ──────────────────────────────────────────────────────
-//
-// Two encoders, selected at runtime based on the loaded model's feature_dim:
-//
-// Legacy (768-dim): 12 piece types × 64 squares, side-to-move normalized.
-//   feature = piece_slot * 64 + square
-//
-// HalfKP (12,288-dim): 12 piece types × 64 squares × 16 king buckets.
-//   feature = piece_slot * 64 * 16 + square * 16 + king_bucket
-//
-// Both encoders flip ranks (sq ^ 56) when black is to move so the model
-// always sees the board from the side-to-move's perspective.
-//
-// King bucket layout (after optional rank flip):
-//   files 0-3 → bucket 0-3 (keep); files 4-7 → bucket 3-0 (mirror queenside)
-//   ranks 0-3 → rank_half 0; ranks 4-7 → rank_half 1
-//   bucket = rank_half * 4 + file_bucket  (0..15)
 
-const KING_BUCKET: [usize; 64] = {
+pub(crate) const KING_BUCKET: [usize; 64] = {
     let mut t = [0usize; 64];
     let mut sq = 0usize;
     while sq < 64 {
@@ -298,7 +420,92 @@ const KING_BUCKET: [usize; 64] = {
     t
 };
 
-/// Legacy 768-dim encoder. Returns active feature indices + count.
+/// Dual HalfKP encoding: returns ((white_indices, white_count), (black_indices, black_count)).
+///
+/// White perspective: absolute (white king = ours, white pieces = slots 0-5).
+/// Black perspective: rank-flipped (black king = ours, black pieces = slots 0-5).
+/// Both use the same feature formula: slot*64*16 + sq*16 + king_bucket.
+pub(crate) fn encode_dual_halfkp(
+    board: &ChessBoard,
+) -> (([usize; 32], usize), ([usize; 32], usize)) {
+    let white_bb = board.get_white();
+    let black_bb = board.get_black();
+
+    // White perspective: white king bucket (no rank flip)
+    let wk_sq = (white_bb & board.get_kings()).0.trailing_zeros() as usize;
+    let wk_sq = wk_sq.min(63);
+    let wk_bucket = KING_BUCKET[wk_sq];
+
+    // Black perspective: black king rank-flipped
+    let bk_sq_raw = (black_bb & board.get_kings()).0.trailing_zeros() as usize;
+    let bk_sq_raw = bk_sq_raw.min(63);
+    let bk_bucket = KING_BUCKET[bk_sq_raw ^ 56];
+
+    let mut w_indices = [0usize; 32];
+    let mut b_indices = [0usize; 32];
+    let mut wc = 0usize;
+    let mut bc = 0usize;
+
+    macro_rules! push_white {
+        ($bb:expr, $slot:expr) => {
+            let mut bb: Bitboard = $bb;
+            while bb.0 != 0 {
+                let sq = bb.0.trailing_zeros() as usize;
+                bb.0 &= bb.0 - 1;
+                if wc < 32 {
+                    w_indices[wc] = $slot * 64 * 16 + sq * 16 + wk_bucket;
+                    wc += 1;
+                }
+            }
+        };
+    }
+
+    macro_rules! push_black {
+        ($bb:expr, $slot:expr) => {
+            let mut bb: Bitboard = $bb;
+            while bb.0 != 0 {
+                let sq = bb.0.trailing_zeros() as usize;
+                bb.0 &= bb.0 - 1;
+                if bc < 32 {
+                    b_indices[bc] = $slot * 64 * 16 + (sq ^ 56) * 16 + bk_bucket;
+                    bc += 1;
+                }
+            }
+        };
+    }
+
+    // White perspective: white pieces = ours (0-5), black pieces = theirs (6-11)
+    push_white!(white_bb & board.get_pawns(),    0);
+    push_white!(white_bb & board.get_knights(),  1);
+    push_white!(white_bb & board.get_bishops(),  2);
+    push_white!(white_bb & board.get_rooks(),    3);
+    push_white!(white_bb & board.get_queens(),   4);
+    push_white!(white_bb & board.get_kings(),    5);
+    push_white!(black_bb & board.get_pawns(),    6);
+    push_white!(black_bb & board.get_knights(),  7);
+    push_white!(black_bb & board.get_bishops(),  8);
+    push_white!(black_bb & board.get_rooks(),    9);
+    push_white!(black_bb & board.get_queens(),  10);
+    push_white!(black_bb & board.get_kings(),   11);
+
+    // Black perspective: black pieces = ours (0-5), white pieces = theirs (6-11), squares rank-flipped
+    push_black!(black_bb & board.get_pawns(),    0);
+    push_black!(black_bb & board.get_knights(),  1);
+    push_black!(black_bb & board.get_bishops(),  2);
+    push_black!(black_bb & board.get_rooks(),    3);
+    push_black!(black_bb & board.get_queens(),   4);
+    push_black!(black_bb & board.get_kings(),    5);
+    push_black!(white_bb & board.get_pawns(),    6);
+    push_black!(white_bb & board.get_knights(),  7);
+    push_black!(white_bb & board.get_bishops(),  8);
+    push_black!(white_bb & board.get_rooks(),    9);
+    push_black!(white_bb & board.get_queens(),  10);
+    push_black!(white_bb & board.get_kings(),   11);
+
+    ((w_indices, wc), (b_indices, bc))
+}
+
+/// Legacy 768-dim encoder.
 fn encode_active_features_legacy(board: &ChessBoard) -> ([usize; 32], usize) {
     let white_to_move = board.is_white_active();
     let flip = !white_to_move;
@@ -324,12 +531,12 @@ fn encode_active_features_legacy(board: &ChessBoard) -> ([usize; 32], usize) {
         };
     }
 
-    push_bb!(ours  & board.get_pawns(),   0);
-    push_bb!(ours  & board.get_knights(), 64);
-    push_bb!(ours  & board.get_bishops(), 128);
-    push_bb!(ours  & board.get_rooks(),   192);
-    push_bb!(ours  & board.get_queens(),  256);
-    push_bb!(ours  & board.get_kings(),   320);
+    push_bb!(ours   & board.get_pawns(),    0);
+    push_bb!(ours   & board.get_knights(), 64);
+    push_bb!(ours   & board.get_bishops(), 128);
+    push_bb!(ours   & board.get_rooks(),   192);
+    push_bb!(ours   & board.get_queens(),  256);
+    push_bb!(ours   & board.get_kings(),   320);
     push_bb!(theirs & board.get_pawns(),   384);
     push_bb!(theirs & board.get_knights(), 448);
     push_bb!(theirs & board.get_bishops(), 512);
@@ -340,8 +547,7 @@ fn encode_active_features_legacy(board: &ChessBoard) -> ([usize; 32], usize) {
     (indices, count)
 }
 
-/// HalfKP 12,288-dim king-bucketed encoder. Returns active feature indices + count.
-/// feature = piece_slot(0..11) * 64 * 16 + piece_square * 16 + king_bucket(0..15)
+/// HalfKP 12,288-dim king-bucketed encoder (single-perspective, side-to-move normalized).
 fn encode_active_features_halfkp(board: &ChessBoard) -> ([usize; 32], usize) {
     let white_to_move = board.is_white_active();
     let flip = !white_to_move;
@@ -351,10 +557,9 @@ fn encode_active_features_halfkp(board: &ChessBoard) -> ([usize; 32], usize) {
         (board.get_black(), board.get_white())
     };
 
-    // Side-to-move king square (after optional rank flip).
     let king_raw = (ours & board.get_kings()).0.trailing_zeros() as usize;
     let king_sq = if flip { king_raw ^ 56 } else { king_raw };
-    let bucket = KING_BUCKET[king_sq];
+    let bucket = KING_BUCKET[king_sq.min(63)];
 
     let mut indices = [0usize; 32];
     let mut count = 0usize;
@@ -372,16 +577,16 @@ fn encode_active_features_halfkp(board: &ChessBoard) -> ([usize; 32], usize) {
         };
     }
 
-    push_bb_halfkp!(ours  & board.get_pawns(),    0);
-    push_bb_halfkp!(ours  & board.get_knights(),  1);
-    push_bb_halfkp!(ours  & board.get_bishops(),  2);
-    push_bb_halfkp!(ours  & board.get_rooks(),    3);
-    push_bb_halfkp!(ours  & board.get_queens(),   4);
-    push_bb_halfkp!(ours  & board.get_kings(),    5);
-    push_bb_halfkp!(theirs & board.get_pawns(),   6);
-    push_bb_halfkp!(theirs & board.get_knights(), 7);
-    push_bb_halfkp!(theirs & board.get_bishops(), 8);
-    push_bb_halfkp!(theirs & board.get_rooks(),   9);
+    push_bb_halfkp!(ours   & board.get_pawns(),    0);
+    push_bb_halfkp!(ours   & board.get_knights(),  1);
+    push_bb_halfkp!(ours   & board.get_bishops(),  2);
+    push_bb_halfkp!(ours   & board.get_rooks(),    3);
+    push_bb_halfkp!(ours   & board.get_queens(),   4);
+    push_bb_halfkp!(ours   & board.get_kings(),    5);
+    push_bb_halfkp!(theirs & board.get_pawns(),    6);
+    push_bb_halfkp!(theirs & board.get_knights(),  7);
+    push_bb_halfkp!(theirs & board.get_bishops(),  8);
+    push_bb_halfkp!(theirs & board.get_rooks(),    9);
     push_bb_halfkp!(theirs & board.get_queens(),  10);
     push_bb_halfkp!(theirs & board.get_kings(),   11);
 
@@ -463,8 +668,6 @@ fn parse_npy_f32(buf: &[u8], name: &str) -> Result<Vec<f32>, String> {
         .collect())
 }
 
-/// Parse an .npy file header; return `(data_offset, n_elements)`.
-/// Validates that `expected_dtype` appears in the header dict.
 fn parse_npy_header(buf: &[u8], name: &str, expected_dtype: &str) -> Result<(usize, usize), String> {
     if buf.len() < 10 || &buf[0..6] != b"\x93NUMPY" {
         return Err(format!("'{name}' is not a valid .npy file"));
@@ -499,8 +702,6 @@ fn parse_npy_header(buf: &[u8], name: &str, expected_dtype: &str) -> Result<(usi
     Ok((data_offset, n))
 }
 
-/// Extract the product of shape dimensions from an .npy header string.
-/// Handles shapes like `(512, 768)`, `(512,)`, `(1,)`.
 fn parse_shape_product(header: &str, name: &str) -> Result<usize, String> {
     let shape_start = header
         .find("'shape'")
@@ -520,7 +721,6 @@ fn parse_shape_product(header: &str, name: &str) -> Result<usize, String> {
         .filter_map(|s| s.trim().parse::<usize>().ok())
         .product();
 
-    // Empty tuple `()` or scalar `(1,)` with product==0 → treat as 1 element.
     Ok(if product == 0 { 1 } else { product })
 }
 
@@ -555,7 +755,6 @@ mod tests {
         let board = ChessBoard::new();
         assert!(board.is_white_active());
         let features = encode_features_legacy(&board);
-        // White king on e1 = square 4, side-to-move king offset = 320
         assert_eq!(features[320 + 4], 1.0, "White king should be at feature 324");
     }
 
@@ -564,7 +763,6 @@ mod tests {
         let mut board = ChessBoard::new();
         board.toggle_turn();
         let features = encode_features_legacy(&board);
-        // Black king on e8 = square 60; flipped: 60 ^ 56 = 4; offset 320
         assert_eq!(features[320 + 4], 1.0, "Black king (mirrored) should be at feature 324");
     }
 
@@ -591,7 +789,6 @@ mod tests {
     fn test_halfkp_features_in_range() {
         let board = ChessBoard::new();
         let features = encode_features_halfkp(&board);
-        // No feature index should exceed HALFKP_FEATURE_DIM
         for (i, &v) in features.iter().enumerate() {
             if v != 0.0 {
                 assert!(i < HALFKP_FEATURE_DIM, "HalfKP feature index {i} out of range");
@@ -601,9 +798,54 @@ mod tests {
 
     #[test]
     fn test_halfkp_king_bucket_consistency() {
-        // All 16 buckets are valid indices
         for sq in 0..64 {
             assert!(KING_BUCKET[sq] < 16, "KING_BUCKET[{sq}] = {} out of range", KING_BUCKET[sq]);
         }
+    }
+
+    // ── Dual HalfKP tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_dual_halfkp_feature_count_starting() {
+        let board = ChessBoard::new();
+        let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(&board);
+        assert_eq!(wc, 32, "Dual white perspective should have 32 features");
+        assert_eq!(bc, 32, "Dual black perspective should have 32 features");
+        // All indices should be in range
+        for &i in &w_idx[..wc] {
+            assert!(i < HALFKP_FEATURE_DIM, "Dual white feature index {i} out of range");
+        }
+        for &i in &b_idx[..bc] {
+            assert!(i < HALFKP_FEATURE_DIM, "Dual black feature index {i} out of range");
+        }
+    }
+
+    #[test]
+    fn test_dual_halfkp_symmetric_sides() {
+        // From starting position: dual white perspective == dual black perspective (symmetric board)
+        let board = ChessBoard::new();
+        let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(&board);
+        assert_eq!(wc, bc, "Symmetric board should have same feature count for both perspectives");
+        // The feature sets should be identical for the starting position (symmetric)
+        let mut w_set: Vec<_> = w_idx[..wc].to_vec();
+        let mut b_set: Vec<_> = b_idx[..bc].to_vec();
+        w_set.sort();
+        b_set.sort();
+        assert_eq!(w_set, b_set, "Starting position should be symmetric across perspectives");
+    }
+
+    #[test]
+    fn test_dual_halfkp_black_to_move_same_features() {
+        // Dual encoding is independent of side to move
+        let board_w = ChessBoard::new();
+        let mut board_b = ChessBoard::new();
+        board_b.toggle_turn();
+        let ((w_idx_w, wc_w), (b_idx_w, bc_w)) = encode_dual_halfkp(&board_w);
+        let ((w_idx_b, wc_b), (b_idx_b, bc_b)) = encode_dual_halfkp(&board_b);
+        // Features must be identical regardless of side to move
+        assert_eq!(wc_w, wc_b);
+        assert_eq!(bc_w, bc_b);
+        assert_eq!(&w_idx_w[..wc_w], &w_idx_b[..wc_b]);
+        assert_eq!(&b_idx_w[..bc_w], &b_idx_b[..bc_b]);
     }
 }

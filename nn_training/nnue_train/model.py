@@ -5,6 +5,43 @@ import torch.nn.functional as F
 from torch import nn
 
 
+class EvalNetDual(nn.Module):
+    """Dual-perspective NNUE: two shared-weight EmbeddingBag lookups (white + black king
+    views), each ReLU'd, then concatenated before fc2.
+
+    Architecture: [h_white(512) | h_black(512)] → fc2(1024→32) → ReLU → heads
+    Convention: always white-first concatenation regardless of side to move.
+
+    CP targets must use white-absolute convention (positive = good for white).
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 12288,
+        hidden_dim: int = 512,
+        hidden2_dim: int = 32,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+
+        # Shared feature transformer — both perspectives use the same weights
+        self.embedding = nn.EmbeddingBag(
+            input_dim + 1, hidden_dim, mode="sum", padding_idx=input_dim
+        )
+        self.bias1 = nn.Parameter(torch.zeros(hidden_dim))
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden_dim * 2, hidden2_dim)  # 1024 → 32
+        self.cp_head = nn.Linear(hidden2_dim, 1)
+        self.wdl_head = nn.Linear(hidden2_dim, 3)
+
+    def forward(self, x_white: torch.Tensor, x_black: torch.Tensor):
+        h_w = F.relu(self.embedding(x_white) + self.bias1)
+        h_b = F.relu(self.embedding(x_black) + self.bias1)  # shared weights
+        h = F.relu(self.fc2(self.dropout(torch.cat([h_w, h_b], dim=1))))
+        return self.cp_head(h), self.wdl_head(h)
+
+
 class EvalNet(nn.Module):
     """NNUE-style evaluation network with optional sparse input via EmbeddingBag.
 

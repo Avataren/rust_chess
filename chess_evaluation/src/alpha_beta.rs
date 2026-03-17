@@ -15,6 +15,15 @@ use crate::{
     transposition_table::{TranspositionTable, TtFlag},
 };
 
+// ── Accumulator dimensions ────────────────────────────────────────────────────
+// Must match HIDDEN1 in neural_eval.rs.  Defined here to avoid importing all of
+// neural_eval into the search hot path.
+use crate::neural_eval::HIDDEN1 as ACCUM_DIM;
+
+/// Accumulator stack size: main search + quiescence depth headroom.
+/// MAX_PLY=64 + 16 headroom handles any quiescence depth (max 12) safely.
+const ACC_SIZE: usize = MAX_PLY + 16; // 80
+
 // ── LMR lookup table ──────────────────────────────────────────────────────────
 
 /// Precomputed LMR reductions: `LMR_TABLE[depth][move_index]`.
@@ -203,6 +212,15 @@ pub struct SearchContext {
     /// Total nodes visited (alpha_beta + quiescence calls).  Incremented at
     /// the top of each call.  Useful for NPS benchmarking.
     pub nodes: u64,
+
+    // ── Incremental accumulator stack (Phase 3) ───────────────────────────
+    // Pre-ReLU L1 accumulators for the dual-perspective neural model.
+    // Heap-allocated to avoid ~330 KB stack pressure.
+    // acc_white[ply] / acc_black[ply] reflect the board state at search ply `ply`.
+    // acc_valid=true iff a dual model is loaded and init_accumulators has been called.
+    pub acc_white: Box<[[f32; ACCUM_DIM]; ACC_SIZE]>,
+    pub acc_black: Box<[[f32; ACCUM_DIM]; ACC_SIZE]>,
+    pub acc_valid: bool,
 }
 
 impl SearchContext {
@@ -218,6 +236,109 @@ impl SearchContext {
             excluded_move: [None; MAX_PLY],
             static_evals: [i32::MIN; MAX_PLY],
             nodes: 0,
+            acc_white: Box::new([[0.0f32; ACCUM_DIM]; ACC_SIZE]),
+            acc_black: Box::new([[0.0f32; ACCUM_DIM]; ACC_SIZE]),
+            acc_valid: false,
+        }
+    }
+
+    /// Initialize accumulators from the root board position.
+    /// Sets acc_valid=true if a dual neural model is loaded and enabled.
+    pub fn init_accumulators(&mut self, board: &ChessBoard) {
+        self.acc_valid = crate::neural_eval::init_accumulators_for_board(
+            board,
+            &mut self.acc_white[0],
+            &mut self.acc_black[0],
+        );
+    }
+
+    /// Push accumulator state to ply+1 with an incremental delta for the given move.
+    /// Call BEFORE make_move.  Returns true when the king moved (caller must call
+    /// acc_recompute after make_move since the king bucket changes).
+    pub fn acc_push(&mut self, ply: usize, mv: &ChessMove, board: &ChessBoard) -> bool {
+        if !self.acc_valid {
+            return false;
+        }
+        let src = ply.min(ACC_SIZE - 1);
+        let dst = (ply + 1).min(ACC_SIZE - 1);
+
+        // Copy parent accumulator to child ply (arrays are Copy)
+        let tmp_w = self.acc_white[src];
+        self.acc_white[dst] = tmp_w;
+        let tmp_b = self.acc_black[src];
+        self.acc_black[dst] = tmp_b;
+
+        // Identify the moving piece
+        let moving_piece = match mv.chess_piece {
+            Some(p) => p,
+            None => return true, // unknown piece → full recompute
+        };
+
+        // King moves require full recompute (king bucket changes)
+        if moving_piece.piece_type() == PieceType::King {
+            return true;
+        }
+
+        let from_sq = mv.start_square() as usize;
+        let to_sq   = mv.target_square() as usize;
+        let piece_is_white = moving_piece.is_white();
+
+        // Current king buckets (unchanged for non-king moves)
+        let wk_sq = (board.get_white() & board.get_kings()).0.trailing_zeros() as usize;
+        let bk_sq_raw = (board.get_black() & board.get_kings()).0.trailing_zeros() as usize;
+        let wk_bucket = crate::neural_eval::KING_BUCKET[wk_sq.min(63)];
+        let bk_bucket = crate::neural_eval::KING_BUCKET[(bk_sq_raw ^ 56).min(63)];
+
+        let acc_w = &mut self.acc_white[dst];
+        let acc_b = &mut self.acc_black[dst];
+
+        // Remove moving piece from its source square
+        let orig_pt = moving_piece.piece_type();
+        let slot_w = halfkp_piece_slot(orig_pt, piece_is_white);
+        let slot_b = halfkp_piece_slot(orig_pt, !piece_is_white);
+        crate::neural_eval::acc_sub_feature(acc_w, slot_w * 64 * 16 + from_sq * 16 + wk_bucket);
+        crate::neural_eval::acc_sub_feature(acc_b, slot_b * 64 * 16 + (from_sq ^ 56) * 16 + bk_bucket);
+
+        // Add moving piece to its destination square (promotion may change type)
+        let to_pt = if mv.is_promotion() {
+            mv.promotion_piece_type().unwrap_or(PieceType::Pawn)
+        } else {
+            orig_pt
+        };
+        let to_slot_w = halfkp_piece_slot(to_pt, piece_is_white);
+        let to_slot_b = halfkp_piece_slot(to_pt, !piece_is_white);
+        crate::neural_eval::acc_add_feature(acc_w, to_slot_w * 64 * 16 + to_sq * 16 + wk_bucket);
+        crate::neural_eval::acc_add_feature(acc_b, to_slot_b * 64 * 16 + (to_sq ^ 56) * 16 + bk_bucket);
+
+        // Remove captured piece (en passant: captured pawn is not at to_sq)
+        if mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
+            let cap_sq = if piece_is_white { to_sq.wrapping_sub(8) } else { to_sq + 8 };
+            let cap_slot_w = halfkp_piece_slot(PieceType::Pawn, !piece_is_white);
+            let cap_slot_b = halfkp_piece_slot(PieceType::Pawn, piece_is_white);
+            crate::neural_eval::acc_sub_feature(acc_w, cap_slot_w * 64 * 16 + cap_sq * 16 + wk_bucket);
+            crate::neural_eval::acc_sub_feature(acc_b, cap_slot_b * 64 * 16 + (cap_sq ^ 56) * 16 + bk_bucket);
+        } else if let Some(cap) = mv.capture {
+            let cap_pt = cap.piece_type();
+            let cap_is_white = cap.is_white();
+            let cap_slot_w = halfkp_piece_slot(cap_pt, cap_is_white);
+            let cap_slot_b = halfkp_piece_slot(cap_pt, !cap_is_white);
+            crate::neural_eval::acc_sub_feature(acc_w, cap_slot_w * 64 * 16 + to_sq * 16 + wk_bucket);
+            crate::neural_eval::acc_sub_feature(acc_b, cap_slot_b * 64 * 16 + (to_sq ^ 56) * 16 + bk_bucket);
+        }
+
+        false // no full recompute needed
+    }
+
+    /// Recompute accumulator at `ply` from scratch (called after king moves).
+    pub fn acc_recompute(&mut self, ply: usize, board: &ChessBoard) {
+        let p = ply.min(ACC_SIZE - 1);
+        if !crate::neural_eval::init_accumulators_for_board(
+            board,
+            &mut self.acc_white[p],
+            &mut self.acc_black[p],
+        ) {
+            // Model unavailable — disable incremental path
+            self.acc_valid = false;
         }
     }
 
@@ -304,6 +425,48 @@ impl SearchContext {
     }
 }
 
+// ── HalfKP piece slot helper ──────────────────────────────────────────────────
+
+/// Map a piece type + ownership flag to a HalfKP slot index (0-11).
+/// Ours (is_ours=true): Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4, King=5.
+/// Theirs (is_ours=false): same +6.
+#[inline(always)]
+fn halfkp_piece_slot(pt: PieceType, is_ours: bool) -> usize {
+    let base = match pt {
+        PieceType::Pawn   => 0,
+        PieceType::Knight => 1,
+        PieceType::Bishop => 2,
+        PieceType::Rook   => 3,
+        PieceType::Queen  => 4,
+        PieceType::King   => 5,
+        PieceType::None   => 0,
+    };
+    if is_ours { base } else { base + 6 }
+}
+
+/// Evaluate the current position using accumulators when available,
+/// otherwise falling back to the classical/neural evaluate_board.
+#[inline(always)]
+fn eval_node(
+    board: &ChessBoard,
+    conductor: &PieceConductor,
+    ctx: &SearchContext,
+    ply: usize,
+) -> i32 {
+    if ctx.acc_valid {
+        let p = ply.min(ACC_SIZE - 1);
+        let is_white = board.is_white_active();
+        if let Some(score) = crate::neural_eval::try_neural_eval_accum(
+            &ctx.acc_white[p],
+            &ctx.acc_black[p],
+            is_white,
+        ) {
+            return score;
+        }
+    }
+    evaluate_board(board, conductor)
+}
+
 // ── Quiescence search ─────────────────────────────────────────────────────────
 
 /// Continues searching capture-only moves after the main search depth is
@@ -319,17 +482,18 @@ impl SearchContext {
 fn quiescence(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
+    ctx: &mut SearchContext,
     mut alpha: i32,
     mut beta: i32,
     is_white: bool,
     qdepth: i32,
-    nodes: &mut u64,
+    ply: usize,
 ) -> i32 {
-    *nodes += 1;
+    ctx.nodes += 1;
     if qdepth == 0 {
-        return evaluate_board(chess_board, conductor);
+        return eval_node(chess_board, conductor, ctx, ply);
     }
-    let stand_pat = evaluate_board(chess_board, conductor);
+    let stand_pat = eval_node(chess_board, conductor, ctx, ply);
 
     // Fail-soft quiescence: return the actual best score found, not alpha/beta.
     if is_white {
@@ -361,8 +525,10 @@ fn quiescence(
                 continue;
             }
 
+            let king_moved = ctx.acc_push(ply, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
-            let eval = quiescence(chess_board, conductor, alpha, beta, false, qdepth - 1, nodes);
+            if king_moved { ctx.acc_recompute(ply + 1, chess_board); }
+            let eval = quiescence(chess_board, conductor, ctx, alpha, beta, false, qdepth - 1, ply + 1);
             chess_board.undo_move();
 
             if eval >= beta { return eval; }
@@ -398,8 +564,10 @@ fn quiescence(
                 continue;
             }
 
+            let king_moved = ctx.acc_push(ply, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
-            let eval = quiescence(chess_board, conductor, alpha, beta, true, qdepth - 1, nodes);
+            if king_moved { ctx.acc_recompute(ply + 1, chess_board); }
+            let eval = quiescence(chess_board, conductor, ctx, alpha, beta, true, qdepth - 1, ply + 1);
             chess_board.undo_move();
 
             if eval <= alpha { return eval; }
@@ -583,7 +751,7 @@ pub fn alpha_beta(
         // that arise in endgames (pawn races, exchange sequences) while
         // avoiding unbounded recursion.  SEE pruning inside quiescence
         // means the extra budget costs little in practice.
-        return (quiescence(chess_board, conductor, alpha, beta, is_white, 12, &mut ctx.nodes), None);
+        return (quiescence(chess_board, conductor, ctx, alpha, beta, is_white, 12, ply), None);
     }
 
     let hash = chess_board.current_hash();
@@ -640,7 +808,7 @@ pub fn alpha_beta(
     // Skipped when in check (pruning is unsound under forced moves) or at
     // high depths where the cost is negligible vs. search time.
     let static_eval: Option<i32> = if !in_check && depth <= 9 {
-        Some(evaluate_board(chess_board, conductor))
+        Some(eval_node(chess_board, conductor, ctx, ply))
     } else {
         None
     };
@@ -705,6 +873,15 @@ pub fn alpha_beta(
         } else { 0 };
         let r = (3 + depth / 3 + excess.clamp(0, 3)).min(depth - 1);
 
+        // Null move: no pieces move, so copy accumulator from current ply to next.
+        if ctx.acc_valid {
+            let src = ply.min(ACC_SIZE - 1);
+            let dst = (ply + 1).min(ACC_SIZE - 1);
+            let tmp_w = ctx.acc_white[src];
+            ctx.acc_white[dst] = tmp_w;
+            let tmp_b = ctx.acc_black[src];
+            ctx.acc_black[dst] = tmp_b;
+        }
         chess_board.make_null_move();
         let null_score = alpha_beta(
             chess_board, conductor, tt, ctx,
@@ -744,7 +921,9 @@ pub fn alpha_beta(
 
                 if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) { break; }
 
+                let pc_king_moved = ctx.acc_push(ply, &pc_mv, chess_board);
                 chess_board.make_move(&mut pc_mv);
+                if pc_king_moved { ctx.acc_recompute(ply + 1, chess_board); }
                 let (pc_alpha, pc_beta) = if is_white {
                     (pc_threshold - 1, pc_threshold)
                 } else {
@@ -945,7 +1124,9 @@ pub fn alpha_beta(
             // Record this move as the "previous move" for the child ply so the
             // child can look up the countermove that refutes it.
             ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
+            let king_moved_ab = ctx.acc_push(ply, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
+            if king_moved_ab { ctx.acc_recompute(ply + 1, chess_board); }
 
             // LMR reduction: R grows with depth and move index.
             // Reduce less for moves with high continuation history score (they're "interesting").
@@ -1082,7 +1263,9 @@ pub fn alpha_beta(
 
             // Record this move as the "previous move" for the child ply.
             ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
+            let king_moved_ab = ctx.acc_push(ply, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
+            if king_moved_ab { ctx.acc_recompute(ply + 1, chess_board); }
 
             let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
                 let r = lmr_reduction(depth, move_index).max(1);
@@ -1216,7 +1399,9 @@ pub fn search_root(
             if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
                 break;
             }
+            let root_king_moved = ctx.acc_push(0, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
+            if root_king_moved { ctx.acc_recompute(1, chess_board); }
 
             let eval = if chess_board.is_repetition(2) {
                 0
@@ -1256,7 +1441,9 @@ pub fn search_root(
             if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
                 break;
             }
+            let root_king_moved = ctx.acc_push(0, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
+            if root_king_moved { ctx.acc_recompute(1, chess_board); }
 
             let eval = if chess_board.is_repetition(2) {
                 0
@@ -1501,6 +1688,9 @@ fn id_search_single(
 ) -> SearchResult {
     let t0 = Instant::now();
     let mut ctx = SearchContext::new();
+    // Initialize incremental accumulators for the dual-perspective neural model.
+    // If no dual model is loaded, this is a no-op (acc_valid stays false).
+    ctx.init_accumulators(chess_board);
     let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
 
     for depth in 1..=max_depth {

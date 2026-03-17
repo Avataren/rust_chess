@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import yaml
 
-from nnue_train.model import EvalNet
+from nnue_train.model import EvalNet, EvalNetDual
 
 INT16_MIN = np.iinfo(np.int16).min
 INT16_MAX = np.iinfo(np.int16).max
@@ -60,26 +60,42 @@ def main():
     cfg = yaml.safe_load(open(args.config, "r", encoding="utf-8"))
     mcfg = cfg["model"]
 
-    model = EvalNet(
-        input_dim=mcfg["input_dim"],
-        hidden_dim=mcfg["hidden_dim"],
-        hidden2_dim=mcfg["hidden2_dim"],
-        dropout=0.0,
-        sparse_input=mcfg.get("sparse_input", False),
+    ckpt = torch.load(args.checkpoint, map_location="cpu")
+    state = ckpt["model_state"]
+
+    # Auto-detect dual model: shared embedding + fc2 has 1024 input columns
+    is_dual = mcfg.get("dual_perspective", False) or (
+        "embedding.weight" in state and "fc2.weight" in state
+        and state["fc2.weight"].shape[1] == mcfg["hidden_dim"] * 2
     )
 
-    ckpt = torch.load(args.checkpoint, map_location="cpu")
-    model.load_state_dict(ckpt["model_state"])
+    if is_dual:
+        model = EvalNetDual(
+            input_dim=mcfg["input_dim"],
+            hidden_dim=mcfg["hidden_dim"],
+            hidden2_dim=mcfg["hidden2_dim"],
+            dropout=0.0,
+        )
+    else:
+        model = EvalNet(
+            input_dim=mcfg["input_dim"],
+            hidden_dim=mcfg["hidden_dim"],
+            hidden2_dim=mcfg["hidden2_dim"],
+            dropout=0.0,
+            sparse_input=mcfg.get("sparse_input", False),
+        )
+
+    model.load_state_dict(state)
     model.eval()
 
     state = model.state_dict()
     s = args.scale
     ov = args.on_overflow
 
-    # Extract first-layer weights in a unified shape (hidden, input) regardless of model type.
-    # EmbeddingBag stores (input+1, hidden) — take first input_dim rows and transpose.
-    # Linear stores (hidden, input) — use directly.
-    if model.sparse_input:
+    # Extract first-layer weights in unified shape (hidden, input).
+    # EmbeddingBag: (input+1, hidden) → take first input_dim rows, transpose.
+    # Linear: (hidden, input) → use directly.
+    if is_dual or (hasattr(model, "sparse_input") and model.sparse_input):
         w1 = state["embedding.weight"][:mcfg["input_dim"]].T.contiguous()
         b1 = state["bias1"]
     else:

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .features import cp_to_wdl_target, encode_board_12x64, encode_board_halfkp, HALFKP_FEATURE_DIM, FEATURE_DIM
+from .features import cp_to_wdl_target, encode_board_12x64, encode_board_halfkp, HALFKP_FEATURE_DIM, FEATURE_DIM, encode_board_halfkp_dual
 
 
 class BinaryPositionDataset(Dataset):
@@ -53,6 +53,49 @@ class BinaryPositionDataset(Dataset):
 
         return (
             torch.from_numpy(indices),
+            torch.from_numpy(cp),
+            torch.from_numpy(wdl),
+        )
+
+
+class BinaryDualPositionDataset(Dataset):
+    """Fast dual-perspective dataset backed by pre-encoded sparse binary files.
+
+    Use scripts/preprocess_dataset.py --dual to generate the binary files.
+
+    Files expected (given path = "data/train_10m.jsonl"):
+      data/train_10m.white_indices.npy  -- (N, 32) uint16
+      data/train_10m.black_indices.npy  -- (N, 32) uint16
+      data/train_10m.counts.npy         -- (N,)    uint8
+      data/train_10m.cp.npy             -- (N,)    float32  (white-absolute cp)
+    """
+
+    def __init__(self, path: str, max_cp_abs: int = 1500):
+        prefix = str(Path(path).with_suffix(""))
+        self.white_indices = np.load(prefix + ".white_indices.npy", mmap_mode="r")
+        self.black_indices = np.load(prefix + ".black_indices.npy", mmap_mode="r")
+        self.counts = np.load(prefix + ".counts.npy", mmap_mode="r")
+        self.cp = np.clip(np.load(prefix + ".cp.npy", mmap_mode="r"), -max_cp_abs, max_cp_abs)
+
+    def __len__(self) -> int:
+        return len(self.cp)
+
+    def __getitem__(self, idx: int):
+        count = int(self.counts[idx])
+        SENTINEL = HALFKP_FEATURE_DIM  # 12288
+
+        w_idx = np.full(32, SENTINEL, dtype=np.int64)
+        b_idx = np.full(32, SENTINEL, dtype=np.int64)
+        w_idx[:count] = self.white_indices[idx, :count]
+        b_idx[:count] = self.black_indices[idx, :count]
+
+        cp_val = float(self.cp[idx])
+        cp = np.array([cp_val], dtype=np.float32)
+        wdl = cp_to_wdl_target(cp_val)
+
+        return (
+            torch.from_numpy(w_idx),
+            torch.from_numpy(b_idx),
             torch.from_numpy(cp),
             torch.from_numpy(wdl),
         )

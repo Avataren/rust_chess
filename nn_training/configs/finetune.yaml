@@ -1,0 +1,29 @@
+seed: 42
+
+training:
+  batch_size: 2048
+  epochs: 20         # shorter runs per iteration
+  lr: 0.0002         # lower LR for fine-tuning
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  workers: 8
+  pin_memory: true
+  amp: true
+
+model:
+  input_dim: 768
+  hidden_dim: 512
+  hidden2_dim: 32
+  dropout: 0.1
+
+loss:
+  cp_weight: 0.3
+  wdl_weight: 0.7
+
+data:
+  train_file: data/train.jsonl
+  val_file: data/val.jsonl
+  max_cp_abs: 1500
+
+export:
+  output_path: artifacts/eval.onnx

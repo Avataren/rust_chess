@@ -27,7 +27,7 @@ import sys, os
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from nnue_train.features import (
     HALFKP_FEATURE_DIM, FEATURE_DIM,
-    encode_board_halfkp, encode_board_12x64,
+    encode_board_halfkp, encode_board_12x64, encode_board_halfkp_dual,
 )
 
 MAX_ACTIVE = 32  # maximum active features per position
@@ -49,6 +49,9 @@ def main():
                     help="Use HalfKP 12,288-dim features (default: true)")
     ap.add_argument("--no-halfkp", dest="use_halfkp", action="store_false")
     ap.add_argument("--max-cp-abs", type=int, default=1500)
+    ap.add_argument("--dual", action="store_true", default=False,
+                    help="Generate dual-perspective files (white_indices + black_indices). "
+                         "CP values are converted to white-absolute convention.")
     args = ap.parse_args()
 
     input_path = Path(args.input)
@@ -59,17 +62,31 @@ def main():
     N = count_lines(input_path)
     print(f"  {N:,} positions")
 
-    feature_dim = HALFKP_FEATURE_DIM if args.use_halfkp else FEATURE_DIM
-    encode_fn = encode_board_halfkp if args.use_halfkp else encode_board_12x64
-    print(f"  feature_dim={feature_dim}, use_halfkp={args.use_halfkp}")
+    if args.dual:
+        print(f"  mode=dual (white-absolute cp, two perspective files)")
+    else:
+        feature_dim = HALFKP_FEATURE_DIM if args.use_halfkp else FEATURE_DIM
+        encode_fn = encode_board_halfkp if args.use_halfkp else encode_board_12x64
+        print(f"  feature_dim={feature_dim}, use_halfkp={args.use_halfkp}")
 
-    indices_path = str(out_prefix) + ".indices.npy"
-    counts_path  = str(out_prefix) + ".counts.npy"
-    cp_path      = str(out_prefix) + ".cp.npy"
+    counts_path = str(out_prefix) + ".counts.npy"
+    cp_path     = str(out_prefix) + ".cp.npy"
 
-    indices_arr = np.lib.format.open_memmap(
-        indices_path, mode="w+", dtype=np.uint16, shape=(N, MAX_ACTIVE)
-    )
+    if args.dual:
+        white_indices_path = str(out_prefix) + ".white_indices.npy"
+        black_indices_path = str(out_prefix) + ".black_indices.npy"
+        white_indices_arr = np.lib.format.open_memmap(
+            white_indices_path, mode="w+", dtype=np.uint16, shape=(N, MAX_ACTIVE)
+        )
+        black_indices_arr = np.lib.format.open_memmap(
+            black_indices_path, mode="w+", dtype=np.uint16, shape=(N, MAX_ACTIVE)
+        )
+    else:
+        indices_path = str(out_prefix) + ".indices.npy"
+        indices_arr = np.lib.format.open_memmap(
+            indices_path, mode="w+", dtype=np.uint16, shape=(N, MAX_ACTIVE)
+        )
+
     counts_arr = np.lib.format.open_memmap(
         counts_path, mode="w+", dtype=np.uint8, shape=(N,)
     )
@@ -84,20 +101,41 @@ def main():
             row = json.loads(line)
             cp = float(row["cp"])
             cp = max(-args.max_cp_abs, min(args.max_cp_abs, cp))
-            cp_arr[i] = cp
 
             board = chess.Board(row["fen"])
-            x = encode_fn(board)
-            active = np.where(x > 0)[0].astype(np.uint16)
-            count = min(len(active), MAX_ACTIVE)
-            counts_arr[i] = count
-            indices_arr[i, :count] = active[:count]
+
+            if args.dual:
+                # Convert cp from side-to-move to white-absolute perspective
+                if board.turn == chess.BLACK:
+                    cp = -cp
+                cp_arr[i] = cp
+
+                w_arr, b_arr = encode_board_halfkp_dual(board)
+                count = min(int(board.piece_map().__len__()), MAX_ACTIVE)
+                counts_arr[i] = count
+                white_indices_arr[i, :count] = w_arr[:count].astype(np.uint16)
+                black_indices_arr[i, :count] = b_arr[:count].astype(np.uint16)
+            else:
+                cp_arr[i] = cp
+                x = encode_fn(board)
+                active = np.where(x > 0)[0].astype(np.uint16)
+                count = min(len(active), MAX_ACTIVE)
+                counts_arr[i] = count
+                indices_arr[i, :count] = active[:count]
 
     # Flush to disk
-    del indices_arr, counts_arr, cp_arr
+    if args.dual:
+        del white_indices_arr, black_indices_arr, counts_arr, cp_arr
+    else:
+        del indices_arr, counts_arr, cp_arr
 
     print(f"Wrote:")
-    for p in [indices_path, counts_path, cp_path]:
+    output_files = [counts_path, cp_path]
+    if args.dual:
+        output_files = [white_indices_path, black_indices_path] + output_files
+    else:
+        output_files = [indices_path] + output_files
+    for p in output_files:
         size = Path(p).stat().st_size / 1e6
         print(f"  {p}  ({size:.1f} MB)")
 
