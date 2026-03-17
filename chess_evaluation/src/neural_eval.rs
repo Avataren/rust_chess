@@ -3,12 +3,12 @@
 //! Implements a small NNUE-like MLP trained with the Python pipeline in
 //! `nn_training/`. Two model variants are supported:
 //!
-//! **Single-perspective (Phase 1):** `12288 → 1024 → 32 → 1 (×N output buckets)`
-//!   Weights: `backbone_3_weight` shape (32, 1024)
+//! **Single-perspective (Phase 1):** `12288 → 512 → 32 → 1 (×N output buckets)`
+//!   Weights: `backbone_3_weight` shape (32, 512)
 //!
-//! **Dual-perspective (Phase 2+3):** `[12288|12288] → 1024+1024 → 32 → 1 (×N output buckets)`
+//! **Dual-perspective (Phase 2+3):** `[12288|12288] → 512+512 → 32 → 1 (×N output buckets)`
 //!   Shared EmbeddingBag; two accumulators concat'd before fc2.
-//!   Weights: `backbone_3_weight` shape (32, 2048)
+//!   Weights: `backbone_3_weight` shape (32, 1024)
 //!   CP output is white-absolute (positive = good for white).
 //!   SCReLU activation: `clamp(x,0,1)²` at every activation site.
 //!   Output buckets: separate weights per game phase (2–32 pieces → bucket 0–7).
