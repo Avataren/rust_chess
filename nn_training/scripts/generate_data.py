@@ -39,7 +39,7 @@ def _label_fen(fen: str) -> dict | None:
 
 # ── PGN position iterator ──────────────────────────────────────────────────
 
-def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_elo: int, max_elo: int = 0):
+def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_elo: int, max_elo: int = 0, skip_games: int = 0):
     """Yield sampled chess.Board positions from a PGN file.
 
     Uses a line-level state machine so move text is only parsed for games
@@ -57,6 +57,7 @@ def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_
     game_lines: list[str] = []
     found = 0
     skipped = 0
+    games_seen = 0  # qualifying games encountered (used for skip_games)
 
     with pgn_path.open("r", encoding="utf-8", errors="ignore", buffering=1 << 20) as f:
         for raw_line in f:
@@ -102,8 +103,12 @@ def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_
                                 if i >= plies_min:
                                     states.append(board.copy())
                             if states:
-                                yield random.choice(states)
-                                found += 1
+                                games_seen += 1
+                                if games_seen <= skip_games:
+                                    pass  # skip this game
+                                else:
+                                    yield random.choice(states)
+                                    found += 1
                     except Exception:
                         pass
                     state = HEADER
@@ -179,6 +184,8 @@ def main():
     ap.add_argument("--max-elo", type=int, default=0,
                     help="Maximum Elo for both players (default 0 = no limit)")
     ap.add_argument("--max-positions", type=int, default=200000)
+    ap.add_argument("--skip-games", type=int, default=0,
+                    help="Skip the first N qualifying games in the PGN (use to get non-overlapping batches)")
     ap.add_argument("--eval-depth", type=int, default=12)
     ap.add_argument("--workers", type=int, default=1,
                     help="Number of parallel Stockfish labeling workers (default 1)")
@@ -212,6 +219,7 @@ def main():
         for board in _iter_pgn_positions(
             Path(args.pgn), pgn_cap, plies_min=12,
             min_elo=args.min_elo, max_elo=args.max_elo,
+            skip_games=args.skip_games,
         ):
             fens.append(board.fen())
             pbar.update(1)
