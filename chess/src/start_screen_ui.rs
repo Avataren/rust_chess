@@ -120,7 +120,7 @@ pub fn spawn_start_screen(mut commands: Commands) {
                 .with_children(|row| {
                     spawn_option_button(row, "Beginner", StrengthButton::S1, false);
                     spawn_option_button(row, "Casual",   StrengthButton::S2, false);
-                    spawn_option_button(row, "Club",     StrengthButton::S3, true);
+                    spawn_option_button(row, "Medium",   StrengthButton::S3, true);
                     spawn_option_button(row, "Strong",   StrengthButton::S4, false);
                     spawn_option_button(row, "Maximum",  StrengthButton::S5, false);
                 });

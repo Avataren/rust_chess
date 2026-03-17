@@ -248,7 +248,10 @@ def main():
 
     # ── Label in parallel ──────────────────────────────────────────────────
     written = 0
-    chunksize = max(1, len(fens) // (args.workers * 8))
+    # Small chunksize + imap_unordered: results stream back as soon as any
+    # worker finishes rather than waiting for ordered chunk boundaries.
+    # Gives smooth, accurate tqdm progress and a reliable ETA.
+    chunksize = max(1, args.workers * 4)
 
     with output.open("w", encoding="utf-8") as out_f:
         with Pool(
@@ -257,7 +260,7 @@ def main():
             initargs=(args.label_engine, args.eval_depth),
         ) as pool:
             for result in tqdm(
-                pool.imap(_label_fen, fens, chunksize=chunksize),
+                pool.imap_unordered(_label_fen, fens, chunksize=chunksize),
                 total=len(fens),
                 desc="labeling",
             ):
