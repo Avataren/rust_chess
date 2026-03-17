@@ -3,13 +3,15 @@
 //! Implements a small NNUE-like MLP trained with the Python pipeline in
 //! `nn_training/`. Two model variants are supported:
 //!
-//! **Single-perspective (Phase 1):** `12288 → 512 → 32 → 1`
-//!   Weights: `backbone_3_weight` shape (32, 512)
-//!
-//! **Dual-perspective (Phase 2+3):** `[12288|12288] → 512+512 → 32 → 1`
-//!   Shared EmbeddingBag; two accumulators concat'd before fc2.
+//! **Single-perspective (Phase 1):** `12288 → 1024 → 32 → 1 (×N output buckets)`
 //!   Weights: `backbone_3_weight` shape (32, 1024)
+//!
+//! **Dual-perspective (Phase 2+3):** `[12288|12288] → 1024+1024 → 32 → 1 (×N output buckets)`
+//!   Shared EmbeddingBag; two accumulators concat'd before fc2.
+//!   Weights: `backbone_3_weight` shape (32, 2048)
 //!   CP output is white-absolute (positive = good for white).
+//!   SCReLU activation: `clamp(x,0,1)²` at every activation site.
+//!   Output buckets: separate weights per game phase (2–32 pieces → bucket 0–7).
 //!
 //! Weights are loaded from an NPZ file exported by `scripts/export_weights.py`.
 //!
@@ -30,9 +32,26 @@ use chess_foundation::bitboard::Bitboard;
 
 // ── Architecture constants ────────────────────────────────────────────────
 
-pub(crate) const HIDDEN1: usize = 512;
+pub(crate) const HIDDEN1: usize = 1024;
 const HIDDEN2: usize = 32;
-const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 1024
+const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 2048
+
+// ── SCReLU activation: clamp(x,0,1)² ──────────────────────────────────────
+
+/// SCReLU for the i16→f32 accumulator path: dequantize + clamp to [0,1] + square.
+#[inline(always)]
+fn screlu_i16(raw: i16, scale: f32) -> f32 {
+    let c = (raw.max(0) as f32).min(scale);
+    let x = c / scale;
+    x * x
+}
+
+/// SCReLU for the f32 scratch path: clamp(x, 0, 1)².
+#[inline(always)]
+fn screlu_f32(x: f32) -> f32 {
+    let c = x.max(0.0).min(1.0);
+    c * c
+}
 
 const HALFKP_FEATURE_DIM: usize = 12 * 64 * 16; // 12,288
 const LEGACY_FEATURE_DIM: usize = 768;
@@ -105,9 +124,9 @@ pub fn try_neural_eval(board: &ChessBoard) -> Option<i32> {
 /// Returns white-absolute centipawns or None if unavailable.
 #[inline]
 pub fn try_neural_eval_accum(
+    board: &ChessBoard,
     acc_white: &[i16; HIDDEN1],
     acc_black: &[i16; HIDDEN1],
-    _is_white: bool,
 ) -> Option<i32> {
     if !NEURAL_ENABLED.load(Ordering::Relaxed) {
         return None;
@@ -117,7 +136,8 @@ pub fn try_neural_eval_accum(
         if !e.dual_perspective {
             return None;
         }
-        let (score, confidence) = e.evaluate_from_accumulators(acc_white, acc_black);
+        let bucket = piece_bucket(board, e.n_output_buckets);
+        let (score, confidence) = e.evaluate_from_accumulators(acc_white, acc_black, bucket);
         if confidence < threshold {
             return None;
         }
@@ -182,10 +202,15 @@ pub fn eval_direct(board: &ChessBoard) -> i32 {
 /// Only valid for dual-perspective models (eval.npz).
 #[cfg(feature = "nn-incremental")]
 #[inline]
-pub fn eval_accum_direct(acc_white: &[i16; HIDDEN1], acc_black: &[i16; HIDDEN1]) -> i32 {
+pub fn eval_accum_direct(
+    board: &ChessBoard,
+    acc_white: &[i16; HIDDEN1],
+    acc_black: &[i16; HIDDEN1],
+) -> i32 {
     let e = EVALUATOR.get()
         .expect("neural eval not loaded — call init_neural_eval_from_bytes at startup");
-    e.evaluate_from_accumulators(acc_white, acc_black).0
+    let bucket = piece_bucket(board, e.n_output_buckets);
+    e.evaluate_from_accumulators(acc_white, acc_black, bucket).0
 }
 
 /// Initialize accumulators from a board position — no NEURAL_ENABLED check.
@@ -370,13 +395,18 @@ pub struct NeuralEvaluator {
     w2: Vec<f32>,
     b2: Vec<f32>,
 
-    /// CP head: [HIDDEN2]
+    /// CP head: [n_output_buckets × HIDDEN2]
     w3: Vec<f32>,
-    b3: f32,
+    /// CP head biases: [n_output_buckets]
+    b3: Vec<f32>,
 
-    /// WDL head: [3 × HIDDEN2]
+    /// WDL head: [n_output_buckets × 3 × HIDDEN2]
     w_wdl: Vec<f32>,
+    /// WDL head biases: [n_output_buckets × 3]
     b_wdl: Vec<f32>,
+
+    /// Number of output buckets: 1 for old single-bucket models, 8 for new.
+    pub n_output_buckets: usize,
 }
 
 impl NeuralEvaluator {
@@ -416,6 +446,17 @@ impl NeuralEvaluator {
             ));
         }
 
+        // Auto-detect output bucket count from cp_head_weight shape.
+        // Old models: w3_i16.len() == HIDDEN2 → n_output_buckets = 1.
+        // New models: w3_i16.len() == N_BUCKETS * HIDDEN2 → n_output_buckets = N_BUCKETS.
+        let n_output_buckets = w3_i16.len() / HIDDEN2;
+        if n_output_buckets == 0 || w3_i16.len() % HIDDEN2 != 0 {
+            return Err(format!(
+                "Unexpected cp_head_weight size {} (not a multiple of HIDDEN2={})",
+                w3_i16.len(), HIDDEN2
+            ));
+        }
+
         // Transpose w1 into two forms:
         //   w1_t     (f32, dequantized) — used by scratch evaluation path
         //   w1_t_i16 (i16, raw)         — used by SIMD incremental path
@@ -441,9 +482,10 @@ impl NeuralEvaluator {
             w2: dq(&w2_i16),
             b2: dq(&b2_i16),
             w3: dq(&w3_i16),
-            b3: dq(&b3_i16)[0],
+            b3: dq(&b3_i16),
             w_wdl: dq(&w_wdl_i16),
             b_wdl: dq(&b_wdl_i16),
+            n_output_buckets,
         })
     }
 
@@ -453,6 +495,7 @@ impl NeuralEvaluator {
     /// - For dual model: `score` is centipawns from **white's** perspective.
     /// - For single model: `score` is centipawns from **side-to-move's** perspective.
     pub fn evaluate_with_confidence(&self, board: &ChessBoard) -> (i32, f32) {
+        let bucket = piece_bucket(board, self.n_output_buckets);
         if self.dual_perspective {
             let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(board);
 
@@ -473,13 +516,9 @@ impl NeuralEvaluator {
                     h_b[j] += src[j];
                 }
             }
-            for v in h_w.iter_mut() {
-                *v = v.max(0.0);
-            }
-            for v in h_b.iter_mut() {
-                *v = v.max(0.0);
-            }
-            self.forward_l2_heads_dual(&h_w, &h_b)
+            for v in h_w.iter_mut() { *v = screlu_f32(*v); }
+            for v in h_b.iter_mut() { *v = screlu_f32(*v); }
+            self.forward_l2_heads_dual(&h_w, &h_b, bucket)
         } else {
             let active = if self.feature_dim == HALFKP_FEATURE_DIM {
                 encode_active_features_halfkp(board)
@@ -496,36 +535,35 @@ impl NeuralEvaluator {
                     h1[j] += src[j];
                 }
             }
-            for v in h1.iter_mut() {
-                *v = v.max(0.0);
-            }
-            self.forward_l2_heads_single(&h1)
+            for v in h1.iter_mut() { *v = screlu_f32(*v); }
+            self.forward_l2_heads_single(&h1, bucket)
         }
     }
 
-    /// Evaluate from pre-ReLU i16 accumulators (Phase 4 incremental path).
-    /// ReLU-clamps and dequantizes each element, then runs the f32 L2 heads.
+    /// Evaluate from pre-activation i16 accumulators (Phase 4 incremental path).
+    /// SCReLU-clamps and dequantizes each element, then runs the f32 L2 heads.
     /// Only valid for dual-perspective models.
     pub fn evaluate_from_accumulators(
         &self,
         acc_white: &[i16; HIDDEN1],
         acc_black: &[i16; HIDDEN1],
+        bucket: usize,
     ) -> (i32, f32) {
         debug_assert!(self.dual_perspective);
         let s = self.scale;
         let mut h_w = [0.0f32; HIDDEN1];
         let mut h_b = [0.0f32; HIDDEN1];
         for (h, &a) in h_w.iter_mut().zip(acc_white.iter()) {
-            *h = a.max(0) as f32 / s;
+            *h = screlu_i16(a, s);
         }
         for (h, &a) in h_b.iter_mut().zip(acc_black.iter()) {
-            *h = a.max(0) as f32 / s;
+            *h = screlu_i16(a, s);
         }
-        self.forward_l2_heads_dual(&h_w, &h_b)
+        self.forward_l2_heads_dual(&h_w, &h_b, bucket)
     }
 
-    /// Layer 2 + heads for dual model: input is [h_w(512) | h_b(512)].
-    fn forward_l2_heads_dual(&self, h_w: &[f32; HIDDEN1], h_b: &[f32; HIDDEN1]) -> (i32, f32) {
+    /// Layer 2 + heads for dual model: input is [h_w(1024) | h_b(1024)].
+    fn forward_l2_heads_dual(&self, h_w: &[f32; HIDDEN1], h_b: &[f32; HIDDEN1], bucket: usize) -> (i32, f32) {
         let mut h2 = [0.0f32; HIDDEN2];
         for j in 0..HIDDEN2 {
             let row = &self.w2[j * HIDDEN1_DUAL..(j + 1) * HIDDEN1_DUAL];
@@ -534,13 +572,13 @@ impl NeuralEvaluator {
                 acc += row[i] * h_w[i];
                 acc += row[HIDDEN1 + i] * h_b[i];
             }
-            h2[j] = acc.max(0.0);
+            h2[j] = screlu_f32(acc);
         }
-        self.forward_heads(&h2)
+        self.forward_heads(&h2, bucket)
     }
 
-    /// Layer 2 + heads for single-perspective model: input is h1(512).
-    fn forward_l2_heads_single(&self, h1: &[f32; HIDDEN1]) -> (i32, f32) {
+    /// Layer 2 + heads for single-perspective model: input is h1(1024).
+    fn forward_l2_heads_single(&self, h1: &[f32; HIDDEN1], bucket: usize) -> (i32, f32) {
         let mut h2 = [0.0f32; HIDDEN2];
         for j in 0..HIDDEN2 {
             let row = &self.w2[j * HIDDEN1..(j + 1) * HIDDEN1];
@@ -548,23 +586,29 @@ impl NeuralEvaluator {
             for i in 0..HIDDEN1 {
                 acc += row[i] * h1[i];
             }
-            h2[j] = acc.max(0.0);
+            h2[j] = screlu_f32(acc);
         }
-        self.forward_heads(&h2)
+        self.forward_heads(&h2, bucket)
     }
 
-    /// CP head + WDL head from h2.
+    /// CP head + WDL head from h2, selected by output bucket.
     #[inline]
-    fn forward_heads(&self, h2: &[f32; HIDDEN2]) -> (i32, f32) {
-        let mut cp = self.b3;
+    fn forward_heads(&self, h2: &[f32; HIDDEN2], bucket: usize) -> (i32, f32) {
+        let b = bucket.min(self.n_output_buckets - 1);
+
+        // CP head: row b of w3 (shape [n_output_buckets × HIDDEN2])
+        let w_cp = &self.w3[b * HIDDEN2..(b + 1) * HIDDEN2];
+        let mut cp = self.b3[b];
         for i in 0..HIDDEN2 {
-            cp += self.w3[i] * h2[i];
+            cp += w_cp[i] * h2[i];
         }
 
+        // WDL head: rows b*3 .. b*3+2 of w_wdl (shape [n_output_buckets × 3 × HIDDEN2])
         let mut logits = [0.0f32; 3];
         for k in 0..3 {
-            let row = &self.w_wdl[k * HIDDEN2..(k + 1) * HIDDEN2];
-            let mut acc = self.b_wdl[k];
+            let row_start = (b * 3 + k) * HIDDEN2;
+            let row = &self.w_wdl[row_start..row_start + HIDDEN2];
+            let mut acc = self.b_wdl[b * 3 + k];
             for i in 0..HIDDEN2 {
                 acc += row[i] * h2[i];
             }
@@ -584,6 +628,14 @@ impl NeuralEvaluator {
 
 // ── Feature encoding ──────────────────────────────────────────────────────
 
+/// Map total piece count to output bucket index.
+/// Formula: clamp((total_pieces - 2) * n_buckets / 30, 0, n_buckets - 1).
+/// 2 pieces → 0, 32 pieces → n_buckets - 1.
+pub fn piece_bucket(board: &ChessBoard, n_buckets: usize) -> usize {
+    let total = board.get_all_pieces().count_ones() as usize;
+    ((total.saturating_sub(2)) * n_buckets / 30).min(n_buckets - 1)
+}
+
 pub(crate) const KING_BUCKET: [usize; 64] = {
     let mut t = [0usize; 64];
     let mut sq = 0usize;
@@ -602,7 +654,11 @@ pub(crate) const KING_BUCKET: [usize; 64] = {
 ///
 /// White perspective: absolute (white king = ours, white pieces = slots 0-5).
 /// Black perspective: rank-flipped (black king = ours, black pieces = slots 0-5).
-/// Both use the same feature formula: slot*64*16 + sq*16 + king_bucket.
+/// Both use the same feature formula: slot*64*16 + mapped_sq*16 + king_bucket.
+///
+/// Horizontal mirroring: when the king is on files 4-7 (e-h), piece square files
+/// are flipped (`sq ^ 7` flips bits 0-2, preserving rank bits 3-5).  This ensures
+/// that king-on-a1 and king-on-h1 see identical feature distributions.
 pub(crate) fn encode_dual_halfkp(
     board: &ChessBoard,
 ) -> (([usize; 32], usize), ([usize; 32], usize)) {
@@ -613,11 +669,14 @@ pub(crate) fn encode_dual_halfkp(
     let wk_sq = (white_bb & board.get_kings()).0.trailing_zeros() as usize;
     let wk_sq = wk_sq.min(63);
     let wk_bucket = KING_BUCKET[wk_sq];
+    let mirror_w = (wk_sq % 8) >= 4;
 
     // Black perspective: black king rank-flipped
     let bk_sq_raw = (black_bb & board.get_kings()).0.trailing_zeros() as usize;
     let bk_sq_raw = bk_sq_raw.min(63);
-    let bk_bucket = KING_BUCKET[bk_sq_raw ^ 56];
+    let bk_flipped = bk_sq_raw ^ 56;
+    let bk_bucket = KING_BUCKET[bk_flipped];
+    let mirror_b = (bk_flipped % 8) >= 4;
 
     let mut w_indices = [0usize; 32];
     let mut b_indices = [0usize; 32];
@@ -631,7 +690,8 @@ pub(crate) fn encode_dual_halfkp(
                 let sq = bb.0.trailing_zeros() as usize;
                 bb.0 &= bb.0 - 1;
                 if wc < 32 {
-                    w_indices[wc] = $slot * 64 * 16 + sq * 16 + wk_bucket;
+                    let mapped = if mirror_w { sq ^ 7 } else { sq };
+                    w_indices[wc] = $slot * 64 * 16 + mapped * 16 + wk_bucket;
                     wc += 1;
                 }
             }
@@ -645,7 +705,9 @@ pub(crate) fn encode_dual_halfkp(
                 let sq = bb.0.trailing_zeros() as usize;
                 bb.0 &= bb.0 - 1;
                 if bc < 32 {
-                    b_indices[bc] = $slot * 64 * 16 + (sq ^ 56) * 16 + bk_bucket;
+                    let rank_flipped = sq ^ 56;
+                    let mapped = if mirror_b { rank_flipped ^ 7 } else { rank_flipped };
+                    b_indices[bc] = $slot * 64 * 16 + mapped * 16 + bk_bucket;
                     bc += 1;
                 }
             }
@@ -1027,13 +1089,6 @@ mod tests {
         assert_eq!(&b_idx_w[..bc_w], &b_idx_b[..bc_b]);
     }
 
-    // ── Cross-encoder parity: dual must agree with single-perspective ─────
-    //
-    // The single-perspective encoder is the ground truth (deployed and tested).
-    // When white is to move:  dual white-pov  == single-perspective
-    // When black is to move:  dual black-pov  == single-perspective
-    // These tests catch any divergence between the two code paths.
-
     fn sorted(indices: &[usize], count: usize) -> Vec<usize> {
         let mut v = indices[..count].to_vec();
         v.sort_unstable();
@@ -1041,72 +1096,20 @@ mod tests {
     }
 
     #[test]
-    fn test_dual_white_pov_matches_single_when_white_to_move() {
-        let board = ChessBoard::new();
-        assert!(board.is_white_active());
-
-        let ((w_idx, wc), _) = encode_dual_halfkp(&board);
-        let (s_idx, sc)      = encode_active_features_halfkp(&board);
-
-        assert_eq!(wc, sc, "Feature count must match");
-        assert_eq!(
-            sorted(&w_idx, wc),
-            sorted(&s_idx, sc),
-            "Dual white-pov must produce identical features to single-perspective when white to move"
-        );
-    }
-
-    #[test]
-    fn test_dual_black_pov_matches_single_when_black_to_move() {
-        let mut board = ChessBoard::new();
-        board.toggle_turn();
-        assert!(!board.is_white_active());
-
-        let (_, (b_idx, bc)) = encode_dual_halfkp(&board);
-        let (s_idx, sc)      = encode_active_features_halfkp(&board);
-
-        assert_eq!(bc, sc, "Feature count must match");
-        assert_eq!(
-            sorted(&b_idx, bc),
-            sorted(&s_idx, sc),
-            "Dual black-pov must produce identical features to single-perspective when black to move"
-        );
-    }
-
-    #[test]
-    fn test_dual_parity_after_e4() {
-        // Non-symmetric position — both parity properties must still hold.
-        // Position after 1.e4, black to move.
-        let mut board_w = ChessBoard::new();
-        board_w.set_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
-
-        // black to move after 1.e4 → test black-pov parity
-        let (_, (b_idx, bc)) = encode_dual_halfkp(&board_w);
-        let (s_idx, sc)      = encode_active_features_halfkp(&board_w);
-        assert_eq!(sorted(&b_idx, bc), sorted(&s_idx, sc),
-            "Dual black-pov must match single-perspective after 1.e4 (black to move)");
-
-        // flip to white to move → test white-pov parity
-        let mut board_b = ChessBoard::new();
-        board_b.set_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1");
-        let ((w_idx, wc), _) = encode_dual_halfkp(&board_b);
-        let (s_idx2, sc2)    = encode_active_features_halfkp(&board_b);
-        assert_eq!(sorted(&w_idx, wc), sorted(&s_idx2, sc2),
-            "Dual white-pov must match single-perspective (white to move, same pieces)");
-    }
-
-    #[test]
     fn test_dual_white_king_feature_index() {
-        // White king on e1 (sq=4).  King bucket for e1: file=4→mirror→3, rank=0→half=0 → bucket=3.
-        // White king is slot 5 (ours).  Expected index = 5*64*16 + 4*16 + 3 = 5200.
+        // White king on e1 (sq=4). file=4 ≥ 4, so mirror_w=true, mapped=4^7=3.
+        // King bucket for mapped sq=3: file=3, rank=0 → bucket = 0*4+3 = 3.
+        // White king is slot 5 (ours). Expected index = 5*64*16 + 3*16 + 3 = 5171.
         let board = ChessBoard::new();
         assert!(board.is_white_active());
         let ((w_idx, wc), _) = encode_dual_halfkp(&board);
         let king_sq: usize = 4;  // e1
-        let file_bucket = if king_sq % 8 <= 3 { king_sq % 8 } else { 7 - king_sq % 8 };
-        let rank_half   = if king_sq / 8 <= 3 { 0 } else { 1 };
+        let mirror_w = (king_sq % 8) >= 4;
+        let mapped = if mirror_w { king_sq ^ 7 } else { king_sq }; // 3
+        let file_bucket = if mapped % 8 <= 3 { mapped % 8 } else { 7 - mapped % 8 };
+        let rank_half   = if mapped / 8 <= 3 { 0 } else { 1 };
         let bucket      = rank_half * 4 + file_bucket;
-        let expected    = 5 * 64 * 16 + king_sq * 16 + bucket;
+        let expected    = 5 * 64 * 16 + mapped * 16 + bucket;
         assert!(
             w_idx[..wc].contains(&expected),
             "White king index {expected} not found in dual white-pov features"
@@ -1115,18 +1118,19 @@ mod tests {
 
     #[test]
     fn test_dual_black_king_feature_index() {
-        // Black king on e8 (sq=60).  After rank-flip: 60^56=4.
-        // Bucket for sq=4: file=4→mirror→3, rank=0→half=0 → bucket=3.
-        // Black king is slot 5 (ours in black-pov).  Expected = 5*64*16 + 4*16 + 3 = 5200.
-        // This must equal the white king index (symmetric starting position).
+        // Black king on e8 (sq=60). After rank-flip: 60^56=4. file=4 ≥ 4, so mirror_b=true.
+        // mapped = 4^7 = 3. Bucket for sq=3: file=3, rank=0 → bucket=3.
+        // Black king is slot 5 (ours in black-pov). Expected = 5*64*16 + 3*16 + 3 = 5171.
         let board = ChessBoard::new();
         let (_, (b_idx, bc)) = encode_dual_halfkp(&board);
-        let bk_sq: usize     = 60; // e8
-        let flipped          = bk_sq ^ 56; // 4
-        let file_bucket      = if flipped % 8 <= 3 { flipped % 8 } else { 7 - flipped % 8 };
-        let rank_half        = if flipped / 8 <= 3 { 0 } else { 1 };
-        let bucket           = rank_half * 4 + file_bucket;
-        let expected         = 5 * 64 * 16 + flipped * 16 + bucket;
+        let bk_sq: usize = 60; // e8
+        let flipped      = bk_sq ^ 56; // 4
+        let mirror_b     = (flipped % 8) >= 4;
+        let mapped       = if mirror_b { flipped ^ 7 } else { flipped }; // 3
+        let file_bucket  = if mapped % 8 <= 3 { mapped % 8 } else { 7 - mapped % 8 };
+        let rank_half    = if mapped / 8 <= 3 { 0 } else { 1 };
+        let bucket       = rank_half * 4 + file_bucket;
+        let expected     = 5 * 64 * 16 + mapped * 16 + bucket;
         assert!(
             b_idx[..bc].contains(&expected),
             "Black king index {expected} not found in dual black-pov features"
@@ -1246,7 +1250,137 @@ mod tests {
                 let col = &eval.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
                 add_col(&mut acc_b, col);
             }
-            let (i16_score, _) = eval.evaluate_from_accumulators(&acc_w, &acc_b);
+            let bucket = piece_bucket(&board, eval.n_output_buckets);
+            let (i16_score, _) = eval.evaluate_from_accumulators(&acc_w, &acc_b, bucket);
+
+            let diff = (scratch_score - i16_score).unsigned_abs();
+            assert!(
+                diff <= 2,
+                "FEN {fen}: scratch={scratch_score} i16={i16_score} diff={diff}cp (expected ≤2cp)"
+            );
+        }
+    }
+
+    // ── SCReLU tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_screlu_zero() {
+        assert_eq!(screlu_i16(0, 256.0), 0.0);
+        assert_eq!(screlu_f32(0.0), 0.0);
+    }
+
+    #[test]
+    fn test_screlu_half() {
+        let v = screlu_i16(128, 256.0);
+        let expected = 0.5f32 * 0.5;
+        assert!((v - expected).abs() < 1e-4, "screlu_i16(128, 256) = {v}, expected ~{expected}");
+    }
+
+    #[test]
+    fn test_screlu_clamped() {
+        // Values above scale clamp to 1.0
+        assert_eq!(screlu_i16(512, 256.0), 1.0);
+        assert_eq!(screlu_f32(2.0), 1.0);
+    }
+
+    #[test]
+    fn test_screlu_negative() {
+        assert_eq!(screlu_i16(-1, 256.0), 0.0);
+        assert_eq!(screlu_f32(-0.5), 0.0);
+    }
+
+    // ── Output bucket tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_output_bucket_range() {
+        // For any piece count 2..=32, bucket must be in [0, 7].
+        let board = ChessBoard::new(); // 32 pieces
+        let total = board.get_all_pieces().count_ones() as usize;
+        assert_eq!(total, 32);
+        for pc in 2..=32usize {
+            let b = ((pc.saturating_sub(2)) * 8 / 30).min(7);
+            assert!(b < 8, "piece_count={pc} → bucket={b} out of range");
+        }
+    }
+
+    #[test]
+    fn test_output_bucket_extremes() {
+        // 2 pieces → bucket 0; 32 pieces → bucket 7
+        let b_min = ((2usize.saturating_sub(2)) * 8 / 30).min(7);
+        let b_max = ((32usize.saturating_sub(2)) * 8 / 30).min(7);
+        assert_eq!(b_min, 0, "2 pieces must map to bucket 0");
+        assert_eq!(b_max, 7, "32 pieces must map to bucket 7");
+    }
+
+    // ── Horizontal mirror symmetry test ──────────────────────────────────
+
+    #[test]
+    fn test_horizontal_mirror_symmetry() {
+        // White king on a1 + pawn a2 + black king h8  (king on file 0 — no mirror)
+        // vs
+        // White king on h1 + pawn h2 + black king a8  (king on file 7 — mirror applied)
+        // Both positions are file-mirror images; the sorted white-pov feature sets
+        // must be identical after the horizontal mirroring fix.
+        let mut board_a = ChessBoard::new();
+        board_a.set_from_fen("7k/8/8/8/8/8/P7/K7 w - - 0 1");
+        let mut board_h = ChessBoard::new();
+        board_h.set_from_fen("k7/8/8/8/8/8/7P/7K w - - 0 1");
+
+        let ((wa, wca), _) = encode_dual_halfkp(&board_a);
+        let ((wh, wch), _) = encode_dual_halfkp(&board_h);
+
+        assert_eq!(wca, wch, "Feature count must be equal for mirror positions");
+        assert_eq!(
+            sorted(&wa, wca),
+            sorted(&wh, wch),
+            "Mirrored positions (Ka1+Pa2 vs Kh1+Ph2) must produce identical white-pov feature sets"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires src/eval.npz — run with --include-ignored"]
+    fn test_incremental_screlu_matches_scratch() {
+        let bytes = match std::fs::read("src/eval.npz") {
+            Ok(b) => b,
+            Err(_) => { println!("skipping: src/eval.npz not found"); return; }
+        };
+        let eval = NeuralEvaluator::from_npz_bytes(&bytes).unwrap();
+        if !eval.dual_perspective {
+            println!("skipping: model is single-perspective");
+            return;
+        }
+
+        // Test with king on both board halves to exercise mirroring paths
+        let positions = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            "r3r1k1/pp3pbp/1qp3p1/2B5/2BP2b1/Q1n2N2/P4PPP/3RR1K1 w - - 0 1",
+            "7k/8/8/8/8/8/P7/K7 w - - 0 1",  // king on file 0
+            "k7/8/8/8/8/8/7P/7K w - - 0 1",  // king on file 7 (mirrored)
+            "8/8/4k3/8/8/4K3/8/8 w - - 0 1",
+        ];
+
+        for fen in positions {
+            let mut board = ChessBoard::new();
+            board.set_from_fen(fen);
+
+            let (scratch_score, _) = eval.evaluate_with_confidence(&board);
+
+            let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(&board);
+            let mut acc_w = [0i16; HIDDEN1];
+            let mut acc_b = [0i16; HIDDEN1];
+            acc_w.copy_from_slice(&eval.b1_i16);
+            acc_b.copy_from_slice(&eval.b1_i16);
+            for &i in &w_idx[..wc] {
+                let col = &eval.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
+                add_col(&mut acc_w, col);
+            }
+            for &i in &b_idx[..bc] {
+                let col = &eval.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
+                add_col(&mut acc_b, col);
+            }
+            let bucket = piece_bucket(&board, eval.n_output_buckets);
+            let (i16_score, _) = eval.evaluate_from_accumulators(&acc_w, &acc_b, bucket);
 
             let diff = (scratch_score - i16_score).unsigned_abs();
             assert!(

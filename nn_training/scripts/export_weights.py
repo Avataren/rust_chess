@@ -75,6 +75,7 @@ def main():
             hidden_dim=mcfg["hidden_dim"],
             hidden2_dim=mcfg["hidden2_dim"],
             dropout=0.0,
+            n_output_buckets=mcfg.get("n_output_buckets", 1),
         )
     else:
         model = EvalNet(
@@ -83,6 +84,7 @@ def main():
             hidden2_dim=mcfg["hidden2_dim"],
             dropout=0.0,
             sparse_input=mcfg.get("sparse_input", False),
+            n_output_buckets=mcfg.get("n_output_buckets", 1),
         )
 
     model.load_state_dict(state)

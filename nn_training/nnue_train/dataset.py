@@ -68,6 +68,7 @@ class BinaryDualPositionDataset(Dataset):
       data/train_10m.black_indices.npy  -- (N, 32) uint16
       data/train_10m.counts.npy         -- (N,)    uint8
       data/train_10m.cp.npy             -- (N,)    float32  (white-absolute cp)
+      data/train_10m.piece_count.npy    -- (N,)    uint8    (total pieces on board)
     """
 
     def __init__(self, path: str, max_cp_abs: int = 1500):
@@ -76,6 +77,12 @@ class BinaryDualPositionDataset(Dataset):
         self.black_indices = np.load(prefix + ".black_indices.npy", mmap_mode="r")
         self.counts = np.load(prefix + ".counts.npy", mmap_mode="r")
         self.cp = np.clip(np.load(prefix + ".cp.npy", mmap_mode="r"), -max_cp_abs, max_cp_abs)
+        pc_path = prefix + ".piece_count.npy"
+        if Path(pc_path).exists():
+            self.piece_count = np.load(pc_path, mmap_mode="r")
+        else:
+            # Legacy datasets without piece_count: estimate from active feature count
+            self.piece_count = self.counts
 
     def __len__(self) -> int:
         return len(self.cp)
@@ -92,10 +99,12 @@ class BinaryDualPositionDataset(Dataset):
         cp_val = float(self.cp[idx])
         cp = np.array([cp_val], dtype=np.float32)
         wdl = cp_to_wdl_target(cp_val)
+        pc = np.array([int(self.piece_count[idx])], dtype=np.int64)
 
         return (
             torch.from_numpy(w_idx),
             torch.from_numpy(b_idx),
+            torch.from_numpy(pc),
             torch.from_numpy(cp),
             torch.from_numpy(wdl),
         )

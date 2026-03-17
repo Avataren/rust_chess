@@ -297,7 +297,14 @@ impl SearchContext {
         let wk_sq = (board.get_white() & board.get_kings()).0.trailing_zeros() as usize;
         let bk_sq_raw = (board.get_black() & board.get_kings()).0.trailing_zeros() as usize;
         let wk_bucket = crate::neural_eval::KING_BUCKET[wk_sq.min(63)];
-        let bk_bucket = crate::neural_eval::KING_BUCKET[(bk_sq_raw ^ 56).min(63)];
+        let bk_flipped = bk_sq_raw ^ 56;
+        let bk_bucket = crate::neural_eval::KING_BUCKET[bk_flipped.min(63)];
+
+        // Horizontal mirroring: flip piece file bits when king is on files e-h.
+        let mirror_w = (wk_sq.min(63) % 8) >= 4;
+        let mirror_b = (bk_flipped.min(63) % 8) >= 4;
+        let w_sq = |sq: usize| if mirror_w { sq ^ 7 } else { sq };
+        let b_sq = |sq: usize| { let r = sq ^ 56; if mirror_b { r ^ 7 } else { r } };
 
         let acc_w = &mut self.acc_white[dst];
         let acc_b = &mut self.acc_black[dst];
@@ -306,8 +313,8 @@ impl SearchContext {
         let orig_pt = moving_piece.piece_type();
         let slot_w = halfkp_piece_slot(orig_pt, piece_is_white);
         let slot_b = halfkp_piece_slot(orig_pt, !piece_is_white);
-        crate::neural_eval::acc_sub_feature(acc_w, slot_w * 64 * 16 + from_sq * 16 + wk_bucket);
-        crate::neural_eval::acc_sub_feature(acc_b, slot_b * 64 * 16 + (from_sq ^ 56) * 16 + bk_bucket);
+        crate::neural_eval::acc_sub_feature(acc_w, slot_w * 64 * 16 + w_sq(from_sq) * 16 + wk_bucket);
+        crate::neural_eval::acc_sub_feature(acc_b, slot_b * 64 * 16 + b_sq(from_sq) * 16 + bk_bucket);
 
         // Add moving piece to its destination square (promotion may change type)
         let to_pt = if mv.is_promotion() {
@@ -317,23 +324,23 @@ impl SearchContext {
         };
         let to_slot_w = halfkp_piece_slot(to_pt, piece_is_white);
         let to_slot_b = halfkp_piece_slot(to_pt, !piece_is_white);
-        crate::neural_eval::acc_add_feature(acc_w, to_slot_w * 64 * 16 + to_sq * 16 + wk_bucket);
-        crate::neural_eval::acc_add_feature(acc_b, to_slot_b * 64 * 16 + (to_sq ^ 56) * 16 + bk_bucket);
+        crate::neural_eval::acc_add_feature(acc_w, to_slot_w * 64 * 16 + w_sq(to_sq) * 16 + wk_bucket);
+        crate::neural_eval::acc_add_feature(acc_b, to_slot_b * 64 * 16 + b_sq(to_sq) * 16 + bk_bucket);
 
         // Remove captured piece (en passant: captured pawn is not at to_sq)
         if mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
             let cap_sq = if piece_is_white { to_sq.wrapping_sub(8) } else { to_sq + 8 };
             let cap_slot_w = halfkp_piece_slot(PieceType::Pawn, !piece_is_white);
             let cap_slot_b = halfkp_piece_slot(PieceType::Pawn, piece_is_white);
-            crate::neural_eval::acc_sub_feature(acc_w, cap_slot_w * 64 * 16 + cap_sq * 16 + wk_bucket);
-            crate::neural_eval::acc_sub_feature(acc_b, cap_slot_b * 64 * 16 + (cap_sq ^ 56) * 16 + bk_bucket);
+            crate::neural_eval::acc_sub_feature(acc_w, cap_slot_w * 64 * 16 + w_sq(cap_sq) * 16 + wk_bucket);
+            crate::neural_eval::acc_sub_feature(acc_b, cap_slot_b * 64 * 16 + b_sq(cap_sq) * 16 + bk_bucket);
         } else if let Some(cap) = mv.capture {
             let cap_pt = cap.piece_type();
             let cap_is_white = cap.is_white();
             let cap_slot_w = halfkp_piece_slot(cap_pt, cap_is_white);
             let cap_slot_b = halfkp_piece_slot(cap_pt, !cap_is_white);
-            crate::neural_eval::acc_sub_feature(acc_w, cap_slot_w * 64 * 16 + to_sq * 16 + wk_bucket);
-            crate::neural_eval::acc_sub_feature(acc_b, cap_slot_b * 64 * 16 + (to_sq ^ 56) * 16 + bk_bucket);
+            crate::neural_eval::acc_sub_feature(acc_w, cap_slot_w * 64 * 16 + w_sq(to_sq) * 16 + wk_bucket);
+            crate::neural_eval::acc_sub_feature(acc_b, cap_slot_b * 64 * 16 + b_sq(to_sq) * 16 + bk_bucket);
         }
 
         false // no full recompute needed
@@ -475,6 +482,7 @@ fn eval_node(
     if ctx.acc_valid {
         let p = ply.min(ACC_SIZE - 1);
         return crate::neural_eval::eval_accum_direct(
+            board,
             &ctx.acc_white[p],
             &ctx.acc_black[p],
         );

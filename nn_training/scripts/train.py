@@ -31,6 +31,17 @@ def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool, dual: bool = Fals
     return JsonlPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
 
 
+def _extract_dual_batch(batch):
+    """Unpack a dual-perspective batch, handling both old (4-tuple) and new (5-tuple) formats."""
+    if len(batch) == 5:
+        x_white, x_black, piece_count, cp, wdl = batch
+    else:
+        # Legacy dataset without piece_count: use placeholder of 32 pieces
+        x_white, x_black, cp, wdl = batch
+        piece_count = torch.full((x_white.size(0), 1), 32, dtype=torch.int64)
+    return x_white, x_black, piece_count, cp, wdl
+
+
 def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
@@ -65,12 +76,13 @@ def sparse_to_dense(indices: torch.Tensor, feature_dim: int) -> torch.Tensor:
 def _forward_batch(model, batch, device, feature_dim):
     """Run model forward pass, handling both single and dual perspective models."""
     if isinstance(model, EvalNetDual):
-        x_white, x_black, cp, wdl = batch
+        x_white, x_black, piece_count, cp, wdl = _extract_dual_batch(batch)
         x_white = x_white.to(device, non_blocking=True)
         x_black = x_black.to(device, non_blocking=True)
+        piece_count = piece_count.to(device, non_blocking=True)
         cp = cp.to(device, non_blocking=True)
         wdl = wdl.to(device, non_blocking=True)
-        cp_pred, wdl_logits = model(x_white, x_black)
+        cp_pred, wdl_logits = model(x_white, x_black, piece_count)
     else:
         x, cp, wdl = batch
         x = x.to(device, non_blocking=True)
@@ -78,7 +90,9 @@ def _forward_batch(model, batch, device, feature_dim):
             x = sparse_to_dense(x, feature_dim)
         cp = cp.to(device, non_blocking=True)
         wdl = wdl.to(device, non_blocking=True)
-        cp_pred, wdl_logits = model(x)
+        # EvalNet also expects piece_count; use placeholder
+        piece_count = torch.full((x.size(0), 1), 32, dtype=torch.int64, device=device)
+        cp_pred, wdl_logits = model(x, piece_count)
     return cp_pred, wdl_logits, cp, wdl
 
 
@@ -239,6 +253,7 @@ def main():
             hidden_dim=mcfg["hidden_dim"],
             hidden2_dim=mcfg["hidden2_dim"],
             dropout=mcfg["dropout"],
+            n_output_buckets=mcfg.get("n_output_buckets", 1),
         ).to(device)
     else:
         model = EvalNet(
@@ -247,6 +262,7 @@ def main():
             hidden2_dim=mcfg["hidden2_dim"],
             dropout=mcfg["dropout"],
             sparse_input=mcfg.get("sparse_input", False),
+            n_output_buckets=mcfg.get("n_output_buckets", 1),
         ).to(device)
 
     optimizer = torch.optim.AdamW(

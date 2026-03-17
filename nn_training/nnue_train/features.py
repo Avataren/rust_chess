@@ -95,6 +95,10 @@ def encode_board_halfkp_dual(board: chess.Board) -> tuple[np.ndarray, np.ndarray
     The white perspective always has white king as 'ours'; the black perspective
     mirrors the board first (so black king becomes 'ours') then encodes identically.
 
+    Horizontal mirroring: when the king is on files e-h (file index 4-7), all
+    piece square files are flipped (sq ^ 7 flips bits 0-2, preserving rank bits).
+    This ensures that king-on-a1 and king-on-h1 see identical feature distributions.
+
     Returns (white_indices, black_indices), each an int64 array of length 32
     padded with sentinel HALFKP_FEATURE_DIM (12288).
 
@@ -104,12 +108,14 @@ def encode_board_halfkp_dual(board: chess.Board) -> tuple[np.ndarray, np.ndarray
     SENTINEL = HALFKP_FEATURE_DIM  # 12288
 
     def _encode_white_pov(b: chess.Board) -> np.ndarray:
-        """Encode from white's view: white king = 'ours', no side-to-move flip."""
+        """Encode from white's view: white king = 'ours', no side-to-move flip.
+        Applies horizontal file-mirroring when white king is on files e-h."""
         king_squares = b.pieces(chess.KING, chess.WHITE)
         if not king_squares:
             return np.full(32, SENTINEL, dtype=np.int64)
         king_sq = next(iter(king_squares))
         bucket = KING_BUCKET[king_sq]
+        mirror = chess.square_file(king_sq) >= 4
 
         result = np.full(32, SENTINEL, dtype=np.int64)
         count = 0
@@ -117,7 +123,8 @@ def encode_board_halfkp_dual(board: chess.Board) -> tuple[np.ndarray, np.ndarray
             if count >= 32:
                 break
             slot = _PIECE_SLOT[(piece.piece_type, piece.color)]
-            result[count] = slot * 64 * 16 + square * 16 + bucket
+            mapped_sq = square ^ 7 if mirror else square
+            result[count] = slot * 64 * 16 + mapped_sq * 16 + bucket
             count += 1
         return result
 

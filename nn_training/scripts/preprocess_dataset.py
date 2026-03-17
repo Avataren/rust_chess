@@ -69,8 +69,9 @@ def main():
         encode_fn = encode_board_halfkp if args.use_halfkp else encode_board_12x64
         print(f"  feature_dim={feature_dim}, use_halfkp={args.use_halfkp}")
 
-    counts_path = str(out_prefix) + ".counts.npy"
-    cp_path     = str(out_prefix) + ".cp.npy"
+    counts_path      = str(out_prefix) + ".counts.npy"
+    cp_path          = str(out_prefix) + ".cp.npy"
+    piece_count_path = str(out_prefix) + ".piece_count.npy"
 
     if args.dual:
         white_indices_path = str(out_prefix) + ".white_indices.npy"
@@ -93,6 +94,9 @@ def main():
     cp_arr = np.lib.format.open_memmap(
         cp_path, mode="w+", dtype=np.float32, shape=(N,)
     )
+    piece_count_arr = np.lib.format.open_memmap(
+        piece_count_path, mode="w+", dtype=np.uint8, shape=(N,)
+    )
 
     with open(input_path, "r", encoding="utf-8") as f:
         for i, line in enumerate(tqdm(f, total=N, desc="encoding")):
@@ -103,6 +107,9 @@ def main():
             cp = max(-args.max_cp_abs, min(args.max_cp_abs, cp))
 
             board = chess.Board(row["fen"])
+
+            piece_count = bin(int(board.occupied)).count('1')
+            piece_count_arr[i] = piece_count
 
             if args.dual:
                 # Convert cp from side-to-move to white-absolute perspective
@@ -125,12 +132,12 @@ def main():
 
     # Flush to disk
     if args.dual:
-        del white_indices_arr, black_indices_arr, counts_arr, cp_arr
+        del white_indices_arr, black_indices_arr, counts_arr, cp_arr, piece_count_arr
     else:
-        del indices_arr, counts_arr, cp_arr
+        del indices_arr, counts_arr, cp_arr, piece_count_arr
 
     print(f"Wrote:")
-    output_files = [counts_path, cp_path]
+    output_files = [counts_path, cp_path, piece_count_path]
     if args.dual:
         output_files = [white_indices_path, black_indices_path] + output_files
     else:
