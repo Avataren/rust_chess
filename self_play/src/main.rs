@@ -281,6 +281,7 @@ impl MultiPonder {
                         is_white_next,
                         None, // no deadline — stopped by flag
                         Some(stop_c),
+                        0,
                     )
                 });
 

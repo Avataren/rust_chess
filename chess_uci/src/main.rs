@@ -316,6 +316,7 @@ fn search_and_respond(
             }
             let _ = io::stdout().flush();
         }),
+        0,
     );
     let _ms = t0.elapsed().as_millis();
     let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
@@ -416,6 +417,7 @@ fn ponder_and_respond(
             }
             let _ = io::stdout().flush();
         }),
+        0,
     );
 
     let _ms = t0.elapsed().as_millis();

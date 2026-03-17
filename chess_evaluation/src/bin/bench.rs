@@ -157,6 +157,7 @@ fn bench_threaded(fen: &str, is_white: bool, depth: i32, num_threads: usize, tt_
         Some(&move |_d, _score, nodes, _ms| {
             *last_nodes_cb.lock().unwrap() = nodes;
         }),
+        0,
     );
 
     let elapsed_ms = t0.elapsed().as_millis();

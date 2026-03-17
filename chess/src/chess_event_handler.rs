@@ -8,11 +8,11 @@ use std::sync::Mutex;
 use std::task::Poll;
 use chess_board::ChessBoard;
 use chess_evaluation::{evaluate_board, iterative_deepening_root, OpeningBook};
+// evaluate_board is used in launch_multi_ponder for ranking ponder candidates
 use chess_foundation::ChessMove;
 use move_generator::{
     move_generator::get_all_legal_moves_for_color, piece_conductor::PieceConductor,
 };
-use rand::Rng;
 use std::time::Duration;
 
 use crate::{
@@ -121,41 +121,6 @@ pub fn apply_ai_move_animation(
 pub type SearchTaskOutput = (i32, Option<ChessMove>, Option<ChessMove>, bool, u64);
 //                          score  best_move  ponder_move  is_ponder  board_hash
 
-// ── Eval noise helper ─────────────────────────────────────────────────────────
-
-/// After the main search, re-score all legal root moves with a fast 1-ply
-/// static evaluation and add uniform random noise.  The move with the best
-/// noisy score is returned.  When `noise_cp == 0` the original `best_move` is
-/// returned unchanged.
-fn apply_noise_move(
-    chess_board: &ChessBoard,
-    conductor: &PieceConductor,
-    best_move: Option<ChessMove>,
-    is_white: bool,
-    noise_cp: i32,
-) -> Option<ChessMove> {
-    if noise_cp == 0 {
-        return best_move;
-    }
-    let legal = get_all_legal_moves_for_color(&mut chess_board.clone(), conductor, is_white);
-    if legal.len() <= 1 {
-        return best_move.or_else(|| legal.into_iter().next());
-    }
-    let mut rng = rand::thread_rng();
-    let scored = legal.into_iter().map(|mut m| {
-        let mut b = chess_board.clone();
-        b.make_move(&mut m);
-        let eval = evaluate_board(&b, conductor);
-        let noisy = eval + rng.gen_range(-noise_cp..=noise_cp);
-        (m, noisy)
-    });
-    if is_white {
-        scored.max_by_key(|(_, s)| *s).map(|(m, _)| m)
-    } else {
-        scored.min_by_key(|(_, s)| *s).map(|(m, _)| m)
-    }
-}
-
 // ── Main search task ──────────────────────────────────────────────────────────
 
 async fn alpha_beta_task(
@@ -165,11 +130,12 @@ async fn alpha_beta_task(
     max_depth: i32,
     is_white: bool,
     deadline: Option<web_time::Instant>,
+    noise_cp: i32,
 ) -> SearchTaskOutput {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let result = iterative_deepening_root(
-            chess_board, conductor, Some(book), max_depth, is_white, deadline, None,
+            chess_board, conductor, Some(book), max_depth, is_white, deadline, None, noise_cp,
         );
         return (result.score, result.best_move, result.ponder_move, false, 0);
     }
@@ -199,7 +165,7 @@ async fn alpha_beta_task(
             rayon::spawn(move || {
                 let r = iterative_deepening_root(
                     &mut board_w, &conductor_w, Some(&book_w),
-                    max_depth, is_white, None, Some(stop_w),
+                    max_depth, is_white, None, Some(stop_w), noise_cp,
                 );
                 *res_w.lock().unwrap() = Some((r.score, r.best_move, r.ponder_move));
             });
@@ -233,7 +199,7 @@ async fn ponder_search_task(
     {
         let result = iterative_deepening_root(
             &mut board, &conductor, Some(&book),
-            depth, is_white, None, Some(stop),
+            depth, is_white, None, Some(stop), 0,
         );
         return (result.score, result.best_move, result.ponder_move, true, board_hash);
     }
@@ -250,7 +216,7 @@ async fn ponder_search_task(
             rayon::spawn(move || {
                 let r = iterative_deepening_root(
                     &mut board, &conductor_w, Some(&book_w),
-                    depth, is_white, None, Some(stop_w),
+                    depth, is_white, None, Some(stop_w), 0,
                 );
                 *res_w.lock().unwrap() = Some((r.score, r.best_move, r.ponder_move));
             });
@@ -414,6 +380,7 @@ pub fn handle_async_moves(
                     let conductor_c = move_generator.magic.clone();
                     let book_c = opening_book.book.clone();
                     let depth = game_settings.strength.max_depth();
+                    let noise_cp = game_settings.strength.eval_noise_cp();
                     let budget = game_clocks.move_budget(ai_is_white);
                     let deadline = Some(web_time::Instant::now() + budget);
 
@@ -423,7 +390,7 @@ pub fn handle_async_moves(
                         }
                         alpha_beta_task(
                             &mut board_c, &conductor_c, &book_c,
-                            depth, ai_is_white, deadline,
+                            depth, ai_is_white, deadline, noise_cp,
                         )
                         .await
                     });
@@ -442,15 +409,6 @@ pub fn handle_async_moves(
     // ── 4. Apply AI move ──────────────────────────────────────────────────────
     let (score, mut best_move, _ponder_move, _, _) = pending.unwrap();
     eprintln!("AI result: score={score}");
-
-    // Apply eval noise — perturbs root-move selection without affecting search.
-    let noise_cp = game_settings.strength.eval_noise_cp();
-    if noise_cp > 0 {
-        best_move = apply_noise_move(
-            &chess_board.chess_board, &move_generator.magic,
-            best_move, ai_is_white, noise_cp,
-        );
-    }
 
     if best_move.is_none() {
         let all_moves = get_all_legal_moves_for_color(

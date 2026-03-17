@@ -6,6 +6,7 @@ use move_generator::{
     piece_conductor::PieceConductor,
 };
 use std::sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}};
+use rand::Rng as _;
 use web_time::Instant;
 
 use crate::{
@@ -1388,12 +1389,12 @@ pub fn search_root(
     is_white: bool,
     prev_best: Option<ChessMove>,
     stop: Option<Arc<AtomicBool>>,
+    noise_cp: i32,
 ) -> (i32, Option<ChessMove>) {
     let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board, conductor), None);
     }
-    // No countermove or continuation history at root (no previous game-tree moves).
     let ch1_ptr: *const ContHistTable = &ctx.cont_hist_1;
     let ch2_ptr: *const ContHistTable = &ctx.cont_hist_2;
     let ch1_root: &ContHistTable = unsafe { &*ch1_ptr };
@@ -1401,9 +1402,14 @@ pub fn search_root(
     order_moves(&mut legal_moves, prev_best, &ctx.killers[0], None, &ctx.history, &ctx.capture_history,
                 ch1_root, ch2_root, None, None, chess_board, conductor, is_white);
 
-    // Default to first ordered move so we never return None even if stop fires
-    // before the first move is fully evaluated.
     let mut best_move: Option<ChessMove> = legal_moves.first().copied();
+
+    // Noise: track the noise-perturbed best move separately so alpha/beta pruning
+    // is unaffected.  The returned score is always the real best-move score so
+    // aspiration windows in iterative deepening remain accurate.
+    let mut noisy_best_move: Option<ChessMove> = best_move;
+    let mut noisy_best_score: i32 = if is_white { i32::MIN + 1 } else { i32::MAX };
+    let mut rng = if noise_cp > 0 { Some(rand::thread_rng()) } else { None };
 
     if is_white {
         let mut best_score = i32::MIN + 1;
@@ -1435,18 +1441,21 @@ pub fn search_root(
 
             chess_board.undo_move();
 
+            if let Some(ref mut r) = rng {
+                let noisy = eval + r.gen_range(-noise_cp..=noise_cp);
+                if noisy > noisy_best_score {
+                    noisy_best_score = noisy;
+                    noisy_best_move = Some(chess_move);
+                }
+            }
             if eval > best_score {
                 best_score = eval;
                 best_move = Some(chess_move);
             }
-            if eval > alpha {
-                alpha = eval;
-            }
-            if alpha >= beta {
-                break;
-            }
+            if eval > alpha { alpha = eval; }
+            if alpha >= beta { break; }
         }
-        (best_score, best_move)
+        (best_score, if noise_cp > 0 { noisy_best_move } else { best_move })
     } else {
         let mut best_score = i32::MAX;
         let mut beta = beta;
@@ -1477,18 +1486,21 @@ pub fn search_root(
 
             chess_board.undo_move();
 
+            if let Some(ref mut r) = rng {
+                let noisy = eval + r.gen_range(-noise_cp..=noise_cp);
+                if noisy < noisy_best_score {
+                    noisy_best_score = noisy;
+                    noisy_best_move = Some(chess_move);
+                }
+            }
             if eval < best_score {
                 best_score = eval;
                 best_move = Some(chess_move);
             }
-            if eval < beta {
-                beta = eval;
-            }
-            if beta <= alpha {
-                break;
-            }
+            if eval < beta { beta = eval; }
+            if beta <= alpha { break; }
         }
-        (best_score, best_move)
+        (best_score, if noise_cp > 0 { noisy_best_move } else { best_move })
     }
 }
 
@@ -1516,7 +1528,7 @@ pub fn alpha_beta_root(
     }
     let tt = TranspositionTable::new(TT_SIZE);
     let mut ctx = SearchContext::new();
-    search_root(chess_board, conductor, &tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, None, None)
+    search_root(chess_board, conductor, &tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, None, None, 0)
 }
 
 /// Result of an iterative-deepening search.
@@ -1603,11 +1615,12 @@ pub fn iterative_deepening_root(
     is_white: bool,
     deadline: Option<Instant>,
     stop: Option<Arc<AtomicBool>>,
+    noise_cp: i32,
 ) -> SearchResult {
     let tt = TranspositionTable::new(TT_SIZE);
     iterative_deepening_root_with_tt(
         chess_board, conductor, book, &tt, max_depth, is_white,
-        deadline, stop, 1, None,
+        deadline, stop, 1, None, noise_cp,
     )
 }
 
@@ -1633,6 +1646,7 @@ pub fn iterative_deepening_root_with_tt(
     stop: Option<Arc<AtomicBool>>,
     num_threads: usize,
     on_depth: Option<&(dyn Fn(i32, i32, u64, u128) + Sync)>,
+    noise_cp: i32,
 ) -> SearchResult {
     // Book probe before spawning any threads.
     if let Some(book) = book {
@@ -1649,7 +1663,7 @@ pub fn iterative_deepening_root_with_tt(
     }
 
     if num_threads <= 1 {
-        return id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop, on_depth);
+        return id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop, on_depth, noise_cp);
     }
 
     // ── Lazy SMP: spawn helpers, main thread runs authoritative search ───
@@ -1674,7 +1688,7 @@ pub fn iterative_deepening_root_with_tt(
         }
 
         // Main thread: full iterative deepening with aspiration & deadline.
-        result = id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop.clone(), on_depth);
+        result = id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop.clone(), on_depth, noise_cp);
 
         // Main thread done — signal helpers to stop.
         helper_stop.store(true, Ordering::Release);
@@ -1699,6 +1713,7 @@ fn id_search_single(
     deadline: Option<Instant>,
     stop: Option<Arc<AtomicBool>>,
     on_depth: Option<&(dyn Fn(i32, i32, u64, u128) + Sync)>,
+    noise_cp: i32,
 ) -> SearchResult {
     let t0 = Instant::now();
     let mut ctx = SearchContext::new();
@@ -1715,7 +1730,7 @@ fn id_search_single(
         }
 
         let result = if depth <= 2 {
-            search_root(chess_board, conductor, tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move, stop.clone())
+            search_root(chess_board, conductor, tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move, stop.clone(), noise_cp)
         } else {
             // Progressive aspiration window: start narrow, multiply delta on failure
             // instead of opening directly to full window.  Saves re-searches.
@@ -1723,7 +1738,7 @@ fn id_search_single(
             let mut lo = prev_score.saturating_sub(delta);
             let mut hi = prev_score.saturating_add(delta);
             loop {
-                let result = search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone());
+                let result = search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone(), noise_cp);
                 if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
                     break result;
                 }
@@ -1737,7 +1752,7 @@ fn id_search_single(
                     hi = if delta >= 2000 { i32::MAX } else { prev_score.saturating_add(delta) };
                 }
                 if lo == i32::MIN + 1 && hi == i32::MAX {
-                    break search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone());
+                    break search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone(), noise_cp);
                 }
             }
         };
@@ -1816,20 +1831,20 @@ fn smp_helper(
             let stop = Some(Arc::clone(&helper_stop));
             let result = if depth <= 2 {
                 search_root(chess_board, conductor, tt, &mut ctx, depth,
-                    i32::MIN + 1, i32::MAX, is_white, prev_move, stop)
+                    i32::MIN + 1, i32::MAX, is_white, prev_move, stop, 0)
             } else {
                 let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
                 let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
                 loop {
                     let r = search_root(chess_board, conductor, tt, &mut ctx, depth,
-                        lo, hi, is_white, prev_move, Some(Arc::clone(&helper_stop)));
+                        lo, hi, is_white, prev_move, Some(Arc::clone(&helper_stop)), 0);
                     if helper_stop.load(Ordering::Relaxed) { break r; }
                     if r.0 > lo && r.0 < hi { break r; }
                     else if r.0 <= lo { lo = i32::MIN + 1; }
                     else              { hi = i32::MAX; }
                     if lo == i32::MIN + 1 && hi == i32::MAX {
                         break search_root(chess_board, conductor, tt, &mut ctx, depth,
-                            lo, hi, is_white, prev_move, Some(Arc::clone(&helper_stop)));
+                            lo, hi, is_white, prev_move, Some(Arc::clone(&helper_stop)), 0);
                     }
                 }
             };
@@ -2111,7 +2126,7 @@ mod tests {
     fn id_returns_a_move_from_starting_position() {
         let mut board = ChessBoard::new();
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 3, true, None, None);
+        let r = iterative_deepening_root(&mut board, &c, None, 3, true, None, None, 0);
         assert!(r.best_move.is_some(), "ID must return a move from the starting position");
     }
 
@@ -2124,7 +2139,7 @@ mod tests {
         // White Qd4 can take black Qd5; black king on e8 cannot recapture.
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
-        let id_score = iterative_deepening_root(&mut board, &c, None, 3, true, None, None).score;
+        let id_score = iterative_deepening_root(&mut board, &c, None, 3, true, None, None, 0).score;
         assert!(id_score > 900,
             "White wins a free queen so score must be > 900, got {id_score}");
     }
@@ -2134,7 +2149,7 @@ mod tests {
         let mut board = ChessBoard::new();
         let hash_before = board.current_hash();
         let c = conductor();
-        let _ = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
+        let _ = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
         assert_eq!(board.current_hash(), hash_before,
             "ID must not leave the board in a modified state");
     }
@@ -2145,7 +2160,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 2, true, None, None);
+        let r = iterative_deepening_root(&mut board, &c, None, 2, true, None, None, 0);
         let m = r.best_move.expect("ID must find a move");
         assert_eq!(m.start_square(), 27);
         assert_eq!(m.target_square(), 35);
@@ -2159,7 +2174,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 b - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 2, false, None, None);
+        let r = iterative_deepening_root(&mut board, &c, None, 2, false, None, None, 0);
         let m = r.best_move.expect("ID must find a move for black");
         assert_eq!(m.start_square(), 35);
         assert_eq!(m.target_square(), 27);
@@ -2172,7 +2187,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 2, true, None, None);
+        let r = iterative_deepening_root(&mut board, &c, None, 2, true, None, None, 0);
         let m = r.best_move.expect("ID must find a move");
         let mut board_after = board.clone();
         let mut mv_copy = m;
@@ -2187,7 +2202,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("8/8/8/8/8/1q6/8/K1k5 b - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 2, false, None, None);
+        let r = iterative_deepening_root(&mut board, &c, None, 2, false, None, None, 0);
         let m = r.best_move.expect("ID must find a move");
         let mut board_after = board.clone();
         let mut mv_copy = m;
@@ -2204,7 +2219,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let hash_before = board.current_hash();
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
         assert!(r.best_move.is_some(), "ID must return a move at depth 4");
         assert!(r.score > 800, "ID with NMP/LMR must still reflect a queen-up advantage, got {}", r.score);
         assert_eq!(board.current_hash(), hash_before, "Board must be clean after search");
@@ -2328,7 +2343,7 @@ mod tests {
         let c = conductor();
         let tt = TranspositionTable::new(TT_SIZE);
         let mut ctx = SearchContext::new();
-        let (score, mv) = search_root(&mut board, &c, &tt, &mut ctx, 4, -50, 50, false, None, None);
+        let (score, mv) = search_root(&mut board, &c, &tt, &mut ctx, 4, -50, 50, false, None, None, 0);
         assert!(score < -200 || score <= -50,
             "Black should win material or fail-low, got {score}");
         if score > -50 && score < 50 {
@@ -2342,7 +2357,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("3qk3/8/8/8/8/2N5/8/3QK3 w - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
         let m = r.best_move.expect("Must return a move");
         assert!(r.score > -200,
             "White should not blunder a piece, score {}", r.score);
@@ -2354,7 +2369,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/8/1b6/8/3N4/4K3 w - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None);
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
         let m = r.best_move.expect("Must return a move");
         let legal = get_all_legal_moves_for_color(&mut board, &c, true);
         assert!(legal.iter().any(|lm| lm.start_square() == m.start_square() && lm.target_square() == m.target_square()),
@@ -2369,11 +2384,11 @@ mod tests {
 
         let tt1 = TranspositionTable::new(TT_SIZE);
         let mut ctx1 = SearchContext::new();
-        let (score_full, mv_full) = search_root(&mut board, &c, &tt1, &mut ctx1, 4, i32::MIN + 1, i32::MAX, true, None, None);
+        let (score_full, mv_full) = search_root(&mut board, &c, &tt1, &mut ctx1, 4, i32::MIN + 1, i32::MAX, true, None, None, 0);
 
         let tt2 = TranspositionTable::new(TT_SIZE);
         let mut ctx2 = SearchContext::new();
-        let (score_asp, _) = search_root(&mut board, &c, &tt2, &mut ctx2, 4, -50, 50, true, None, None);
+        let (score_asp, _) = search_root(&mut board, &c, &tt2, &mut ctx2, 4, -50, 50, true, None, None, 0);
 
         let m = mv_full.expect("Full window must return a move");
         assert!(score_full > 200, "White should win material, got {score_full}");
@@ -2428,7 +2443,7 @@ mod tests {
 
         for max_depth in 2..=6 {
             let r = iterative_deepening_root(
-                &mut board, &c, None, max_depth, true, None, None,
+                &mut board, &c, None, max_depth, true, None, None, 0,
             );
             assert!(r.best_move.is_some(), "ID depth {max_depth}: must return a move");
             assert!(r.score >= 999_000,
@@ -2449,13 +2464,13 @@ mod tests {
         let c = conductor();
 
         let r1 = iterative_deepening_root(
-            &mut board, &c, None, 4, true, None, None,
+            &mut board, &c, None, 4, true, None, None, 0,
         );
         let score_no_flag = r1.score;
 
         let stop = Arc::new(AtomicBool::new(false));
         let r2 = iterative_deepening_root(
-            &mut board, &c, None, 4, true, None, Some(stop),
+            &mut board, &c, None, 4, true, None, Some(stop), 0,
         );
         let score_with_flag = r2.score;
 
@@ -2474,13 +2489,13 @@ mod tests {
         let c = conductor();
 
         let r1 = iterative_deepening_root(
-            &mut board, &c, None, 4, true, None, None,
+            &mut board, &c, None, 4, true, None, None, 0,
         );
         let score_no_dl = r1.score;
 
         let deadline = Some(Instant::now() + Duration::from_secs(60));
         let r2 = iterative_deepening_root(
-            &mut board, &c, None, 4, true, deadline, None,
+            &mut board, &c, None, 4, true, deadline, None, 0,
         );
         let score_with_dl = r2.score;
 
@@ -2503,7 +2518,7 @@ mod tests {
         // at least depth 1-2 and return a sensible result.
         let deadline = Some(Instant::now() + Duration::from_millis(5));
         let r = iterative_deepening_root(
-            &mut board, &c, None, 64, true, deadline, None,
+            &mut board, &c, None, 64, true, deadline, None, 0,
         );
 
         assert!(r.best_move.is_some(),
@@ -2568,7 +2583,7 @@ mod tests {
 
         let initial_score = evaluate_board(&board, &c);
         let r = iterative_deepening_root(
-            &mut board, &c, None, 4, true, None, None,
+            &mut board, &c, None, 4, true, None, None, 0,
         );
 
         assert!(r.best_move.is_some(), "Engine must return a move");
@@ -2724,7 +2739,7 @@ mod tests {
             let is_white = fen.split_whitespace().nth(1) == Some("w");
             let tt = TranspositionTable::new(TT_SIZE);
             let mut ctx = SearchContext::new();
-            search_root(&mut board, &c, &tt, &mut ctx, 4, i32::MIN + 1, i32::MAX, is_white, None, None);
+            search_root(&mut board, &c, &tt, &mut ctx, 4, i32::MIN + 1, i32::MAX, is_white, None, None, 0);
 
             // Probe TT for root hash and verify the stored best move (if any) is legal.
             let hash = board.current_hash();
@@ -2759,21 +2774,21 @@ mod tests {
         let tt_fresh = TranspositionTable::new(TT_SIZE);
         let mut ctx = SearchContext::new();
         let (score_fresh, mv_fresh) = search_root(
-            &mut board, &c, &tt_fresh, &mut ctx, depth, i32::MIN + 1, i32::MAX, true, None, None,
+            &mut board, &c, &tt_fresh, &mut ctx, depth, i32::MIN + 1, i32::MAX, true, None, None, 0,
         );
 
         // Polluted TT: search a different position first, then age it, then search the target.
         let tt_reused = TranspositionTable::new(TT_SIZE);
         let mut board2 = ChessBoard::new(); // starting position
         let mut ctx2 = SearchContext::new();
-        search_root(&mut board2, &c, &tt_reused, &mut ctx2, depth, i32::MIN + 1, i32::MAX, true, None, None);
+        search_root(&mut board2, &c, &tt_reused, &mut ctx2, depth, i32::MIN + 1, i32::MAX, true, None, None, 0);
         tt_reused.new_search();
 
         let mut board3 = ChessBoard::new();
         board3.set_from_fen(fen);
         let mut ctx3 = SearchContext::new();
         let (score_reused, mv_reused) = search_root(
-            &mut board3, &c, &tt_reused, &mut ctx3, depth, i32::MIN + 1, i32::MAX, true, None, None,
+            &mut board3, &c, &tt_reused, &mut ctx3, depth, i32::MIN + 1, i32::MAX, true, None, None, 0,
         );
 
         assert_eq!(
@@ -2806,7 +2821,7 @@ mod tests {
             let is_white = fen.split_whitespace().nth(1) == Some("w");
             let mut ctx = SearchContext::new();
             tt.new_search();
-            search_root(&mut board, &c, &tt, &mut ctx, 3, i32::MIN + 1, i32::MAX, is_white, None, None);
+            search_root(&mut board, &c, &tt, &mut ctx, 3, i32::MIN + 1, i32::MAX, is_white, None, None, 0);
         }
 
         // Now search the tactical position: white has a free queen to take.
@@ -2816,7 +2831,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let mut ctx = SearchContext::new();
         tt.new_search();
-        let (score, mv) = search_root(&mut board, &c, &tt, &mut ctx, 4, i32::MIN + 1, i32::MAX, true, None, None);
+        let (score, mv) = search_root(&mut board, &c, &tt, &mut ctx, 4, i32::MIN + 1, i32::MAX, true, None, None, 0);
         let m = mv.expect("Engine must find a move after TT warm-up");
         assert_eq!(m.target_square(), 35,
             "Engine must capture the free queen (sq 35) after TT warm-up, got sq {}", m.target_square());
@@ -2832,7 +2847,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let tt = TranspositionTable::new(TT_SIZE);
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, true, None, None, 1, None,
+            &mut board, &c, None, &tt, 4, true, None, None, 1, None, 0,
         );
         assert!(r.best_move.is_some(), "single-thread must return a move");
         let mv = r.best_move.unwrap();
@@ -2846,7 +2861,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let tt = TranspositionTable::new(TT_SIZE);
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, true, None, None, 2, None,
+            &mut board, &c, None, &tt, 4, true, None, None, 2, None, 0,
         );
         assert!(r.best_move.is_some(), "2-thread Lazy SMP must return a move");
         let mv = r.best_move.unwrap();
@@ -2860,7 +2875,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let tt = TranspositionTable::new(TT_SIZE);
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, true, None, None, 4, None,
+            &mut board, &c, None, &tt, 4, true, None, None, 4, None, 0,
         );
         assert!(r.best_move.is_some(), "4-thread Lazy SMP must return a move");
         let mv = r.best_move.unwrap();
@@ -2876,7 +2891,7 @@ mod tests {
         let tt = TranspositionTable::new(TT_SIZE);
         let deadline = Some(Instant::now() + Duration::from_millis(200));
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 64, true, deadline, None, 4, None,
+            &mut board, &c, None, &tt, 64, true, deadline, None, 4, None, 0,
         );
         assert!(r.best_move.is_some(), "4-thread Lazy SMP with deadline must return a move");
     }
@@ -2894,7 +2909,7 @@ mod tests {
             stop_c.store(true, Ordering::Relaxed);
         });
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 64, true, None, Some(stop), 4, None,
+            &mut board, &c, None, &tt, 64, true, None, Some(stop), 4, None, 0,
         );
         assert!(r.best_move.is_some(), "4-thread Lazy SMP with stop flag must return a move");
     }
@@ -2907,7 +2922,7 @@ mod tests {
         let hash_before = board.current_hash();
         let tt = TranspositionTable::new(TT_SIZE);
         let _ = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, false, None, None, 4, None,
+            &mut board, &c, None, &tt, 4, false, None, None, 4, None, 0,
         );
         assert_eq!(board.current_hash(), hash_before,
             "board hash must be unchanged after multi-threaded search");

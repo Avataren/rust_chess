@@ -116,10 +116,12 @@ pub enum Strength {
 impl Strength {
     pub fn max_depth(self) -> i32 {
         match self {
-            Strength::S1 => 2,
-            Strength::S2 => 3,
-            Strength::S3 => 6,
-            Strength::S4 => 12,
+            // S1-S4 use noise, so the deep search result is discarded — keep depth low
+            // to avoid burning the time budget on a search that gets thrown away.
+            Strength::S1 => 1,
+            Strength::S2 => 1,
+            Strength::S3 => 2,   // slight lookahead before noise so it avoids immediate blunders
+            Strength::S4 => 4,   // same — noise is small so search quality starts to matter
             Strength::S5 => 50,
         }
     }
@@ -128,10 +130,10 @@ impl Strength {
     /// move's static score has a random ±noise sample added before selecting the best.
     pub fn eval_noise_cp(self) -> i32 {
         match self {
-            Strength::S1 => 150,  // ~old Casual — many blunders, easy for a beginner
-            Strength::S2 => 60,   // occasionally drops a pawn, misses short tactics
-            Strength::S3 => 20,   // solid but imperfect
-            Strength::S4 => 5,    // near-engine strength, rare slip
+            Strength::S1 => 100,  // blunders regularly, clear piece drops
+            Strength::S2 => 35,   // misses short tactics, drops pawns occasionally
+            Strength::S3 => 15,   // solid, rare lapses
+            Strength::S4 => 5,    // near-engine strength, very rare slip
             Strength::S5 => 0,
         }
     }
