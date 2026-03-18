@@ -7,6 +7,10 @@ edition = "2021"
 name = "pgn_extract"
 path = "src/main.rs"
 
+[[bin]]
+name = "finetune_extract"
+path = "src/finetune_extract.rs"
+
 [dependencies]
 pgn-reader = "0.24"
 shakmaty = "0.25"

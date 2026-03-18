@@ -1,0 +1,34 @@
+seed: 42
+
+training:
+  batch_size: 32768
+  epochs: 100
+  lr: 0.0003
+  warmup_epochs: 0
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  workers: 8
+  pin_memory: true
+  amp: true
+  persistent_workers: true
+  prefetch_factor: 4
+  endgame_fraction: 0.40   # oversample endgame: 40% of each batch will be endgame positions
+  compile: true
+  compile_mode: "default"  # reduce-overhead causes GPU memory faults on RDNA3/ROCm
+
+model:
+  input_dim: 12288
+  hidden_dim: 512
+  hidden2_dim: 32
+  dropout: 0.1
+  dual_perspective: true
+  n_output_buckets: 1
+
+loss:
+  cp_weight: 0.3
+  wdl_weight: 0.7
+
+data:
+  train_file: data/combined_21m/train_combined_21m.jsonl
+  val_file:   data/combined_21m/val_combined_21m.jsonl
+  max_cp_abs: 800

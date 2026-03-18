@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
-    init_neural_eval, is_neural_eval_enabled,
+    init_neural_eval, is_neural_eval_enabled, is_neural_eval_initialized,
     iterative_deepening_root_with_tt, set_neural_confidence_threshold,
     set_neural_eval_enabled, OpeningBook, TranspositionTable,
 };
@@ -434,9 +434,8 @@ fn ponder_and_respond(
 // ── Main loop ────────────────────────────────────────────────────────────────
 
 fn main() {
-    #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental"))]
-    chess_evaluation::init_neural_eval_from_bytes(NNUE_WEIGHTS)
-        .expect("failed to load embedded neural eval weights");
+    // Weights are loaded lazily: EvalFile setoption takes priority.
+    // Fallback to embedded bytes happens in the isready handler below.
 
     let conductor = PieceConductor::new();
     let book = OpeningBook::build(&conductor);
@@ -538,6 +537,12 @@ fn main() {
                 }
             }
             "isready" => {
+                // Load embedded weights as fallback if EvalFile was not provided.
+                #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental"))]
+                if !is_neural_eval_initialized() {
+                    chess_evaluation::init_neural_eval_from_bytes(NNUE_WEIGHTS)
+                        .expect("failed to load embedded neural eval weights");
+                }
                 println!("readyok");
             }
             "ucinewgame" => {

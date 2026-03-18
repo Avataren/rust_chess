@@ -2,8 +2,9 @@ seed: 42
 
 training:
   batch_size: 32768
-  epochs: 100
+  epochs: 150
   lr: 0.001
+  warmup_epochs: 5
   weight_decay: 0.0001
   grad_clip: 1.0
   workers: 8
@@ -13,11 +14,11 @@ training:
   prefetch_factor: 4
 
 model:
-  input_dim: 12288   # 12 piece types × 64 squares × 16 king buckets
+  input_dim: 12288
   hidden_dim: 512
   hidden2_dim: 32
   dropout: 0.3
-  dual_perspective: true  # EvalNetDual: shared EmbeddingBag, fc2=1024→32
+  dual_perspective: true
   n_output_buckets: 2
 
 loss:
@@ -25,6 +26,6 @@ loss:
   wdl_weight: 0.7
 
 data:
-  train_file: data/train_10m.jsonl
-  val_file: data/val_10m.jsonl
-  max_cp_abs: 1500
+  train_file: data/balanced_24m/train_balanced_24m.jsonl
+  val_file:   data/balanced_24m/val_balanced_24m.jsonl
+  max_cp_abs: 800

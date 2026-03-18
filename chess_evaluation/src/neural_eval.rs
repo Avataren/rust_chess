@@ -79,6 +79,11 @@ pub fn init_neural_eval_from_bytes(bytes: &[u8]) -> Result<(), String> {
         .map_err(|_| "Neural evaluator already initialized".into())
 }
 
+/// Returns true if weights have been loaded (via EvalFile or embedded bytes).
+pub fn is_neural_eval_initialized() -> bool {
+    EVALUATOR.get().is_some()
+}
+
 /// Enable or disable neural network evaluation at runtime.
 pub fn set_neural_eval_enabled(enabled: bool) {
     NEURAL_ENABLED.store(enabled, Ordering::Relaxed);

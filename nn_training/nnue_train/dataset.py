@@ -19,9 +19,10 @@ class BinaryPositionDataset(Dataset):
     python-chess encoding at training time, giving ~10-20x DataLoader speedup.
 
     Files expected (given path = "data/train_10m.jsonl"):
-      data/train_10m.indices.npy  -- (N, 32) uint16
-      data/train_10m.counts.npy   -- (N,)    uint8
-      data/train_10m.cp.npy       -- (N,)    float32
+      data/train_10m.indices.npy      -- (N, 32) uint16
+      data/train_10m.counts.npy       -- (N,)    uint8
+      data/train_10m.cp.npy           -- (N,)    float32
+      data/train_10m.piece_count.npy  -- (N,)    uint8   (optional, for output buckets)
     """
 
     def __init__(self, path: str, max_cp_abs: int = 1500, use_halfkp: bool = True):
@@ -32,6 +33,12 @@ class BinaryPositionDataset(Dataset):
         self.counts  = np.load(prefix + ".counts.npy",  mmap_mode="r")
         self.cp_raw  = np.load(prefix + ".cp.npy",      mmap_mode="r")
         self.cp      = np.clip(self.cp_raw, -max_cp_abs, max_cp_abs)
+        pc_path = prefix + ".piece_count.npy"
+        if Path(pc_path).exists():
+            self.piece_count = np.load(pc_path, mmap_mode="r")
+        else:
+            # Legacy datasets without piece_count: use active feature count as proxy
+            self.piece_count = self.counts
 
     def __len__(self) -> int:
         return len(self.cp)
@@ -48,9 +55,11 @@ class BinaryPositionDataset(Dataset):
         cp_val = float(self.cp[idx])
         cp = np.array([cp_val], dtype=np.float32)
         wdl = cp_to_wdl_target(float(self.cp_raw[idx]))
+        pc = np.array([int(self.piece_count[idx])], dtype=np.int64)
 
         return (
             torch.from_numpy(indices),
+            torch.from_numpy(pc),
             torch.from_numpy(cp),
             torch.from_numpy(wdl),
         )
@@ -126,6 +135,7 @@ class JsonlPositionDataset(Dataset):
 
         offsets = []
         cp_values = []
+        cp_raw_values = []
 
         with open(path, "rb") as f:
             while True:
@@ -136,13 +146,15 @@ class JsonlPositionDataset(Dataset):
                 if not line.strip():
                     continue
                 row = json.loads(line)
-                cp = float(row["cp"])
-                cp = max(-max_cp_abs, min(max_cp_abs, cp))
+                cp_raw = float(row["cp"])
+                cp = max(-max_cp_abs, min(max_cp_abs, cp_raw))
                 offsets.append(offset)
                 cp_values.append(cp)
+                cp_raw_values.append(cp_raw)
 
         self.offsets = np.array(offsets, dtype=np.int64)
         self.cp_values = np.array(cp_values, dtype=np.float32)
+        self.cp_raw_values = np.array(cp_raw_values, dtype=np.float32)
 
     def __len__(self) -> int:
         return len(self.offsets)
@@ -160,7 +172,7 @@ class JsonlPositionDataset(Dataset):
             x = encode_board_12x64(board)
 
         cp = np.array([self.cp_values[idx]], dtype=np.float32)
-        wdl = cp_to_wdl_target(float(self.cp_values[idx]))
+        wdl = cp_to_wdl_target(float(self.cp_raw_values[idx]))
 
         return (
             torch.from_numpy(x),

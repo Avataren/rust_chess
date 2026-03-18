@@ -48,7 +48,9 @@ def main():
     ap.add_argument("--use-halfkp", action="store_true", default=True,
                     help="Use HalfKP 12,288-dim features (default: true)")
     ap.add_argument("--no-halfkp", dest="use_halfkp", action="store_false")
-    ap.add_argument("--max-cp-abs", type=int, default=1500)
+    ap.add_argument("--max-cp-abs", type=int, default=None,
+                    help="Deprecated: cp clipping is applied at training time. This argument "
+                         "is accepted for backward compatibility but has no effect.")
     ap.add_argument("--dual", action="store_true", default=False,
                     help="Generate dual-perspective files (white_indices + black_indices). "
                          "CP values are converted to white-absolute convention.")
@@ -103,8 +105,7 @@ def main():
             if not line.strip():
                 continue
             row = json.loads(line)
-            cp = float(row["cp"])
-            cp = max(-args.max_cp_abs, min(args.max_cp_abs, cp))
+            cp = float(row["cp"])  # stored raw; clipping applied at training time
 
             board = chess.Board(row["fen"])
 
