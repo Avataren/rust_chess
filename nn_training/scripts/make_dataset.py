@@ -347,36 +347,67 @@ def main() -> None:
 
     # ── Step 4: Binary pre-encoding ───────────────────────────────────────────
     if not args.skip_preprocess:
+        # Prefer the Rust binary (20-50× faster, no mmap → no SIGBUS).
+        rust_bin = None
+        for candidate in [
+            REPO_ROOT / "target" / "release" / "nnue_preprocess",
+            REPO_ROOT / "target" / "debug"   / "nnue_preprocess",
+        ]:
+            if candidate.exists():
+                rust_bin = candidate
+                break
+
+        if rust_bin:
+            print(f"[make_dataset] Using Rust encoder: {rust_bin}")
+        else:
+            print("[make_dataset] Rust encoder not found — falling back to Python.")
+            print("  Build with: cargo build --release -p nnue_preprocess")
+
         preprocess_script = str(NN_ROOT / "scripts" / "preprocess_dataset.py")
 
-        # Build all encoding jobs and run them in parallel:
-        #   - single HalfKP (train + val)
-        #   - dual HalfKP   (train + val)  unless --no-dual
         jobs = []
         for split_path in [train_path, val_path]:
             out_prefix = str(split_path.with_suffix(""))  # strip .jsonl
             label = split_path.stem
 
-            # Single-perspective
-            jobs.append((
-                [python, preprocess_script,
-                 "--input", str(split_path),
-                 "--output", out_prefix,
-                 "--use-halfkp"],
-                f"Encode {label} (single-perspective HalfKP)",
-                {"PYTHONPATH": pythonpath},
-            ))
-
-            # Dual-perspective
-            if not args.no_dual:
+            if rust_bin:
+                # Single-perspective
+                jobs.append((
+                    [str(rust_bin),
+                     "--input", str(split_path),
+                     "--output", out_prefix],
+                    f"Encode {label} (single-perspective HalfKP)",
+                    None,
+                ))
+                # Dual-perspective
+                if not args.no_dual:
+                    jobs.append((
+                        [str(rust_bin),
+                         "--input", str(split_path),
+                         "--output", out_prefix,
+                         "--dual"],
+                        f"Encode {label} (dual-perspective)",
+                        None,
+                    ))
+            else:
+                # Python fallback
                 jobs.append((
                     [python, preprocess_script,
                      "--input", str(split_path),
                      "--output", out_prefix,
-                     "--dual"],
-                    f"Encode {label} (dual-perspective)",
+                     "--use-halfkp"],
+                    f"Encode {label} (single-perspective HalfKP)",
                     {"PYTHONPATH": pythonpath},
                 ))
+                if not args.no_dual:
+                    jobs.append((
+                        [python, preprocess_script,
+                         "--input", str(split_path),
+                         "--output", out_prefix,
+                         "--dual"],
+                        f"Encode {label} (dual-perspective)",
+                        {"PYTHONPATH": pythonpath},
+                    ))
 
         print(f"\n[make_dataset] ▶  Binary encoding  ({len(jobs)} jobs in parallel)")
         run_parallel(jobs)

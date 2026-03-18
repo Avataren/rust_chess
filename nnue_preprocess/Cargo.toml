@@ -1,0 +1,13 @@
+[package]
+name = "nnue_preprocess"
+version = "0.1.0"
+edition = "2021"
+description = "Fast JSONL → binary numpy encoder for NNUE training data"
+
+[[bin]]
+name = "nnue_preprocess"
+path = "src/main.rs"
+
+[dependencies]
+chess_board       = { path = "../chess_board" }
+serde_json        = "1"

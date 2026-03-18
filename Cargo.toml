@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "chess", "chess_uci", "self_play", "perft", "move_generator", "chess_board", "chess_foundation", "chess_evaluation", "pgn_extract"
+    "chess", "chess_uci", "self_play", "perft", "move_generator", "chess_board", "chess_foundation", "chess_evaluation", "pgn_extract", "nnue_preprocess"
 ]
 resolver = "2"
 
