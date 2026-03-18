@@ -76,7 +76,12 @@ class BinaryDualPositionDataset(Dataset):
         self.white_indices = np.load(prefix + ".white_indices.npy", mmap_mode="r")
         self.black_indices = np.load(prefix + ".black_indices.npy", mmap_mode="r")
         self.counts = np.load(prefix + ".counts.npy", mmap_mode="r")
-        self.cp = np.clip(np.load(prefix + ".cp.npy", mmap_mode="r"), -max_cp_abs, max_cp_abs)
+        # cp_raw: unclipped values (up to ±1500) used for WDL target computation
+        # so the WDL head always sees a full win/draw/loss distribution.
+        # cp: clipped to max_cp_abs for the cp regression loss, focusing
+        # learning on near-equal positions where evaluation quality matters.
+        self.cp_raw = np.load(prefix + ".cp.npy", mmap_mode="r")
+        self.cp = np.clip(self.cp_raw, -max_cp_abs, max_cp_abs)
         pc_path = prefix + ".piece_count.npy"
         if Path(pc_path).exists():
             self.piece_count = np.load(pc_path, mmap_mode="r")
@@ -96,9 +101,10 @@ class BinaryDualPositionDataset(Dataset):
         w_idx[:count] = self.white_indices[idx, :count]
         b_idx[:count] = self.black_indices[idx, :count]
 
-        cp_val = float(self.cp[idx])
+        cp_val = float(self.cp[idx])          # clipped — for cp regression loss
+        cp_raw = float(self.cp_raw[idx])      # unclipped — for WDL target
         cp = np.array([cp_val], dtype=np.float32)
-        wdl = cp_to_wdl_target(cp_val)
+        wdl = cp_to_wdl_target(cp_raw)
         pc = np.array([int(self.piece_count[idx])], dtype=np.int64)
 
         return (
