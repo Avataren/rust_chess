@@ -255,11 +255,14 @@ impl SearchContext {
             );
             return;
         }
-        self.acc_valid = crate::neural_eval::init_accumulators_for_board(
-            board,
-            &mut self.acc_white[0],
-            &mut self.acc_black[0],
-        );
+        #[cfg(not(feature = "nn-incremental"))]
+        {
+            self.acc_valid = crate::neural_eval::init_accumulators_for_board(
+                board,
+                &mut self.acc_white[0],
+                &mut self.acc_black[0],
+            );
+        }
     }
 
     /// Push accumulator state to ply+1 with an incremental delta for the given move.

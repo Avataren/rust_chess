@@ -329,6 +329,7 @@ impl MultiPonder {
                 score: 0,
                 best_move: None,
                 ponder_move: None,
+                total_nodes: 0,
             });
             if hit_idx == Some(i) {
                 hit_result = Some(result);

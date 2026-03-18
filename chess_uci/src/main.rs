@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
-    get_neural_confidence_threshold, init_neural_eval, is_neural_eval_enabled,
+    init_neural_eval, is_neural_eval_enabled,
     iterative_deepening_root_with_tt, set_neural_confidence_threshold,
     set_neural_eval_enabled, OpeningBook, TranspositionTable,
 };

@@ -10,6 +10,7 @@ use move_generator::piece_conductor::PieceConductor;
 ///   nn-incremental  — full NN forward pass here; incremental accumulator in search
 ///
 /// Returns 0 when no feature is selected (should not happen in a real build).
+#[allow(unused_variables)]
 pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i32 {
     // Priority: nn-incremental > nn-full-forward > runtime-switch > classical-eval.
     // The `not()` guards make this correct even when Cargo unifies multiple features
@@ -35,8 +36,8 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
                       feature = "runtime-switch"))))]
     return crate::classical_eval::evaluate(chess_board, conductor);
 
-    let _ = conductor;
-    0
+    #[allow(unreachable_code)]
+    { let _ = conductor; 0 }
 }
 
 // ── Tests — only compiled with classical-eval (they need deterministic HCE) ──

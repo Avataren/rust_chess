@@ -41,7 +41,7 @@ use move_generator::{
     move_generator::get_all_legal_moves_for_color,
     piece_conductor::PieceConductor,
 };
-use std::sync::Arc;
+
 use std::time::Instant;
 
 // ── Position suite ─────────────────────────────────────────────────────────────
