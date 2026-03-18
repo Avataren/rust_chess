@@ -30,10 +30,8 @@ class BinaryPositionDataset(Dataset):
 
         self.indices = np.load(prefix + ".indices.npy", mmap_mode="r")
         self.counts  = np.load(prefix + ".counts.npy",  mmap_mode="r")
-        self.cp      = np.load(prefix + ".cp.npy",      mmap_mode="r")
-
-        # Clip cp values
-        self.cp = np.clip(self.cp, -max_cp_abs, max_cp_abs)
+        self.cp_raw  = np.load(prefix + ".cp.npy",      mmap_mode="r")
+        self.cp      = np.clip(self.cp_raw, -max_cp_abs, max_cp_abs)
 
     def __len__(self) -> int:
         return len(self.cp)
@@ -49,7 +47,7 @@ class BinaryPositionDataset(Dataset):
 
         cp_val = float(self.cp[idx])
         cp = np.array([cp_val], dtype=np.float32)
-        wdl = cp_to_wdl_target(cp_val)
+        wdl = cp_to_wdl_target(float(self.cp_raw[idx]))
 
         return (
             torch.from_numpy(indices),
