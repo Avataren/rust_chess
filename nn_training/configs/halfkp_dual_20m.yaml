@@ -27,4 +27,4 @@ loss:
 data:
   train_file: data/train_d14_20m.jsonl
   val_file: data/val_d14_20m.jsonl
-  max_cp_abs: 1500
+  max_cp_abs: 400
