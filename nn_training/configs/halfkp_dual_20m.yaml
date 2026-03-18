@@ -18,7 +18,7 @@ model:
   hidden2_dim: 32
   dropout: 0.3
   dual_perspective: true   # EvalNetDual: shared EmbeddingBag, fc2=1024→32
-  n_output_buckets: 8      # separate output weights per game phase
+  n_output_buckets: 2      # endgame (≤16 pieces) vs opening/middlegame (17-32 pieces)
 
 loss:
   cp_weight: 0.3
