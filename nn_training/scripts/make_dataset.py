@@ -62,23 +62,58 @@ def run(cmd: list, *, desc: str, extra_env: dict | None = None) -> None:
 
 
 def run_parallel(jobs: list[tuple[list, str, dict | None]]) -> None:
-    """Run multiple commands in parallel; wait for all; abort on first failure."""
-    procs = []
+    """Run multiple commands in parallel; redirect output to log files to avoid
+    interleaved tqdm bars; poll and print a single status line from the parent."""
+    import tempfile
+
+    entries = []  # (proc, desc, log_path)
     t0 = time.monotonic()
+
     for cmd, desc, extra_env in jobs:
         env = {**os.environ, **(extra_env or {})}
-        print(f"\n[make_dataset] ▶  {desc}  (background)")
+        log_fd, log_path = tempfile.mkstemp(suffix=".log", prefix="make_dataset_")
+        log_file = os.fdopen(log_fd, "w")
+        print(f"[make_dataset] ▶  {desc}")
         print(f"  $ {' '.join(str(c) for c in cmd)}")
-        procs.append((subprocess.Popen(cmd, env=env), desc))
+        print(f"  log → {log_path}")
+        proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=log_file)
+        log_file.close()
+        entries.append((proc, desc, log_path))
 
-    for proc, desc in procs:
-        rc = proc.wait()
-        if rc != 0:
-            for p, _ in procs:
-                p.terminate()
-            sys.exit(f"[make_dataset] FAILED: {desc!r}  (exit {rc})")
+    print()
+    # Poll until all done, printing a single updating status line
+    while any(p.poll() is None for p, _, _ in entries):
+        elapsed = time.monotonic() - t0
+        still_running = [d for p, d, _ in entries if p.poll() is None]
+        short = [d.split("(")[-1].rstrip(")") if "(" in d else d for d in still_running]
+        print(f"\r  [{elapsed:5.0f}s]  running: {', '.join(short)}   ", end="", flush=True)
+        time.sleep(2)
 
-    print(f"\n[make_dataset] ✓  all parallel jobs done in {time.monotonic()-t0:.1f}s")
+    print()  # newline after the status line
+
+    # Report results
+    failed = []
+    for proc, desc, log_path in entries:
+        if proc.returncode != 0:
+            print(f"\n[make_dataset] FAILED: {desc!r}  (exit {proc.returncode})")
+            try:
+                lines = Path(log_path).read_text().splitlines()
+                print(f"  Last lines of {log_path}:")
+                for line in lines[-20:]:
+                    print(f"    {line}")
+            except OSError:
+                pass
+            failed.append(desc)
+        else:
+            Path(log_path).unlink(missing_ok=True)
+
+    if failed:
+        for proc, _, _ in entries:
+            if proc.poll() is None:
+                proc.terminate()
+        sys.exit(f"[make_dataset] {len(failed)} job(s) failed")
+
+    print(f"[make_dataset] ✓  all parallel jobs done in {time.monotonic()-t0:.1f}s")
 
 
 def count_lines(path: Path) -> int:
