@@ -41,7 +41,7 @@ use move_generator::{
     move_generator::get_all_legal_moves_for_color,
     piece_conductor::PieceConductor,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 // ── Position suite ─────────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ fn bench_sequential(fen: &str, is_white: bool, depth: i32) -> (u64, u128, i32) {
 }
 
 /// Run a multi-threaded iterative-deepening search up to `depth`.
-/// Returns (main_thread_nodes_at_final_depth, elapsed_ms, score).
+/// Returns (total_nodes_across_all_threads, elapsed_ms, score).
 /// `tt_entries` overrides TT_SIZE when non-zero.
 fn bench_threaded(fen: &str, is_white: bool, depth: i32, num_threads: usize, tt_entries: usize) -> (u64, u128, i32) {
     let mut board = ChessBoard::new();
@@ -137,10 +137,6 @@ fn bench_threaded(fen: &str, is_white: bool, depth: i32, num_threads: usize, tt_
     let conductor = PieceConductor::new();
     let entries = if tt_entries > 0 { tt_entries } else { TT_SIZE };
     let tt = TranspositionTable::new(entries);
-
-    // Capture nodes & ms from the last completed depth via on_depth callback.
-    let last_nodes: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
-    let last_nodes_cb = Arc::clone(&last_nodes);
 
     let t0 = Instant::now();
 
@@ -154,15 +150,12 @@ fn bench_threaded(fen: &str, is_white: bool, depth: i32, num_threads: usize, tt_
         None, // no deadline — run to full depth
         None, // no external stop
         num_threads,
-        Some(&move |_d, _score, nodes, _ms| {
-            *last_nodes_cb.lock().unwrap() = nodes;
-        }),
+        None,
         0,
     );
 
     let elapsed_ms = t0.elapsed().as_millis();
-    let nodes = *last_nodes.lock().unwrap();
-    (nodes, elapsed_ms, result.score)
+    (result.total_nodes, elapsed_ms, result.score)
 }
 
 /// Result of one (hash, threads, depth) configuration.

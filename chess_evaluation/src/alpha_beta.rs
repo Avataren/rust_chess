@@ -5,7 +5,7 @@ use move_generator::{
     move_generator::{get_all_legal_captures_for_color, get_all_legal_moves_for_color},
     piece_conductor::PieceConductor,
 };
-use std::sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, OnceLock, atomic::{AtomicBool, AtomicU64, Ordering}};
 use rand::Rng as _;
 use web_time::Instant;
 
@@ -1545,6 +1545,8 @@ pub struct SearchResult {
     pub best_move: Option<ChessMove>,
     /// The predicted opponent reply (PV[1]).  Used for pondering.
     pub ponder_move: Option<ChessMove>,
+    /// Total nodes searched across all threads (main + SMP helpers).
+    pub total_nodes: u64,
 }
 
 /// Extract the opponent's predicted reply from the TT by making the best move
@@ -1665,7 +1667,7 @@ pub fn iterative_deepening_root_with_tt(
                 .find(|m| m.start_square() == from && m.target_square() == to)
             {
                 eprintln!("Book move: {}", book_move.to_san_simple());
-                return SearchResult { score: 0, best_move: Some(book_move), ponder_move: None };
+                return SearchResult { score: 0, best_move: Some(book_move), ponder_move: None, total_nodes: 0 };
             }
         }
     }
@@ -1675,12 +1677,14 @@ pub fn iterative_deepening_root_with_tt(
     }
 
     // ── Lazy SMP: spawn helpers, main thread runs authoritative search ───
-    let helper_stop = Arc::new(AtomicBool::new(false));
+    let helper_stop  = Arc::new(AtomicBool::new(false));
+    let helper_nodes = Arc::new(AtomicU64::new(0));
 
     let mut result = SearchResult {
         score: 0,
         best_move: None,
         ponder_move: None,
+        total_nodes: 0,
     };
 
     rayon::scope(|s| {
@@ -1690,8 +1694,9 @@ pub fn iterative_deepening_root_with_tt(
             let cond = conductor.clone();
             let hs = Arc::clone(&helper_stop);
             let ext = stop.clone();
+            let hn = Arc::clone(&helper_nodes);
             s.spawn(move |_| {
-                smp_helper(&mut board, &cond, tt, max_depth, is_white, hs, ext, i);
+                smp_helper(&mut board, &cond, tt, max_depth, is_white, hs, ext, i, hn);
             });
         }
 
@@ -1702,6 +1707,7 @@ pub fn iterative_deepening_root_with_tt(
         helper_stop.store(true, Ordering::Release);
     });
 
+    result.total_nodes += helper_nodes.load(Ordering::Relaxed);
     result
 }
 
@@ -1793,6 +1799,7 @@ fn id_search_single(
         score: best.0,
         best_move: best.1,
         ponder_move,
+        total_nodes: ctx.nodes,
     }
 }
 
@@ -1818,18 +1825,21 @@ fn smp_helper(
     helper_stop: Arc<AtomicBool>,
     ext_stop: Option<Arc<AtomicBool>>,
     thread_idx: usize,
+    total_nodes: Arc<AtomicU64>,
 ) {
     // Stagger starting depth across helpers so they cover different layers.
     let start_depth = 1 + (thread_idx % 3) as i32;
+    let mut local_nodes = 0u64;
 
     'outer: loop {
         let mut ctx = SearchContext::new();
         let mut prev_score: i32 = if is_white { i32::MIN + 1 } else { i32::MAX };
         let mut prev_move: Option<ChessMove> = None;
+        let mut stopped = false;
 
         for depth in start_depth..=max_depth {
-            if helper_stop.load(Ordering::Relaxed) { break 'outer; }
-            if ext_stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) { break 'outer; }
+            if helper_stop.load(Ordering::Relaxed) { stopped = true; break; }
+            if ext_stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) { stopped = true; break; }
 
             if depth > start_depth {
                 ctx.age_history();
@@ -1860,8 +1870,11 @@ fn smp_helper(
             prev_score = result.0;
             prev_move  = result.1;
         }
+        local_nodes += ctx.nodes;
+        if stopped { break 'outer; }
         // Completed one full pass — loop back for the next pass.
     }
+    total_nodes.fetch_add(local_nodes, Ordering::Relaxed);
 }
 
 #[cfg(test)]
