@@ -323,33 +323,161 @@ PYTHONPATH=. python3 scripts/export_weights.py \
 
 ---
 
-## Step 7 — Deploy and verify
+## Step 7 — Deploy
+
+Export weights and point the engine at the new file — **no recompile needed**:
 
 ```bash
-cp artifacts/eval_halfkp_dual_20m.npz ../chess_evaluation/src/eval.npz
-cargo build --release -p chess_uci
+# Export
+PYTHONPATH=. python3 scripts/export_weights.py \
+  --checkpoint artifacts/checkpoint_dual_20m.pt \
+  --config     configs/halfkp_dual_20m.yaml \
+  --output     artifacts/eval_dual_20m.npz
 
-# Run all engine tests
+# Update lichess-bot config to point at the new file:
+#   EvalFile: /path/to/nn_training/artifacts/eval_dual_20m.npz
+# Then restart the engine — it loads weights at runtime, no recompile required.
+```
+
+The engine loads `EvalFile` at startup via `setoption`. If no `EvalFile` is set, it falls
+back to the weights baked in at compile time (`chess_evaluation/src/eval.npz`).
+
+```bash
+# Still useful: run engine tests after any Rust changes
 cargo test -p chess_evaluation
 
 # Verify i16 incremental path is numerically correct (dual model only)
 cargo test -p chess_evaluation -- --include-ignored test_i16_accum_equivalence
 ```
 
-The equivalence test confirms the i16 SIMD accumulator path produces scores within ±2cp of
-the f32 scratch path on a sample of positions. It requires a dual-perspective model to run.
+---
+
+## Analyzing cp distribution (choose max_cp_abs)
+
+Before training, check the cp distribution of your dataset to pick a principled `max_cp_abs`:
+
+```bash
+python3 scripts/analyze_dataset.py data/train_d14_20m.jsonl --both-splits
+```
+
+The script prints percentiles, coverage at candidate thresholds, and recommends a value.
+The principled ceiling is **800cp** — WDL draw probability hits zero there, so regression
+beyond that is redundant (the WDL head handles fully-decided positions). `max_cp_abs` only
+affects the cp regression loss; WDL targets always use raw (unclipped) cp.
+
+---
+
+## Balancing endgame data
+
+Datasets sampled uniformly from Lichess games are ~80% middlegame, ~20% endgame. This
+causes the endgame evaluation bucket to train on far fewer examples, producing weak
+endgame play. Two fixes:
+
+### Option A — Stratified oversampling (no new data)
+
+Add to your training config:
+```yaml
+training:
+  endgame_fraction: 0.40  # 40% of each batch drawn from endgame positions
+```
+
+The training loop uses `StratifiedEndgameSampler` to oversample positions with ≤16 pieces.
+Monitor `val_cp_mae_endgame` in TensorBoard to see if the gap to overall `val_cp_mae` closes.
+
+### Option B — Balanced dataset generation (recommended for base training)
+
+Analyze the deficit, extract targeted endgame positions, and combine with existing data:
+
+```bash
+# Analyze how many extra endgame positions are needed for 33% target
+python3 scripts/analyze_dataset.py data/train_d14_20m.jsonl
+
+# Extract + label + combine automatically
+bash scripts/gen_balanced_dataset.sh \
+  lichess_db_standard_rated_2021-01.pgn \
+  balanced_24m \
+  --target-fraction 0.33
+# Output: data/balanced_24m/train_balanced_24m.{jsonl,*.npy}
+```
+
+`gen_balanced_dataset.sh` computes the endgame deficit from existing data, extracts only
+the needed positions from the PGN using `finetune_extract`, labels with Stockfish, and
+combines with all existing train/val splits.
+
+### Extracting targeted FENs with finetune_extract
+
+```bash
+cargo build --release -p pgn_extract
+
+# Endgame positions (≤16 pieces, from last 40 plies, min-elo 1800)
+./target/release/finetune_extract \
+  --input lichess.pgn \
+  --output endgame.fens \
+  --max-pieces 16 \
+  --sample-from-last 40 \
+  --min-elo 1800 \
+  --max-positions 500000
+
+# Middlegame positions (17+ pieces)
+./target/release/finetune_extract \
+  --input lichess.pgn \
+  --output midgame.fens \
+  --min-pieces 17 \
+  --max-positions 500000
+```
+
+---
+
+## Finetuning workflow
+
+Fine-tune a trained checkpoint on new or balanced data:
+
+```bash
+PYTHONPATH=. python3 scripts/train.py \
+  --config configs/halfkp_dual_21m_endgame_ft.yaml \
+  --resume artifacts/checkpoint_21m_1bucket.pt \
+  --reset-best-val \              # reset best_val to inf (required when val set changes)
+  --out    artifacts/checkpoint_ft.pt \
+  --tb-logdir runs/finetune
+```
+
+`--reset-best-val` is required when finetuning on a different dataset — without it the
+checkpoint will never save because the old val_loss is from an incomparable dataset.
+
+Typical finetune config differences from base training:
+- Lower `lr` (e.g. `0.0003` vs `0.001`)
+- Lower `dropout` (e.g. `0.1` vs `0.3`)
+- No `warmup_epochs`
+- Add `endgame_fraction: 0.40` if correcting endgame imbalance
+
+---
+
+## Training config options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `warmup_epochs` | `0` | Linear LR warmup before cosine decay |
+| `endgame_fraction` | `null` | Oversample endgame positions (≤16 pieces) to this fraction |
+| `compile` | `false` | Enable `torch.compile` for faster training |
+| `compile_mode` | `"default"` | Inductor mode: `default`, `reduce-overhead`, `max-autotune` |
+
+> **ROCm note**: `reduce-overhead` causes GPU memory faults on RDNA3 (gfx1100). Use `default`.
 
 ---
 
 ## Configs
 
-| Config | Input dim | Dataset | Notes |
-|--------|-----------|---------|-------|
-| `default.yaml` | 768 | `data/train.jsonl` | Legacy absolute features |
-| `halfkp.yaml` | 12,288 | `data/train_1m.jsonl` | HalfKP single-perspective, 1M positions |
-| `halfkp_10m.yaml` | 12,288 | `data/train_10m.jsonl` | HalfKP single-perspective, 10M, dropout 0.3 |
-| `halfkp_dual.yaml` | 12,288 | `data/train_10m.jsonl` | Dual-perspective, 10M |
-| `halfkp_dual_20m.yaml` | 12,288 | `data/train_20m.jsonl` | **Current** — dual-perspective, 20M, depth-14 labels |
+| Config | Dataset | Buckets | Notes |
+|--------|---------|---------|-------|
+| `default.yaml` | `data/train.jsonl` | 1 | Legacy 768-dim absolute features |
+| `halfkp.yaml` | `data/train_1m.jsonl` | 1 | HalfKP single-perspective, 1M |
+| `halfkp_10m.yaml` | `data/train_10m.jsonl` | 1 | HalfKP single-perspective, 10M |
+| `halfkp_dual.yaml` | `data/train_10m.jsonl` | 2 | Dual-perspective, 10M |
+| `halfkp_dual_20m.yaml` | `data/train_d14_20m.jsonl` | 2 | Dual, 20M, depth-14, warmup |
+| `halfkp_dual_21m_1bucket.yaml` | `data/combined_21m/` | 1 | Dual, 21M combined, single head |
+| `halfkp_dual_21m_endgame_ft.yaml` | `data/combined_21m/` | 1 | Endgame finetune, 40% oversample |
+| `halfkp_dual_balanced.yaml` | `data/balanced_24m/` | 2 | Balanced 24M dataset (33% endgame) |
+| `halfkp_finetune_1m.yaml` | `data/finetune_1m/` | 2 | 1M balanced finetune |
 
 ---
 
