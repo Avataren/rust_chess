@@ -15,11 +15,11 @@ resolver = "2"
 #   "nn-incremental"  — incremental i16 accumulator in search (fastest NN mode)
 #   "runtime-switch"  — HCE + NN toggled via UCI setoptions / set_neural_eval_enabled()
 [workspace.dependencies]
-chess_evaluation = { path = "chess_evaluation", default-features = false, features = ["runtime-switch"] }
+chess_evaluation = { path = "chess_evaluation", default-features = false, features = ["nn-incremental"] }
 
 [profile.release]
 strip = true
-# lto = true
+lto = true
 opt-level = 3
 
 [profile.wasm-release]

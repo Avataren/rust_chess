@@ -3,6 +3,13 @@ name = "chess_uci"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default        = ["nn-incremental"]
+classical-eval = []
+nn-full-forward = []
+nn-incremental  = []
+runtime-switch  = []
+
 [dependencies]
 chess_foundation = { path = "../chess_foundation" }
 chess_board     = { path = "../chess_board" }

@@ -7,7 +7,7 @@ edition = "2021"
 chess_board = { path = "../chess_board" }
 move_generator = { path = "../move_generator" }
 chess_foundation = { path = "../chess_foundation" }
-chess_evaluation = { path = "../chess_evaluation", default-features = false, features = ["nn-full-forward"] }
+chess_evaluation = { path = "../chess_evaluation", default-features = false, features = ["nn-incremental"] }
 bevy_tweening = "0.15"
 bevy-fps-counter = "0.9.0"
 rand = "0.8.4"

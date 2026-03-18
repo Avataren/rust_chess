@@ -7,6 +7,13 @@ edition = "2021"
 name = "self_play"
 path = "src/main.rs"
 
+[features]
+default         = ["nn-incremental"]
+classical-eval  = []
+nn-full-forward = []
+nn-incremental  = []
+runtime-switch  = []
+
 [dependencies]
 chess_board      = { path = "../chess_board" }
 chess_evaluation = { workspace = true }
