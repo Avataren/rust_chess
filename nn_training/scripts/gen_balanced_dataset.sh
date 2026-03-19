@@ -74,11 +74,9 @@ mkdir -p "$OUT_DIR"
 
 EXISTING_TRAINS=(
     "$NN_ROOT/data/train_d14_20m.jsonl"
-    "$NN_ROOT/data/finetune_1m/train_finetune_1m.jsonl"
 )
 EXISTING_VALS=(
     "$NN_ROOT/data/val_d14_20m.jsonl"
-    "$NN_ROOT/data/finetune_1m/val_finetune_1m.jsonl"
 )
 
 NEW_ENDGAME_FENS="$OUT_DIR/new_endgame.fens"
