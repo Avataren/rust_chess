@@ -88,6 +88,7 @@ struct Extractor {
     out: BufWriter<Box<dyn Write>>,
     found: usize,
     games_scanned: u64,
+    games_started: u64,  // incremented at begin_game, used to fast-skip in skip phase
 
     rng: rand::rngs::ThreadRng,
 }
@@ -109,6 +110,7 @@ impl Extractor {
             out: BufWriter::new(writer),
             found: 0,
             games_scanned: 0,
+            games_started: 0,
             rng: rand::thread_rng(),
         }
     }
@@ -126,6 +128,7 @@ impl Visitor for Extractor {
     type Result = bool; // true = keep going, false = stop
 
     fn begin_game(&mut self) {
+        self.games_started += 1;
         self.white_elo = 0;
         self.black_elo = 0;
         self.skip_game = false;
@@ -154,7 +157,9 @@ impl Visitor for Extractor {
 
     fn end_headers(&mut self) -> Skip {
         self.skip_game = !self.elo_ok();
-        Skip(self.skip_game || self.found >= self.args.max_positions)
+        // Fast-skip entire move parsing for games in the skip-games phase
+        let in_skip_phase = self.games_started <= self.args.skip_games as u64;
+        Skip(in_skip_phase || self.skip_game || self.found >= self.args.max_positions)
     }
 
     fn san(&mut self, san_plus: SanPlus) {
@@ -188,7 +193,8 @@ impl Visitor for Extractor {
     fn end_game(&mut self) -> Self::Result {
         self.games_scanned += 1;
 
-        if self.games_scanned <= self.args.skip_games as u64 {
+        if self.games_started <= self.args.skip_games as u64 {
+            self.games_scanned += 1;
             return self.found < self.args.max_positions;
         }
 
