@@ -62,6 +62,11 @@ struct Args {
     #[arg(long, default_value_t = 32)]
     max_pieces: u32,
 
+    /// Skip the first N games in the PGN before collecting positions.
+    /// Use to avoid overlap with a previously extracted dataset.
+    #[arg(long, default_value_t = 0)]
+    skip_games: usize,
+
     /// Positions to sample per game from the filtered candidate set
     #[arg(long, default_value_t = 1)]
     positions_per_game: usize,
@@ -182,6 +187,10 @@ impl Visitor for Extractor {
 
     fn end_game(&mut self) -> Self::Result {
         self.games_scanned += 1;
+
+        if self.games_scanned <= self.args.skip_games as u64 {
+            return self.found < self.args.max_positions;
+        }
 
         if !self.skip_game && !self.candidates.is_empty() {
             // Apply sample_from_last: restrict to positions from the last N plies

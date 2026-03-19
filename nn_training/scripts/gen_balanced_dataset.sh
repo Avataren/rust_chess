@@ -26,7 +26,7 @@ PGN="${1:-}"
 NAME="${2:-}"
 
 if [[ -z "$PGN" || -z "$NAME" ]]; then
-    echo "Usage: $0 <pgn_file> <output_name> [--target-fraction N] [--workers N] [--min-elo N] [--stockfish PATH] [--depth N]"
+    echo "Usage: $0 <pgn_file> <output_name> [--target-fraction N] [--workers N] [--min-elo N] [--stockfish PATH] [--depth N] [--skip-games N]"
     exit 1
 fi
 
@@ -34,6 +34,7 @@ TARGET_FRACTION=0.33
 WORKERS=$(nproc)
 MIN_ELO=1800
 DEPTH=14
+SKIP_GAMES=0
 STOCKFISH=$(command -v stockfish 2>/dev/null || echo "")
 
 shift 2
@@ -44,6 +45,7 @@ while [[ $# -gt 0 ]]; do
         --min-elo)         MIN_ELO="$2";           shift 2 ;;
         --stockfish)       STOCKFISH="$2";         shift 2 ;;
         --depth)           DEPTH="$2";             shift 2 ;;
+        --skip-games)      SKIP_GAMES="$2";        shift 2 ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac
 done
@@ -160,7 +162,8 @@ echo "[2/6] Extracting $EXTRACT_N endgame FENs (≤16 pieces, last 40 plies, min
     --max-pieces 16 \
     --sample-from-last 40 \
     --min-elo "$MIN_ELO" \
-    --positions-per-game 3
+    --positions-per-game 3 \
+    --skip-games "$SKIP_GAMES"
 
 echo "  → $(wc -l < "$NEW_ENDGAME_FENS") endgame FENs extracted"
 
