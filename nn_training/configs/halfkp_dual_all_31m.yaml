@@ -1,0 +1,34 @@
+seed: 137
+
+training:
+  batch_size: 32768
+  epochs: 200
+  lr: 0.001
+  warmup_epochs: 5
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  workers: 8
+  pin_memory: true
+  amp: true
+  persistent_workers: true
+  prefetch_factor: 4
+
+model:
+  input_dim: 12288
+  hidden_dim: 512
+  hidden2_dim: 32
+  dropout: 0.3
+  dual_perspective: true
+  n_output_buckets: 3
+
+loss:
+  cp_weight: 0.3
+  wdl_weight: 0.7
+
+data:
+  train_file: data/all_31m/train_all_31m.jsonl
+  val_file:   data/all_31m/val_all_31m.jsonl
+  max_cp_abs: 800
+# Dataset: 30.9M train, 2.3M val
+# 2-bucket: 44.4% endgame / 55.6% midgame
+# 3-bucket ready: 26.8% / 29.7% / 43.5% (bucket 0 = 8.3M positions)

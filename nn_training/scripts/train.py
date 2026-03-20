@@ -241,7 +241,7 @@ def eval_epoch(model, loader, device, cfg):
         # piece_count is buried in the batch; re-derive from bucket formula inverse
         # Instead, tag via piece_count directly from the batch
         if isinstance(batch, (list, tuple)) and len(batch) >= 5:
-            raw_pc = batch[2].to(cp_pred.device) if not isinstance(batch[2], torch.Tensor) else batch[2]
+            raw_pc = batch[2].to(cp_pred.device)
             eg_mask = raw_pc.view(-1) <= 16
             if eg_mask.any():
                 eg_cp_mae_sum += float(cp_mae_per[eg_mask].sum().item())

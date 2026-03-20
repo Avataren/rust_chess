@@ -1,0 +1,33 @@
+seed: 137
+
+training:
+  batch_size: 32768
+  epochs: 200
+  lr: 0.001
+  warmup_epochs: 5
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  workers: 8
+  pin_memory: true
+  amp: true
+  persistent_workers: true
+  prefetch_factor: 4
+
+model:
+  input_dim: 12288
+  hidden_dim: 512
+  hidden2_dim: 32
+  dropout: 0.3
+  dual_perspective: true
+  n_output_buckets: 2
+
+loss:
+  cp_weight: 0.3
+  wdl_weight: 0.7
+
+data:
+  train_file: data/all_25m/train_all_25m.jsonl
+  val_file:   data/all_25m/val_all_25m.jsonl
+  max_cp_abs: 850
+# Dataset composition: 24.2M positions, 33.6% endgame (bucket 0), 66.4% midgame (bucket 1)
+# = base 20M + 4.3M new endgame (min-elo 1800, games 20M+) + 900k finetune (min-elo 1800, 50/50)
