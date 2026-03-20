@@ -194,7 +194,6 @@ impl Visitor for Extractor {
         self.games_scanned += 1;
 
         if self.games_started <= self.args.skip_games as u64 {
-            self.games_scanned += 1;
             return self.found < self.args.max_positions;
         }
 
