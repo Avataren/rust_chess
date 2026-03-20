@@ -231,6 +231,10 @@ pub struct SearchContext {
     good_captures_buf: Vec<(i32, ChessMove)>,
     bad_captures_buf: Vec<(i32, ChessMove)>,
     quiets_buf: Vec<ChessMove>,
+    /// Reusable buffer for killer entries inside order_moves.
+    killer_entries_buf: Vec<ChessMove>,
+    /// Reusable buffer for quiet moves tried before a beta-cutoff.
+    tried_quiets_buf: Vec<ChessMove>,
 }
 
 impl SearchContext {
@@ -254,6 +258,8 @@ impl SearchContext {
             good_captures_buf: Vec::with_capacity(32),
             bad_captures_buf: Vec::with_capacity(16),
             quiets_buf: Vec::with_capacity(64),
+            killer_entries_buf: Vec::with_capacity(4),
+            tried_quiets_buf: Vec::with_capacity(16),
         }
     }
 
@@ -544,13 +550,13 @@ fn quiescence(
             alpha = stand_pat;
         }
 
-        let mut captures = Vec::new();
+        let mut captures = std::mem::take(&mut ctx.move_lists[ply.min(MAX_PLY - 1)]);
         let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
         get_all_legal_captures_for_color(chess_board, conductor, is_white, &mut captures, &mut pseudo_buf);
         ctx.pseudo_buf = pseudo_buf;
         captures.sort();
 
-        for mut chess_move in captures {
+        for mut chess_move in captures.drain(..) {
             // Delta pruning: if even capturing the piece (plus a margin) can't raise alpha,
             // skip this capture entirely (saves SEE computation on hopeless moves).
             let cap_val = capture_value(chess_board, &chess_move)
@@ -577,6 +583,7 @@ fn quiescence(
             if eval > best  { best = eval; }
             if eval > alpha { alpha = eval; }
         }
+        ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
         best
     } else {
         if stand_pat <= alpha {
@@ -587,13 +594,13 @@ fn quiescence(
             beta = stand_pat;
         }
 
-        let mut captures = Vec::new();
+        let mut captures = std::mem::take(&mut ctx.move_lists[ply.min(MAX_PLY - 1)]);
         let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
         get_all_legal_captures_for_color(chess_board, conductor, is_white, &mut captures, &mut pseudo_buf);
         ctx.pseudo_buf = pseudo_buf;
         captures.sort();
 
-        for mut chess_move in captures {
+        for mut chess_move in captures.drain(..) {
             // Delta pruning (black): if even capturing the piece can't drop below beta, skip.
             let cap_val = capture_value(chess_board, &chess_move)
                 + if chess_move.is_promotion() { 800 } else { 0 };
@@ -619,6 +626,7 @@ fn quiescence(
             if eval < best   { best = eval; }
             if eval < beta   { beta = eval; }
         }
+        ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
         best
     }
 }
@@ -644,14 +652,15 @@ fn order_moves(
     capture_history: &[[i32; 64]; 64],
     ch1: &ContHistTable,
     ch2: &ContHistTable,
-    prev1: Option<(usize, usize)>,  // (prev_piece_idx, prev_to) for 1-ply cont hist
-    prev2: Option<(usize, usize)>,  // (prev_piece_idx, prev_to) for 2-ply cont hist
+    prev1: Option<(usize, usize)>,
+    prev2: Option<(usize, usize)>,
     board: &ChessBoard,
     conductor: &PieceConductor,
     is_white: bool,
     good_captures_buf: &mut Vec<(i32, ChessMove)>,
     bad_captures_buf: &mut Vec<(i32, ChessMove)>,
     quiets_buf: &mut Vec<ChessMove>,
+    killer_entries_buf: &mut Vec<ChessMove>,
 ) {
     // Pull out the TT move first.
     let tt_entry = tt_move.and_then(|tt_m| {
@@ -704,7 +713,8 @@ fn order_moves(
     });
 
     // Extract killer moves from quiets, preserving killer priority order.
-    let mut killer_entries: Vec<ChessMove> = Vec::new();
+    let killer_entries = killer_entries_buf;
+    killer_entries.clear();
     for killer in killers.iter().flatten() {
         if let Some(pos) = quiets.iter().position(|m| {
             m.start_square() == killer.start_square()
@@ -739,7 +749,7 @@ fn order_moves(
         moves.push(tt_m);
     }
     moves.extend(good_captures.iter().map(|(_, m)| *m));
-    moves.extend(killer_entries);
+    moves.extend(killer_entries.iter().copied());
     if let Some(cm) = countermove_entry {
         moves.push(cm);
     }
@@ -1086,9 +1096,8 @@ pub fn alpha_beta(
     }
 
     let killers = &ctx.killers[p];
-    // Safety: we need immutable borrows of history tables alongside a mutable borrow
-    // of ctx later (record_cutoff, apply_history_malus).  Use raw pointers that are
-    // only read in order_moves; writes happen after the loop via ctx exclusively.
+    // Use raw pointers for the read-only history/killers tables so we can also
+    // take mutable ownership of the ordering scratch buffers in the same call.
     let history_ptr:     *const [[i32; 64]; 64] = &ctx.history;
     let cap_history_ptr: *const [[i32; 64]; 64] = &ctx.capture_history;
     let ch1_ptr: *const ContHistTable = &ctx.cont_hist_1;
@@ -1113,21 +1122,20 @@ pub fn alpha_beta(
         ctx.countermoves[pm.start_square() as usize][pm.target_square() as usize]
     });
 
+    // Take ordering scratch buffers out of ctx to avoid conflicting borrows.
+    let mut good_captures_buf = std::mem::take(&mut ctx.good_captures_buf);
+    let mut bad_captures_buf  = std::mem::take(&mut ctx.bad_captures_buf);
+    let mut quiets_buf        = std::mem::take(&mut ctx.quiets_buf);
+    let mut killer_entries_buf = std::mem::take(&mut ctx.killer_entries_buf);
     order_moves(&mut legal_moves, tt_move, killers, countermove, history, capture_history,
                 ch1, ch2, prev1, prev2, chess_board, conductor, is_white,
-                {
-                    let good_cap_ptr: *mut Vec<(i32, ChessMove)> = &mut ctx.good_captures_buf;
-                    unsafe { &mut *good_cap_ptr }
-                },
-                {
-                    let bad_cap_ptr: *mut Vec<(i32, ChessMove)> = &mut ctx.bad_captures_buf;
-                    unsafe { &mut *bad_cap_ptr }
-                },
-                {
-                    let quiets_ptr: *mut Vec<ChessMove> = &mut ctx.quiets_buf;
-                    unsafe { &mut *quiets_ptr }
-                });
-    // `killers` borrow of ctx ends here (it is not used again below).
+                &mut good_captures_buf, &mut bad_captures_buf, &mut quiets_buf,
+                &mut killer_entries_buf);
+    ctx.good_captures_buf  = good_captures_buf;
+    ctx.bad_captures_buf   = bad_captures_buf;
+    ctx.quiets_buf         = quiets_buf;
+    ctx.killer_entries_buf = killer_entries_buf;
+    // `killers` raw-pointer borrow of ctx ends here.
 
     let mut best_move: Option<ChessMove> = None;
 
@@ -1135,7 +1143,8 @@ pub fn alpha_beta(
         let mut max_eval = i32::MIN;
         // Track quiet moves tried so we can apply history malus to the ones
         // that did NOT cause a cutoff (they turned out to be bad moves).
-        let mut tried_quiets: Vec<ChessMove> = Vec::with_capacity(8);
+        let mut tried_quiets = std::mem::take(&mut ctx.tried_quiets_buf);
+        tried_quiets.clear();
 
         let mut quiet_count = 0usize;
         for move_index in 0..legal_moves.len() {
@@ -1278,6 +1287,7 @@ pub fn alpha_beta(
         }
         legal_moves.clear();
         ctx.move_lists[ply.min(MAX_PLY - 1)] = legal_moves;
+        ctx.tried_quiets_buf = tried_quiets;
 
         let flag = if max_eval >= original_beta {
             TtFlag::LowerBound
@@ -1290,7 +1300,8 @@ pub fn alpha_beta(
         (max_eval, best_move)
     } else {
         let mut min_eval = i32::MAX;
-        let mut tried_quiets: Vec<ChessMove> = Vec::with_capacity(8);
+        let mut tried_quiets = std::mem::take(&mut ctx.tried_quiets_buf);
+        tried_quiets.clear();
 
         let mut quiet_count = 0usize;
         for move_index in 0..legal_moves.len() {
@@ -1415,6 +1426,7 @@ pub fn alpha_beta(
         }
         legal_moves.clear();
         ctx.move_lists[ply.min(MAX_PLY - 1)] = legal_moves;
+        ctx.tried_quiets_buf = tried_quiets;
 
         let flag = if min_eval <= original_alpha {
             TtFlag::UpperBound
@@ -1458,24 +1470,23 @@ pub fn search_root(
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board, conductor), None);
     }
+    // Use raw pointers for cont_hist borrows so we can also take the ordering buffers.
     let ch1_ptr: *const ContHistTable = &ctx.cont_hist_1;
     let ch2_ptr: *const ContHistTable = &ctx.cont_hist_2;
     let ch1_root: &ContHistTable = unsafe { &*ch1_ptr };
     let ch2_root: &ContHistTable = unsafe { &*ch2_ptr };
+    let mut good_captures_buf  = std::mem::take(&mut ctx.good_captures_buf);
+    let mut bad_captures_buf   = std::mem::take(&mut ctx.bad_captures_buf);
+    let mut quiets_buf         = std::mem::take(&mut ctx.quiets_buf);
+    let mut killer_entries_buf = std::mem::take(&mut ctx.killer_entries_buf);
     order_moves(&mut legal_moves, prev_best, &ctx.killers[0], None, &ctx.history, &ctx.capture_history,
                 ch1_root, ch2_root, None, None, chess_board, conductor, is_white,
-                {
-                    let good_cap_ptr: *mut Vec<(i32, ChessMove)> = &mut ctx.good_captures_buf;
-                    unsafe { &mut *good_cap_ptr }
-                },
-                {
-                    let bad_cap_ptr: *mut Vec<(i32, ChessMove)> = &mut ctx.bad_captures_buf;
-                    unsafe { &mut *bad_cap_ptr }
-                },
-                {
-                    let quiets_ptr: *mut Vec<ChessMove> = &mut ctx.quiets_buf;
-                    unsafe { &mut *quiets_ptr }
-                });
+                &mut good_captures_buf, &mut bad_captures_buf, &mut quiets_buf,
+                &mut killer_entries_buf);
+    ctx.good_captures_buf  = good_captures_buf;
+    ctx.bad_captures_buf   = bad_captures_buf;
+    ctx.quiets_buf         = quiets_buf;
+    ctx.killer_entries_buf = killer_entries_buf;
 
     let mut best_move: Option<ChessMove> = legal_moves.first().copied();
 
