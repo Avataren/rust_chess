@@ -1,12 +1,15 @@
 use chess_board::ChessBoard;
-use chess_foundation::ChessMove;
 use chess_foundation::piece::PieceType;
+use chess_foundation::ChessMove;
 use move_generator::{
     move_generator::{get_all_legal_captures_for_color, get_all_legal_moves_for_color},
     piece_conductor::PieceConductor,
 };
-use std::sync::{Arc, OnceLock, atomic::{AtomicBool, AtomicU64, Ordering}};
 use rand::Rng as _;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, OnceLock,
+};
 use web_time::Instant;
 
 use crate::{
@@ -46,7 +49,7 @@ fn init_lmr_table() -> [[i32; 64]; 64] {
 #[inline(always)]
 fn lmr_reduction(depth: i32, move_index: usize) -> i32 {
     let table = LMR_TABLE.get_or_init(init_lmr_table);
-    let d  = (depth as usize).min(63);
+    let d = (depth as usize).min(63);
     let mi = move_index.min(63);
     table[d][mi]
 }
@@ -65,7 +68,9 @@ pub struct ContHistTable {
 
 impl ContHistTable {
     pub fn new() -> Self {
-        Self { data: vec![0; CONT_HIST_SIZE] }
+        Self {
+            data: vec![0; CONT_HIST_SIZE],
+        }
     }
 
     #[inline(always)]
@@ -84,14 +89,19 @@ impl ContHistTable {
     }
 
     pub fn age(&mut self) {
-        for v in &mut self.data { *v >>= 1; }
+        for v in &mut self.data {
+            *v >>= 1;
+        }
     }
 }
 
 /// Map a ChessMove's piece to a cont-hist index (0-6).
 #[inline(always)]
 fn piece_idx(mv: ChessMove) -> usize {
-    mv.chess_piece.map(|cp| cp.piece_type() as usize).unwrap_or(0).min(6)
+    mv.chess_piece
+        .map(|cp| cp.piece_type() as usize)
+        .unwrap_or(0)
+        .min(6)
 }
 
 /// Approximate material value of a captured piece (for delta pruning).
@@ -101,12 +111,12 @@ fn capture_value(board: &ChessBoard, mv: &ChessMove) -> i32 {
         return 100;
     }
     match board.get_piece_type(mv.target_square()) {
-        Some(PieceType::Queen)  => 900,
-        Some(PieceType::Rook)   => 500,
+        Some(PieceType::Queen) => 900,
+        Some(PieceType::Rook) => 500,
         Some(PieceType::Bishop) => 325,
         Some(PieceType::Knight) => 300,
-        Some(PieceType::Pawn)   => 100,
-        _                       => 0,
+        Some(PieceType::Pawn) => 100,
+        _ => 0,
     }
 }
 
@@ -133,9 +143,13 @@ const MATE_SCORE_THRESHOLD: i32 = 999_000;
 #[inline]
 fn score_to_tt(score: i32, ply: usize) -> i32 {
     let p = ply as i32;
-    if      score >  MATE_SCORE_THRESHOLD { score + p }
-    else if score < -MATE_SCORE_THRESHOLD { score - p }
-    else                                  { score }
+    if score > MATE_SCORE_THRESHOLD {
+        score + p
+    } else if score < -MATE_SCORE_THRESHOLD {
+        score - p
+    } else {
+        score
+    }
 }
 
 /// Undo the ply-normalisation applied by `score_to_tt` when retrieving from TT.
@@ -312,7 +326,7 @@ impl SearchContext {
         }
 
         let from_sq = mv.start_square() as usize;
-        let to_sq   = mv.target_square() as usize;
+        let to_sq = mv.target_square() as usize;
         let piece_is_white = moving_piece.is_white();
 
         // Current king buckets (unchanged for non-king moves)
@@ -326,7 +340,14 @@ impl SearchContext {
         let mirror_w = (wk_sq.min(63) % 8) >= 4;
         let mirror_b = (bk_flipped.min(63) % 8) >= 4;
         let w_sq = |sq: usize| if mirror_w { sq ^ 7 } else { sq };
-        let b_sq = |sq: usize| { let r = sq ^ 56; if mirror_b { r ^ 7 } else { r } };
+        let b_sq = |sq: usize| {
+            let r = sq ^ 56;
+            if mirror_b {
+                r ^ 7
+            } else {
+                r
+            }
+        };
 
         let acc_w = &mut self.acc_white[dst];
         let acc_b = &mut self.acc_black[dst];
@@ -335,8 +356,14 @@ impl SearchContext {
         let orig_pt = moving_piece.piece_type();
         let slot_w = halfkp_piece_slot(orig_pt, piece_is_white);
         let slot_b = halfkp_piece_slot(orig_pt, !piece_is_white);
-        crate::neural_eval::acc_sub_feature(acc_w, slot_w * 64 * 16 + w_sq(from_sq) * 16 + wk_bucket);
-        crate::neural_eval::acc_sub_feature(acc_b, slot_b * 64 * 16 + b_sq(from_sq) * 16 + bk_bucket);
+        crate::neural_eval::acc_sub_feature(
+            acc_w,
+            slot_w * 64 * 16 + w_sq(from_sq) * 16 + wk_bucket,
+        );
+        crate::neural_eval::acc_sub_feature(
+            acc_b,
+            slot_b * 64 * 16 + b_sq(from_sq) * 16 + bk_bucket,
+        );
 
         // Add moving piece to its destination square (promotion may change type)
         let to_pt = if mv.is_promotion() {
@@ -346,23 +373,45 @@ impl SearchContext {
         };
         let to_slot_w = halfkp_piece_slot(to_pt, piece_is_white);
         let to_slot_b = halfkp_piece_slot(to_pt, !piece_is_white);
-        crate::neural_eval::acc_add_feature(acc_w, to_slot_w * 64 * 16 + w_sq(to_sq) * 16 + wk_bucket);
-        crate::neural_eval::acc_add_feature(acc_b, to_slot_b * 64 * 16 + b_sq(to_sq) * 16 + bk_bucket);
+        crate::neural_eval::acc_add_feature(
+            acc_w,
+            to_slot_w * 64 * 16 + w_sq(to_sq) * 16 + wk_bucket,
+        );
+        crate::neural_eval::acc_add_feature(
+            acc_b,
+            to_slot_b * 64 * 16 + b_sq(to_sq) * 16 + bk_bucket,
+        );
 
         // Remove captured piece (en passant: captured pawn is not at to_sq)
         if mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
-            let cap_sq = if piece_is_white { to_sq.wrapping_sub(8) } else { to_sq + 8 };
+            let cap_sq = if piece_is_white {
+                to_sq.wrapping_sub(8)
+            } else {
+                to_sq + 8
+            };
             let cap_slot_w = halfkp_piece_slot(PieceType::Pawn, !piece_is_white);
             let cap_slot_b = halfkp_piece_slot(PieceType::Pawn, piece_is_white);
-            crate::neural_eval::acc_sub_feature(acc_w, cap_slot_w * 64 * 16 + w_sq(cap_sq) * 16 + wk_bucket);
-            crate::neural_eval::acc_sub_feature(acc_b, cap_slot_b * 64 * 16 + b_sq(cap_sq) * 16 + bk_bucket);
+            crate::neural_eval::acc_sub_feature(
+                acc_w,
+                cap_slot_w * 64 * 16 + w_sq(cap_sq) * 16 + wk_bucket,
+            );
+            crate::neural_eval::acc_sub_feature(
+                acc_b,
+                cap_slot_b * 64 * 16 + b_sq(cap_sq) * 16 + bk_bucket,
+            );
         } else if let Some(cap) = mv.capture {
             let cap_pt = cap.piece_type();
             let cap_is_white = cap.is_white();
             let cap_slot_w = halfkp_piece_slot(cap_pt, cap_is_white);
             let cap_slot_b = halfkp_piece_slot(cap_pt, !cap_is_white);
-            crate::neural_eval::acc_sub_feature(acc_w, cap_slot_w * 64 * 16 + w_sq(to_sq) * 16 + wk_bucket);
-            crate::neural_eval::acc_sub_feature(acc_b, cap_slot_b * 64 * 16 + b_sq(to_sq) * 16 + bk_bucket);
+            crate::neural_eval::acc_sub_feature(
+                acc_w,
+                cap_slot_w * 64 * 16 + w_sq(to_sq) * 16 + wk_bucket,
+            );
+            crate::neural_eval::acc_sub_feature(
+                acc_b,
+                cap_slot_b * 64 * 16 + b_sq(to_sq) * 16 + bk_bucket,
+            );
         }
 
         false // no full recompute needed
@@ -393,10 +442,14 @@ impl SearchContext {
     /// searches don't drown out discoveries from the current depth.
     pub fn age_history(&mut self) {
         for row in &mut self.history {
-            for v in row { *v >>= 1; }
+            for v in row {
+                *v >>= 1;
+            }
         }
         for row in &mut self.capture_history {
-            for v in row { *v >>= 1; }
+            for v in row {
+                *v >>= 1;
+            }
         }
         self.cont_hist_1.age();
         self.cont_hist_2.age();
@@ -421,11 +474,12 @@ impl SearchContext {
         *v = (*v + bonus).min(16_384);
         // Countermove: record mv as the refutation of the opponent's last move.
         if let Some(prev) = self.prev_moves[p] {
-            self.countermoves[prev.start_square() as usize][prev.target_square() as usize] = Some(mv);
+            self.countermoves[prev.start_square() as usize][prev.target_square() as usize] =
+                Some(mv);
         }
         // Continuation history: reward this move given the previous moves.
         let mv_piece = piece_idx(mv);
-        let mv_to    = mv.target_square() as usize;
+        let mv_to = mv.target_square() as usize;
         // 1-ply: keyed on opponent's previous move (what they just played before us)
         if let Some(prev1) = self.prev_moves[p] {
             let pp1 = piece_idx(prev1);
@@ -454,7 +508,7 @@ impl SearchContext {
         *v = (*v - malus).max(-16_384);
         // Also apply malus to continuation history.
         let mv_piece = piece_idx(mv);
-        let mv_to    = mv.target_square() as usize;
+        let mv_to = mv.target_square() as usize;
         if let Some(prev1) = self.prev_moves[p] {
             let pp1 = piece_idx(prev1);
             let pt1 = prev1.target_square() as usize;
@@ -480,15 +534,19 @@ impl SearchContext {
 #[inline(always)]
 fn halfkp_piece_slot(pt: PieceType, is_ours: bool) -> usize {
     let base = match pt {
-        PieceType::Pawn   => 0,
+        PieceType::Pawn => 0,
         PieceType::Knight => 1,
         PieceType::Bishop => 2,
-        PieceType::Rook   => 3,
-        PieceType::Queen  => 4,
-        PieceType::King   => 5,
-        PieceType::None   => 0,
+        PieceType::Rook => 3,
+        PieceType::Queen => 4,
+        PieceType::King => 5,
+        PieceType::None => 0,
     };
-    if is_ours { base } else { base + 6 }
+    if is_ours {
+        base
+    } else {
+        base + 6
+    }
 }
 
 /// Evaluate the current position using accumulators when available,
@@ -503,11 +561,7 @@ fn eval_node(
     #[cfg(feature = "nn-incremental")]
     if ctx.acc_valid {
         let p = ply.min(ACC_SIZE - 1);
-        return crate::neural_eval::eval_accum_direct(
-            board,
-            &ctx.acc_white[p],
-            &ctx.acc_black[p],
-        );
+        return crate::neural_eval::eval_accum_direct(board, &ctx.acc_white[p], &ctx.acc_black[p]);
     }
     evaluate_board(board, conductor)
 }
@@ -552,11 +606,18 @@ fn quiescence(
 
         let mut captures = std::mem::take(&mut ctx.move_lists[ply.min(MAX_PLY - 1)]);
         let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
-        get_all_legal_captures_for_color(chess_board, conductor, is_white, &mut captures, &mut pseudo_buf);
+        get_all_legal_captures_for_color(
+            chess_board,
+            conductor,
+            is_white,
+            &mut captures,
+            &mut pseudo_buf,
+        );
         ctx.pseudo_buf = pseudo_buf;
         captures.sort();
 
-        for mut chess_move in captures.drain(..) {
+        for idx in 0..captures.len() {
+            let mut chess_move = captures[idx];
             // Delta pruning: if even capturing the piece (plus a margin) can't raise alpha,
             // skip this capture entirely (saves SEE computation on hopeless moves).
             let cap_val = capture_value(chess_board, &chess_move)
@@ -566,23 +627,47 @@ fn quiescence(
             }
 
             // SEE pruning: skip losing captures (SEE < 0).
-            if see(chess_board, conductor,
-                   chess_move.start_square() as usize,
-                   chess_move.target_square() as usize,
-                   is_white) < 0 {
+            if see(
+                chess_board,
+                conductor,
+                chess_move.start_square() as usize,
+                chess_move.target_square() as usize,
+                is_white,
+            ) < 0
+            {
                 continue;
             }
 
             let king_moved = ctx.acc_push(ply, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
-            if king_moved { ctx.acc_recompute(ply + 1, chess_board); }
-            let eval = quiescence(chess_board, conductor, ctx, alpha, beta, false, qdepth - 1, ply + 1);
+            if king_moved {
+                ctx.acc_recompute(ply + 1, chess_board);
+            }
+            let eval = quiescence(
+                chess_board,
+                conductor,
+                ctx,
+                alpha,
+                beta,
+                false,
+                qdepth - 1,
+                ply + 1,
+            );
             chess_board.undo_move();
 
-            if eval >= beta { return eval; }
-            if eval > best  { best = eval; }
-            if eval > alpha { alpha = eval; }
+            if eval >= beta {
+                captures.clear();
+                ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
+                return eval;
+            }
+            if eval > best {
+                best = eval;
+            }
+            if eval > alpha {
+                alpha = eval;
+            }
         }
+        captures.clear();
         ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
         best
     } else {
@@ -596,11 +681,18 @@ fn quiescence(
 
         let mut captures = std::mem::take(&mut ctx.move_lists[ply.min(MAX_PLY - 1)]);
         let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
-        get_all_legal_captures_for_color(chess_board, conductor, is_white, &mut captures, &mut pseudo_buf);
+        get_all_legal_captures_for_color(
+            chess_board,
+            conductor,
+            is_white,
+            &mut captures,
+            &mut pseudo_buf,
+        );
         ctx.pseudo_buf = pseudo_buf;
         captures.sort();
 
-        for mut chess_move in captures.drain(..) {
+        for idx in 0..captures.len() {
+            let mut chess_move = captures[idx];
             // Delta pruning (black): if even capturing the piece can't drop below beta, skip.
             let cap_val = capture_value(chess_board, &chess_move)
                 + if chess_move.is_promotion() { 800 } else { 0 };
@@ -609,23 +701,47 @@ fn quiescence(
             }
 
             // SEE pruning: skip losing captures.
-            if see(chess_board, conductor,
-                   chess_move.start_square() as usize,
-                   chess_move.target_square() as usize,
-                   is_white) < 0 {
+            if see(
+                chess_board,
+                conductor,
+                chess_move.start_square() as usize,
+                chess_move.target_square() as usize,
+                is_white,
+            ) < 0
+            {
                 continue;
             }
 
             let king_moved = ctx.acc_push(ply, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
-            if king_moved { ctx.acc_recompute(ply + 1, chess_board); }
-            let eval = quiescence(chess_board, conductor, ctx, alpha, beta, true, qdepth - 1, ply + 1);
+            if king_moved {
+                ctx.acc_recompute(ply + 1, chess_board);
+            }
+            let eval = quiescence(
+                chess_board,
+                conductor,
+                ctx,
+                alpha,
+                beta,
+                true,
+                qdepth - 1,
+                ply + 1,
+            );
             chess_board.undo_move();
 
-            if eval <= alpha { return eval; }
-            if eval < best   { best = eval; }
-            if eval < beta   { beta = eval; }
+            if eval <= alpha {
+                captures.clear();
+                ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
+                return eval;
+            }
+            if eval < best {
+                best = eval;
+            }
+            if eval < beta {
+                beta = eval;
+            }
         }
+        captures.clear();
         ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
         best
     }
@@ -667,8 +783,7 @@ fn order_moves(
         moves
             .iter()
             .position(|m| {
-                m.start_square() == tt_m.start_square()
-                    && m.target_square() == tt_m.target_square()
+                m.start_square() == tt_m.start_square() && m.target_square() == tt_m.target_square()
             })
             .map(|i| moves.swap_remove(i))
     });
@@ -682,10 +797,13 @@ fn order_moves(
 
     for m in moves.drain(..) {
         if m.capture.is_some() || m.is_promotion() {
-            let score = see(board, conductor,
-                            m.start_square() as usize,
-                            m.target_square() as usize,
-                            is_white);
+            let score = see(
+                board,
+                conductor,
+                m.start_square() as usize,
+                m.target_square() as usize,
+                is_white,
+            );
             if score >= 0 {
                 good_captures.push((score, m));
             } else {
@@ -717,8 +835,7 @@ fn order_moves(
     killer_entries.clear();
     for killer in killers.iter().flatten() {
         if let Some(pos) = quiets.iter().position(|m| {
-            m.start_square() == killer.start_square()
-                && m.target_square() == killer.target_square()
+            m.start_square() == killer.start_square() && m.target_square() == killer.target_square()
         }) {
             killer_entries.push(quiets.swap_remove(pos));
         }
@@ -726,20 +843,26 @@ fn order_moves(
 
     // Extract countermove (if not already pulled out as TT move or killer).
     let countermove_entry: Option<ChessMove> = countermove.and_then(|cm| {
-        quiets.iter().position(|m| {
-            m.start_square() == cm.start_square()
-                && m.target_square() == cm.target_square()
-        }).map(|pos| quiets.swap_remove(pos))
+        quiets
+            .iter()
+            .position(|m| {
+                m.start_square() == cm.start_square() && m.target_square() == cm.target_square()
+            })
+            .map(|pos| quiets.swap_remove(pos))
     });
 
     // Sort remaining quiets by combined history + continuation history score, highest first.
     let quiet_score = |m: &ChessMove| -> i32 {
-        let from  = m.start_square() as usize;
-        let to    = m.target_square() as usize;
+        let from = m.start_square() as usize;
+        let to = m.target_square() as usize;
         let piece = piece_idx(*m);
         let mut h = history[from][to];
-        if let Some((pp, pt)) = prev1 { h += ch1.get(pp, pt, piece, to); }
-        if let Some((pp, pt)) = prev2 { h += ch2.get(pp, pt, piece, to); }
+        if let Some((pp, pt)) = prev1 {
+            h += ch1.get(pp, pt, piece, to);
+        }
+        if let Some((pp, pt)) = prev2 {
+            h += ch2.get(pp, pt, piece, to);
+        }
         h
     };
     quiets.sort_by(|a, b| quiet_score(b).cmp(&quiet_score(a)));
@@ -765,11 +888,16 @@ fn order_moves(
 /// Counting both sides was incorrect — a side with only pawns can be in
 /// zugzwang even if the opponent has many pieces.
 fn is_zugzwang_prone(chess_board: &ChessBoard, is_white: bool) -> bool {
-    let side_bb = if is_white { chess_board.get_white() } else { chess_board.get_black() };
+    let side_bb = if is_white {
+        chess_board.get_white()
+    } else {
+        chess_board.get_black()
+    };
     let minor_and_major = (chess_board.get_knights()
         | chess_board.get_bishops()
         | chess_board.get_rooks()
-        | chess_board.get_queens()) & side_bb;
+        | chess_board.get_queens())
+        & side_bb;
     minor_and_major.count_ones() < 2
 }
 
@@ -811,7 +939,10 @@ pub fn alpha_beta(
         // that arise in endgames (pawn races, exchange sequences) while
         // avoiding unbounded recursion.  SEE pruning inside quiescence
         // means the extra budget costs little in practice.
-        return (quiescence(chess_board, conductor, ctx, alpha, beta, is_white, 12, ply), None);
+        return (
+            quiescence(chess_board, conductor, ctx, alpha, beta, is_white, 12, ply),
+            None,
+        );
     }
 
     let hash = chess_board.current_hash();
@@ -826,10 +957,10 @@ pub fn alpha_beta(
     // no point continuing — we can't do better than our current best mate.
     // Symmetrically, if the best we can do is already beaten by alpha, prune.
     if ply > 0 {
-        let mated_score  = -1_000_000 + ply as i32;     // score if mated at this ply
-        let mating_score =  1_000_000 - ply as i32 - 1; // score if we give mate next ply
+        let mated_score = -1_000_000 + ply as i32; // score if mated at this ply
+        let mating_score = 1_000_000 - ply as i32 - 1; // score if we give mate next ply
         alpha = alpha.max(mated_score);
-        beta  = beta.min(mating_score);
+        beta = beta.min(mating_score);
         if alpha >= beta {
             return (alpha, None);
         }
@@ -848,10 +979,14 @@ pub fn alpha_beta(
             match entry.flag {
                 TtFlag::Exact => return (s, entry.best_move()),
                 TtFlag::LowerBound => {
-                    if s > alpha { alpha = s; }
+                    if s > alpha {
+                        alpha = s;
+                    }
                 }
                 TtFlag::UpperBound => {
-                    if s < beta  { beta  = s; }
+                    if s < beta {
+                        beta = s;
+                    }
                 }
             }
             if alpha >= beta {
@@ -889,9 +1024,13 @@ pub fn alpha_beta(
         match static_eval {
             Some(se) => {
                 let prev = ctx.static_evals[p.saturating_sub(2)];
-                if prev == i32::MIN { false }
-                else if is_white    { se > prev }
-                else                { se < prev }
+                if prev == i32::MIN {
+                    false
+                } else if is_white {
+                    se > prev
+                } else {
+                    se < prev
+                }
             }
             None => false,
         }
@@ -915,22 +1054,28 @@ pub fn alpha_beta(
     if let Some(se) = static_eval {
         if depth <= 7 && null_move_allowed && ply > 0 {
             let margin = if improving { 65 * depth } else { 85 * depth };
-            if is_white && se - margin >= beta  { return (se, None); }
-            if !is_white && se + margin <= alpha { return (se, None); }
+            if is_white && se - margin >= beta {
+                return (se, None);
+            }
+            if !is_white && se + margin <= alpha {
+                return (se, None);
+            }
         }
     }
 
     // --- Null Move Pruning ---
-    if null_move_allowed
-        && depth >= 3
-        && !in_check
-        && !is_zugzwang_prone(chess_board, is_white)
-    {
+    if null_move_allowed && depth >= 3 && !in_check && !is_zugzwang_prone(chess_board, is_white) {
         // Adaptive R: larger when static eval is far above beta (we're clearly winning),
         // allowing more aggressive pruning of already-dominant positions.
         let excess = if let Some(se) = static_eval {
-            if is_white { se.saturating_sub(beta) / 200 } else { alpha.saturating_sub(se) / 200 }
-        } else { 0 };
+            if is_white {
+                se.saturating_sub(beta) / 200
+            } else {
+                alpha.saturating_sub(se) / 200
+            }
+        } else {
+            0
+        };
         let r = (3 + depth / 3 + excess.clamp(0, 3)).min(depth - 1);
 
         // Null move: no pieces move, so copy accumulator from current ply to next.
@@ -944,14 +1089,27 @@ pub fn alpha_beta(
         }
         chess_board.make_null_move();
         let null_score = alpha_beta(
-            chess_board, conductor, tt, ctx,
-            depth - 1 - r, ply + 1, alpha, beta, !is_white,
-            false, stop,
-        ).0;
+            chess_board,
+            conductor,
+            tt,
+            ctx,
+            depth - 1 - r,
+            ply + 1,
+            alpha,
+            beta,
+            !is_white,
+            false,
+            stop,
+        )
+        .0;
         chess_board.undo_null_move();
 
-        if is_white && null_score >= beta { return (beta, None); }
-        if !is_white && null_score <= alpha { return (alpha, None); }
+        if is_white && null_score >= beta {
+            return (beta, None);
+        }
+        if !is_white && null_score <= alpha {
+            return (alpha, None);
+        }
     }
 
     // --- ProbCut ---
@@ -959,55 +1117,115 @@ pub fn alpha_beta(
     // confirm with a shallow reduced search.  Avoids spending full depth on obvious
     // wins/losses.  Only at depth >= 5, not in check, not in a singular extension.
     if depth >= 5 && !in_check && null_move_allowed && ctx.excluded_move[p].is_none() {
-        let pc_threshold = if is_white { beta.saturating_add(PROBCUT_MARGIN) } else { alpha.saturating_sub(PROBCUT_MARGIN) };
+        let pc_threshold = if is_white {
+            beta.saturating_add(PROBCUT_MARGIN)
+        } else {
+            alpha.saturating_sub(PROBCUT_MARGIN)
+        };
         // Quick guard: only enter if static eval suggests a capture MIGHT reach the threshold.
-        let pc_feasible = pc_threshold.saturating_abs() < MATE_SCORE_THRESHOLD && static_eval.map_or(true, |se| {
-            if is_white { se.saturating_add(900) >= pc_threshold } else { se.saturating_sub(900) <= pc_threshold }
-        });
+        let pc_feasible = pc_threshold.saturating_abs() < MATE_SCORE_THRESHOLD
+            && static_eval.map_or(true, |se| {
+                if is_white {
+                    se.saturating_add(900) >= pc_threshold
+                } else {
+                    se.saturating_sub(900) <= pc_threshold
+                }
+            });
         if pc_feasible {
             let pc_depth = (depth - 4).max(1);
-            let mut captures = Vec::new();
+            let mut captures = std::mem::take(&mut ctx.move_lists[ply.min(MAX_PLY - 1)]);
             let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
-            get_all_legal_captures_for_color(chess_board, conductor, is_white, &mut captures, &mut pseudo_buf);
+            get_all_legal_captures_for_color(
+                chess_board,
+                conductor,
+                is_white,
+                &mut captures,
+                &mut pseudo_buf,
+            );
             ctx.pseudo_buf = pseudo_buf;
-            for mut pc_mv in captures {
-                let see_val = see(chess_board, conductor,
-                    pc_mv.start_square() as usize, pc_mv.target_square() as usize, is_white);
-                if see_val < 0 { continue; } // skip losing captures
+            for idx in 0..captures.len() {
+                let mut pc_mv = captures[idx];
+                let see_val = see(
+                    chess_board,
+                    conductor,
+                    pc_mv.start_square() as usize,
+                    pc_mv.target_square() as usize,
+                    is_white,
+                );
+                if see_val < 0 {
+                    continue;
+                } // skip losing captures
 
                 // Quick feasibility filter using static eval + SEE.
                 let likely = if let Some(se) = static_eval {
-                    if is_white { se + see_val >= pc_threshold }
-                    else        { se - see_val <= pc_threshold }
-                } else { true };
-                if !likely { continue; }
+                    if is_white {
+                        se + see_val >= pc_threshold
+                    } else {
+                        se - see_val <= pc_threshold
+                    }
+                } else {
+                    true
+                };
+                if !likely {
+                    continue;
+                }
 
-                if stop.map_or(false, |s| s.load(Ordering::Relaxed)) { break; }
+                if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
+                    break;
+                }
 
                 let pc_king_moved = ctx.acc_push(ply, &pc_mv, chess_board);
                 chess_board.make_move(&mut pc_mv);
-                if pc_king_moved { ctx.acc_recompute(ply + 1, chess_board); }
+                if pc_king_moved {
+                    ctx.acc_recompute(ply + 1, chess_board);
+                }
                 let (pc_alpha, pc_beta) = if is_white {
                     (pc_threshold - 1, pc_threshold)
                 } else {
                     (pc_threshold, pc_threshold + 1)
                 };
                 let (pc_score, _) = alpha_beta(
-                    chess_board, conductor, tt, ctx,
-                    pc_depth, ply + 1, pc_alpha, pc_beta, !is_white,
-                    false, stop,
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    pc_depth,
+                    ply + 1,
+                    pc_alpha,
+                    pc_beta,
+                    !is_white,
+                    false,
+                    stop,
                 );
                 chess_board.undo_move();
 
                 if is_white && pc_score >= pc_threshold {
-                    tt.store(hash, depth - 3, score_to_tt(pc_score, ply), TtFlag::LowerBound, Some(pc_mv));
+                    captures.clear();
+                    ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
+                    tt.store(
+                        hash,
+                        depth - 3,
+                        score_to_tt(pc_score, ply),
+                        TtFlag::LowerBound,
+                        Some(pc_mv),
+                    );
                     return (pc_score, Some(pc_mv));
                 }
                 if !is_white && pc_score <= pc_threshold {
-                    tt.store(hash, depth - 3, score_to_tt(pc_score, ply), TtFlag::UpperBound, Some(pc_mv));
+                    captures.clear();
+                    ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
+                    tt.store(
+                        hash,
+                        depth - 3,
+                        score_to_tt(pc_score, ply),
+                        TtFlag::UpperBound,
+                        Some(pc_mv),
+                    );
                     return (pc_score, Some(pc_mv));
                 }
             }
+            captures.clear();
+            ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
         }
     }
 
@@ -1015,10 +1233,18 @@ pub fn alpha_beta(
     // When there is no TT move at a high-depth node, move ordering is poor.
     // A reduced search populates the TT so we get a useful move hint.
     // Applied at depth >= 5 when not in check and the TT gave no move.
-    let tt_move = if tt_move.is_none() && depth >= 5 && !in_check && ctx.excluded_move[p].is_none() {
+    let tt_move = if tt_move.is_none() && depth >= 5 && !in_check && ctx.excluded_move[p].is_none()
+    {
         alpha_beta(
-            chess_board, conductor, tt, ctx,
-            depth - 2, ply, alpha, beta, is_white,
+            chess_board,
+            conductor,
+            tt,
+            ctx,
+            depth - 2,
+            ply,
+            alpha,
+            beta,
+            is_white,
             false, // no null move in IID to avoid recursion overhead
             stop,
         );
@@ -1041,7 +1267,8 @@ pub fn alpha_beta(
     //   - TT score is not a mate score (mate distance is exact, not a guide)
     //   - Not in check (check extension already handled above)
     // singular_extension: true = extend TT move; se_singular_score/se_singular_beta for double ext.
-    let (singular_extension, se_singular_score, se_singular_beta) = if ctx.excluded_move[p].is_none()
+    let (singular_extension, se_singular_score, se_singular_beta) = if ctx.excluded_move[p]
+        .is_none()
         && depth >= 6
         && ply > 0
         && !in_check
@@ -1057,9 +1284,14 @@ pub fn alpha_beta(
                 let se_beta = tt_score - se_margin;
                 ctx.excluded_move[p] = tt_move;
                 let (se_score, _) = alpha_beta(
-                    chess_board, conductor, tt, ctx,
-                    (depth / 2).max(1), ply,
-                    se_beta - 1, se_beta,
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    (depth / 2).max(1),
+                    ply,
+                    se_beta - 1,
+                    se_beta,
                     is_white,
                     false,
                     stop,
@@ -1078,7 +1310,13 @@ pub fn alpha_beta(
 
     let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
     let mut legal_moves = std::mem::take(&mut ctx.move_lists[ply.min(MAX_PLY - 1)]);
-    get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal_moves, &mut pseudo_buf);
+    get_all_legal_moves_for_color(
+        chess_board,
+        conductor,
+        is_white,
+        &mut legal_moves,
+        &mut pseudo_buf,
+    );
     ctx.pseudo_buf = pseudo_buf;
 
     if legal_moves.is_empty() {
@@ -1088,7 +1326,11 @@ pub fn alpha_beta(
             // scores higher than mate-in-10).  The ply offset is small
             // enough that any checkmate still dominates non-mate scores.
             let ply_i32 = ply as i32;
-            return if is_white { (-1_000_000 + ply_i32, None) } else { (1_000_000 - ply_i32, None) };
+            return if is_white {
+                (-1_000_000 + ply_i32, None)
+            } else {
+                (1_000_000 - ply_i32, None)
+            };
         } else {
             // Stalemate: draw.
             return (0, None);
@@ -1098,42 +1340,57 @@ pub fn alpha_beta(
     let killers = &ctx.killers[p];
     // Use raw pointers for the read-only history/killers tables so we can also
     // take mutable ownership of the ordering scratch buffers in the same call.
-    let history_ptr:     *const [[i32; 64]; 64] = &ctx.history;
+    let history_ptr: *const [[i32; 64]; 64] = &ctx.history;
     let cap_history_ptr: *const [[i32; 64]; 64] = &ctx.capture_history;
     let ch1_ptr: *const ContHistTable = &ctx.cont_hist_1;
     let ch2_ptr: *const ContHistTable = &ctx.cont_hist_2;
     // SAFETY: these tables are not mutated between this point and end of the loop.
-    let history:         &[[i32; 64]; 64] = unsafe { &*history_ptr };
+    let history: &[[i32; 64]; 64] = unsafe { &*history_ptr };
     let capture_history: &[[i32; 64]; 64] = unsafe { &*cap_history_ptr };
     let ch1: &ContHistTable = unsafe { &*ch1_ptr };
     let ch2: &ContHistTable = unsafe { &*ch2_ptr };
 
     // Continuation history lookup keys for this ply.
     // prev1 = opponent's last move (1 ply back); prev2 = our last move (2 plies back).
-    let prev1: Option<(usize, usize)> = ctx.prev_moves[p].map(|pm| {
-        (piece_idx(pm), pm.target_square() as usize)
-    });
+    let prev1: Option<(usize, usize)> =
+        ctx.prev_moves[p].map(|pm| (piece_idx(pm), pm.target_square() as usize));
     let prev2: Option<(usize, usize)> = if p >= 1 {
         ctx.prev_moves[p - 1].map(|pm| (piece_idx(pm), pm.target_square() as usize))
-    } else { None };
+    } else {
+        None
+    };
 
     // Look up the countermove for the opponent's last move at this ply.
-    let countermove: Option<ChessMove> = ctx.prev_moves[p].and_then(|pm| {
-        ctx.countermoves[pm.start_square() as usize][pm.target_square() as usize]
-    });
+    let countermove: Option<ChessMove> = ctx.prev_moves[p]
+        .and_then(|pm| ctx.countermoves[pm.start_square() as usize][pm.target_square() as usize]);
 
     // Take ordering scratch buffers out of ctx to avoid conflicting borrows.
     let mut good_captures_buf = std::mem::take(&mut ctx.good_captures_buf);
-    let mut bad_captures_buf  = std::mem::take(&mut ctx.bad_captures_buf);
-    let mut quiets_buf        = std::mem::take(&mut ctx.quiets_buf);
+    let mut bad_captures_buf = std::mem::take(&mut ctx.bad_captures_buf);
+    let mut quiets_buf = std::mem::take(&mut ctx.quiets_buf);
     let mut killer_entries_buf = std::mem::take(&mut ctx.killer_entries_buf);
-    order_moves(&mut legal_moves, tt_move, killers, countermove, history, capture_history,
-                ch1, ch2, prev1, prev2, chess_board, conductor, is_white,
-                &mut good_captures_buf, &mut bad_captures_buf, &mut quiets_buf,
-                &mut killer_entries_buf);
-    ctx.good_captures_buf  = good_captures_buf;
-    ctx.bad_captures_buf   = bad_captures_buf;
-    ctx.quiets_buf         = quiets_buf;
+    order_moves(
+        &mut legal_moves,
+        tt_move,
+        killers,
+        countermove,
+        history,
+        capture_history,
+        ch1,
+        ch2,
+        prev1,
+        prev2,
+        chess_board,
+        conductor,
+        is_white,
+        &mut good_captures_buf,
+        &mut bad_captures_buf,
+        &mut quiets_buf,
+        &mut killer_entries_buf,
+    );
+    ctx.good_captures_buf = good_captures_buf;
+    ctx.bad_captures_buf = bad_captures_buf;
+    ctx.quiets_buf = quiets_buf;
     ctx.killer_entries_buf = killer_entries_buf;
     // `killers` raw-pointer borrow of ctx ends here.
 
@@ -1191,20 +1448,30 @@ pub fn alpha_beta(
                     continue;
                 }
             }
-            if is_quiet { quiet_count += 1; }
+            if is_quiet {
+                quiet_count += 1;
+            }
 
             // Singular / double extension for the TT move (move_index == 0).
             // Double-extend when the position is extremely singular (score well below se_beta).
             let move_ext = if singular_extension && move_index == 0 {
-                if se_singular_score < se_singular_beta - depth { 2i32 } else { 1i32 }
-            } else { 0i32 };
+                if se_singular_score < se_singular_beta - depth {
+                    2i32
+                } else {
+                    1i32
+                }
+            } else {
+                0i32
+            };
 
             // Record this move as the "previous move" for the child ply so the
             // child can look up the countermove that refutes it.
             ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
             let king_moved_ab = ctx.acc_push(ply, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
-            if king_moved_ab { ctx.acc_recompute(ply + 1, chess_board); }
+            if king_moved_ab {
+                ctx.acc_recompute(ply + 1, chess_board);
+            }
 
             // LMR reduction: R grows with depth and move index.
             // Reduce less for moves with high continuation history score (they're "interesting").
@@ -1214,10 +1481,14 @@ pub fn alpha_beta(
                 // Scale back reduction for moves that cont_hist considers good.
                 let ch_score = {
                     let mv_piece = piece_idx(chess_move);
-                    let mv_to    = chess_move.target_square() as usize;
+                    let mv_to = chess_move.target_square() as usize;
                     let mut s = 0i32;
-                    if let Some((pp, pt)) = prev1 { s += ch1.get(pp, pt, mv_piece, mv_to); }
-                    if let Some((pp, pt)) = prev2 { s += ch2.get(pp, pt, mv_piece, mv_to); }
+                    if let Some((pp, pt)) = prev1 {
+                        s += ch1.get(pp, pt, mv_piece, mv_to);
+                    }
+                    if let Some((pp, pt)) = prev2 {
+                        s += ch2.get(pp, pt, mv_piece, mv_to);
+                    }
                     s
                 };
                 let r = if ch_score > 8_000 { (r - 1).max(0) } else { r };
@@ -1230,27 +1501,87 @@ pub fn alpha_beta(
                 0 // draw by repetition
             } else if move_index == 0 {
                 // PV node: full window search for first move (with possible SE).
-                alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1 + move_ext, ply + 1, alpha, beta, false, true, stop).0
+                alpha_beta(
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    depth - 1 + move_ext,
+                    ply + 1,
+                    alpha,
+                    beta,
+                    false,
+                    true,
+                    stop,
+                )
+                .0
             } else if lmr_r > 0 {
                 // LMR: reduced null-window search.
-                let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1 - lmr_r, ply + 1, alpha, alpha + 1, false, true, stop).0;
+                let reduced = alpha_beta(
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    depth - 1 - lmr_r,
+                    ply + 1,
+                    alpha,
+                    alpha + 1,
+                    false,
+                    true,
+                    stop,
+                )
+                .0;
                 if reduced > alpha {
                     // Reduced search beat alpha — re-search at full depth, full window.
-                    alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, false, true, stop).0
+                    alpha_beta(
+                        chess_board,
+                        conductor,
+                        tt,
+                        ctx,
+                        depth - 1,
+                        ply + 1,
+                        alpha,
+                        beta,
+                        false,
+                        true,
+                        stop,
+                    )
+                    .0
                 } else {
                     reduced
                 }
             } else {
                 // PVS: null-window search for non-PV moves.
-                let score = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, alpha, alpha + 1, false, true, stop).0;
+                let score = alpha_beta(
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    depth - 1,
+                    ply + 1,
+                    alpha,
+                    alpha + 1,
+                    false,
+                    true,
+                    stop,
+                )
+                .0;
                 if score > alpha && score < beta {
                     // Fail high — re-search with full window.
-                    alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, false, true, stop).0
+                    alpha_beta(
+                        chess_board,
+                        conductor,
+                        tt,
+                        ctx,
+                        depth - 1,
+                        ply + 1,
+                        alpha,
+                        beta,
+                        false,
+                        true,
+                        stop,
+                    )
+                    .0
                 } else {
                     score
                 }
@@ -1258,7 +1589,9 @@ pub fn alpha_beta(
 
             chess_board.undo_move();
 
-            if is_quiet { tried_quiets.push(chess_move); }
+            if is_quiet {
+                tried_quiets.push(chess_move);
+            }
 
             if eval > max_eval {
                 max_eval = eval;
@@ -1277,8 +1610,7 @@ pub fn alpha_beta(
                     }
                 } else {
                     // Capture cutoff: reward in capture_history.
-                    let v = &mut ctx.capture_history
-                        [chess_move.start_square() as usize]
+                    let v = &mut ctx.capture_history[chess_move.start_square() as usize]
                         [chess_move.target_square() as usize];
                     *v = (*v + depth * depth).min(16_384);
                 }
@@ -1337,28 +1669,42 @@ pub fn alpha_beta(
                     continue;
                 }
             }
-            if is_quiet { quiet_count += 1; }
+            if is_quiet {
+                quiet_count += 1;
+            }
 
             // Singular / double extension (mirrored from white branch).
             let move_ext = if singular_extension && move_index == 0 {
-                if se_singular_score < se_singular_beta - depth { 2i32 } else { 1i32 }
-            } else { 0i32 };
+                if se_singular_score < se_singular_beta - depth {
+                    2i32
+                } else {
+                    1i32
+                }
+            } else {
+                0i32
+            };
 
             // Record this move as the "previous move" for the child ply.
             ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
             let king_moved_ab = ctx.acc_push(ply, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
-            if king_moved_ab { ctx.acc_recompute(ply + 1, chess_board); }
+            if king_moved_ab {
+                ctx.acc_recompute(ply + 1, chess_board);
+            }
 
             let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
                 let r = lmr_reduction(depth, move_index).max(1);
                 let r = if improving { r } else { r + 1 };
                 let ch_score = {
                     let mv_piece = piece_idx(chess_move);
-                    let mv_to    = chess_move.target_square() as usize;
+                    let mv_to = chess_move.target_square() as usize;
                     let mut s = 0i32;
-                    if let Some((pp, pt)) = prev1 { s += ch1.get(pp, pt, mv_piece, mv_to); }
-                    if let Some((pp, pt)) = prev2 { s += ch2.get(pp, pt, mv_piece, mv_to); }
+                    if let Some((pp, pt)) = prev1 {
+                        s += ch1.get(pp, pt, mv_piece, mv_to);
+                    }
+                    if let Some((pp, pt)) = prev2 {
+                        s += ch2.get(pp, pt, mv_piece, mv_to);
+                    }
                     s
                 };
                 let r = if ch_score > 8_000 { (r - 1).max(0) } else { r };
@@ -1371,27 +1717,87 @@ pub fn alpha_beta(
                 0 // draw by repetition
             } else if move_index == 0 {
                 // PV node: full window search for first move (with possible SE).
-                alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1 + move_ext, ply + 1, alpha, beta, true, true, stop).0
+                alpha_beta(
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    depth - 1 + move_ext,
+                    ply + 1,
+                    alpha,
+                    beta,
+                    true,
+                    true,
+                    stop,
+                )
+                .0
             } else if lmr_r > 0 {
                 // LMR: reduced null-window search.
-                let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1 - lmr_r, ply + 1, beta - 1, beta, true, true, stop).0;
+                let reduced = alpha_beta(
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    depth - 1 - lmr_r,
+                    ply + 1,
+                    beta - 1,
+                    beta,
+                    true,
+                    true,
+                    stop,
+                )
+                .0;
                 if reduced < beta {
                     // Reduced search beat beta — re-search at full depth, full window.
-                    alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, true, true, stop).0
+                    alpha_beta(
+                        chess_board,
+                        conductor,
+                        tt,
+                        ctx,
+                        depth - 1,
+                        ply + 1,
+                        alpha,
+                        beta,
+                        true,
+                        true,
+                        stop,
+                    )
+                    .0
                 } else {
                     reduced
                 }
             } else {
                 // PVS: null-window search for non-PV moves.
-                let score = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, beta - 1, beta, true, true, stop).0;
+                let score = alpha_beta(
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    depth - 1,
+                    ply + 1,
+                    beta - 1,
+                    beta,
+                    true,
+                    true,
+                    stop,
+                )
+                .0;
                 if score < beta && score > alpha {
                     // Fail low — re-search with full window.
-                    alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, true, true, stop).0
+                    alpha_beta(
+                        chess_board,
+                        conductor,
+                        tt,
+                        ctx,
+                        depth - 1,
+                        ply + 1,
+                        alpha,
+                        beta,
+                        true,
+                        true,
+                        stop,
+                    )
+                    .0
                 } else {
                     score
                 }
@@ -1399,7 +1805,9 @@ pub fn alpha_beta(
 
             chess_board.undo_move();
 
-            if is_quiet { tried_quiets.push(chess_move); }
+            if is_quiet {
+                tried_quiets.push(chess_move);
+            }
 
             if eval < min_eval {
                 min_eval = eval;
@@ -1416,8 +1824,7 @@ pub fn alpha_beta(
                         ctx.apply_history_malus(ply, depth, tried);
                     }
                 } else {
-                    let v = &mut ctx.capture_history
-                        [chess_move.start_square() as usize]
+                    let v = &mut ctx.capture_history[chess_move.start_square() as usize]
                         [chess_move.target_square() as usize];
                     *v = (*v + depth * depth).min(16_384);
                 }
@@ -1465,7 +1872,13 @@ pub fn search_root(
     let stop = stop.as_deref();
     let mut legal_moves = Vec::new();
     let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
-    get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal_moves, &mut pseudo_buf);
+    get_all_legal_moves_for_color(
+        chess_board,
+        conductor,
+        is_white,
+        &mut legal_moves,
+        &mut pseudo_buf,
+    );
     ctx.pseudo_buf = pseudo_buf;
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board, conductor), None);
@@ -1475,17 +1888,32 @@ pub fn search_root(
     let ch2_ptr: *const ContHistTable = &ctx.cont_hist_2;
     let ch1_root: &ContHistTable = unsafe { &*ch1_ptr };
     let ch2_root: &ContHistTable = unsafe { &*ch2_ptr };
-    let mut good_captures_buf  = std::mem::take(&mut ctx.good_captures_buf);
-    let mut bad_captures_buf   = std::mem::take(&mut ctx.bad_captures_buf);
-    let mut quiets_buf         = std::mem::take(&mut ctx.quiets_buf);
+    let mut good_captures_buf = std::mem::take(&mut ctx.good_captures_buf);
+    let mut bad_captures_buf = std::mem::take(&mut ctx.bad_captures_buf);
+    let mut quiets_buf = std::mem::take(&mut ctx.quiets_buf);
     let mut killer_entries_buf = std::mem::take(&mut ctx.killer_entries_buf);
-    order_moves(&mut legal_moves, prev_best, &ctx.killers[0], None, &ctx.history, &ctx.capture_history,
-                ch1_root, ch2_root, None, None, chess_board, conductor, is_white,
-                &mut good_captures_buf, &mut bad_captures_buf, &mut quiets_buf,
-                &mut killer_entries_buf);
-    ctx.good_captures_buf  = good_captures_buf;
-    ctx.bad_captures_buf   = bad_captures_buf;
-    ctx.quiets_buf         = quiets_buf;
+    order_moves(
+        &mut legal_moves,
+        prev_best,
+        &ctx.killers[0],
+        None,
+        &ctx.history,
+        &ctx.capture_history,
+        ch1_root,
+        ch2_root,
+        None,
+        None,
+        chess_board,
+        conductor,
+        is_white,
+        &mut good_captures_buf,
+        &mut bad_captures_buf,
+        &mut quiets_buf,
+        &mut killer_entries_buf,
+    );
+    ctx.good_captures_buf = good_captures_buf;
+    ctx.bad_captures_buf = bad_captures_buf;
+    ctx.quiets_buf = quiets_buf;
     ctx.killer_entries_buf = killer_entries_buf;
 
     let mut best_move: Option<ChessMove> = legal_moves.first().copied();
@@ -1495,7 +1923,11 @@ pub fn search_root(
     // aspiration windows in iterative deepening remain accurate.
     let mut noisy_best_move: Option<ChessMove> = best_move;
     let mut noisy_best_score: i32 = if is_white { i32::MIN + 1 } else { i32::MAX };
-    let mut rng = if noise_cp > 0 { Some(rand::thread_rng()) } else { None };
+    let mut rng = if noise_cp > 0 {
+        Some(rand::thread_rng())
+    } else {
+        None
+    };
 
     if is_white {
         let mut best_score = i32::MIN + 1;
@@ -1507,19 +1939,57 @@ pub fn search_root(
             }
             let root_king_moved = ctx.acc_push(0, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
-            if root_king_moved { ctx.acc_recompute(1, chess_board); }
+            if root_king_moved {
+                ctx.acc_recompute(1, chess_board);
+            }
 
             let eval = if chess_board.is_repetition(2) {
                 0
             } else if i == 0 {
-                alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, 1, alpha, beta, false, true, stop).0
+                alpha_beta(
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    depth - 1,
+                    1,
+                    alpha,
+                    beta,
+                    false,
+                    true,
+                    stop,
+                )
+                .0
             } else {
-                let score = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, 1, alpha, alpha + 1, false, true, stop).0;
+                let score = alpha_beta(
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    depth - 1,
+                    1,
+                    alpha,
+                    alpha + 1,
+                    false,
+                    true,
+                    stop,
+                )
+                .0;
                 if score > alpha && score < beta {
-                    alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, 1, alpha, beta, false, true, stop).0
+                    alpha_beta(
+                        chess_board,
+                        conductor,
+                        tt,
+                        ctx,
+                        depth - 1,
+                        1,
+                        alpha,
+                        beta,
+                        false,
+                        true,
+                        stop,
+                    )
+                    .0
                 } else {
                     score
                 }
@@ -1538,10 +2008,21 @@ pub fn search_root(
                 best_score = eval;
                 best_move = Some(chess_move);
             }
-            if eval > alpha { alpha = eval; }
-            if alpha >= beta { break; }
+            if eval > alpha {
+                alpha = eval;
+            }
+            if alpha >= beta {
+                break;
+            }
         }
-        (best_score, if noise_cp > 0 { noisy_best_move } else { best_move })
+        (
+            best_score,
+            if noise_cp > 0 {
+                noisy_best_move
+            } else {
+                best_move
+            },
+        )
     } else {
         let mut best_score = i32::MAX;
         let mut beta = beta;
@@ -1552,19 +2033,57 @@ pub fn search_root(
             }
             let root_king_moved = ctx.acc_push(0, &chess_move, chess_board);
             chess_board.make_move(&mut chess_move);
-            if root_king_moved { ctx.acc_recompute(1, chess_board); }
+            if root_king_moved {
+                ctx.acc_recompute(1, chess_board);
+            }
 
             let eval = if chess_board.is_repetition(2) {
                 0
             } else if i == 0 {
-                alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, 1, alpha, beta, true, true, stop).0
+                alpha_beta(
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    depth - 1,
+                    1,
+                    alpha,
+                    beta,
+                    true,
+                    true,
+                    stop,
+                )
+                .0
             } else {
-                let score = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, 1, beta - 1, beta, true, true, stop).0;
+                let score = alpha_beta(
+                    chess_board,
+                    conductor,
+                    tt,
+                    ctx,
+                    depth - 1,
+                    1,
+                    beta - 1,
+                    beta,
+                    true,
+                    true,
+                    stop,
+                )
+                .0;
                 if score < beta && score > alpha {
-                    alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, 1, alpha, beta, true, true, stop).0
+                    alpha_beta(
+                        chess_board,
+                        conductor,
+                        tt,
+                        ctx,
+                        depth - 1,
+                        1,
+                        alpha,
+                        beta,
+                        true,
+                        true,
+                        stop,
+                    )
+                    .0
                 } else {
                     score
                 }
@@ -1583,10 +2102,21 @@ pub fn search_root(
                 best_score = eval;
                 best_move = Some(chess_move);
             }
-            if eval < beta { beta = eval; }
-            if beta <= alpha { break; }
+            if eval < beta {
+                beta = eval;
+            }
+            if beta <= alpha {
+                break;
+            }
         }
-        (best_score, if noise_cp > 0 { noisy_best_move } else { best_move })
+        (
+            best_score,
+            if noise_cp > 0 {
+                noisy_best_move
+            } else {
+                best_move
+            },
+        )
     }
 }
 
@@ -1603,7 +2133,13 @@ pub fn alpha_beta_root(
     if let Some(book) = book {
         if let Some((from, to)) = book.probe(chess_board) {
             let mut legal = Vec::new();
-            get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal, &mut Vec::new());
+            get_all_legal_moves_for_color(
+                chess_board,
+                conductor,
+                is_white,
+                &mut legal,
+                &mut Vec::new(),
+            );
             if let Some(book_move) = legal
                 .into_iter()
                 .find(|m| m.start_square() == from && m.target_square() == to)
@@ -1615,7 +2151,19 @@ pub fn alpha_beta_root(
     }
     let tt = TranspositionTable::new(TT_SIZE);
     let mut ctx = SearchContext::new();
-    search_root(chess_board, conductor, &tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, None, None, 0)
+    search_root(
+        chess_board,
+        conductor,
+        &tt,
+        &mut ctx,
+        depth,
+        i32::MIN + 1,
+        i32::MAX,
+        is_white,
+        None,
+        None,
+        0,
+    )
 }
 
 /// Result of an iterative-deepening search.
@@ -1654,8 +2202,17 @@ pub fn extract_ponder_move(
     let ponder = if ponder.is_none() {
         let mut ctx = SearchContext::new();
         let (_, fallback_move) = alpha_beta(
-            chess_board, conductor, tt, &mut ctx,
-            2, 1, i32::MIN + 1, i32::MAX, opponent_white, true, None,
+            chess_board,
+            conductor,
+            tt,
+            &mut ctx,
+            2,
+            1,
+            i32::MIN + 1,
+            i32::MAX,
+            opponent_white,
+            true,
+            None,
         );
         fallback_move
     } else {
@@ -1665,8 +2222,16 @@ pub fn extract_ponder_move(
     // Validate: the ponder move must be legal
     let ponder = ponder.and_then(|pm| {
         let mut legal = Vec::new();
-        get_all_legal_moves_for_color(chess_board, conductor, opponent_white, &mut legal, &mut Vec::new());
-        if legal.iter().any(|m| m.start_square() == pm.start_square() && m.target_square() == pm.target_square()) {
+        get_all_legal_moves_for_color(
+            chess_board,
+            conductor,
+            opponent_white,
+            &mut legal,
+            &mut Vec::new(),
+        );
+        if legal.iter().any(|m| {
+            m.start_square() == pm.start_square() && m.target_square() == pm.target_square()
+        }) {
             Some(pm)
         } else {
             None
@@ -1691,7 +2256,9 @@ pub fn extract_ponder_move(
 /// opponent reply (ponder move) extracted from the TT.
 /// Number of available CPU threads.  Used by callers that want Lazy SMP.
 pub fn available_threads() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 /// Convenience wrapper: creates a fresh TT and runs a single-threaded search.
@@ -1709,8 +2276,17 @@ pub fn iterative_deepening_root(
 ) -> SearchResult {
     let tt = TranspositionTable::new(TT_SIZE);
     iterative_deepening_root_with_tt(
-        chess_board, conductor, book, &tt, max_depth, is_white,
-        deadline, stop, 1, None, noise_cp,
+        chess_board,
+        conductor,
+        book,
+        &tt,
+        max_depth,
+        is_white,
+        deadline,
+        stop,
+        1,
+        None,
+        noise_cp,
     )
 }
 
@@ -1742,23 +2318,44 @@ pub fn iterative_deepening_root_with_tt(
     if let Some(book) = book {
         if let Some((from, to)) = book.probe(chess_board) {
             let mut legal = Vec::new();
-            get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal, &mut Vec::new());
+            get_all_legal_moves_for_color(
+                chess_board,
+                conductor,
+                is_white,
+                &mut legal,
+                &mut Vec::new(),
+            );
             if let Some(book_move) = legal
                 .into_iter()
                 .find(|m| m.start_square() == from && m.target_square() == to)
             {
                 eprintln!("Book move: {}", book_move.to_san_simple());
-                return SearchResult { score: 0, best_move: Some(book_move), ponder_move: None, total_nodes: 0 };
+                return SearchResult {
+                    score: 0,
+                    best_move: Some(book_move),
+                    ponder_move: None,
+                    total_nodes: 0,
+                };
             }
         }
     }
 
     if num_threads <= 1 {
-        return id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop, on_depth, noise_cp);
+        return id_search_single(
+            chess_board,
+            conductor,
+            tt,
+            max_depth,
+            is_white,
+            deadline,
+            stop,
+            on_depth,
+            noise_cp,
+        );
     }
 
     // ── Lazy SMP: spawn helpers, main thread runs authoritative search ───
-    let helper_stop  = Arc::new(AtomicBool::new(false));
+    let helper_stop = Arc::new(AtomicBool::new(false));
     let helper_nodes = Arc::new(AtomicU64::new(0));
 
     let mut result = SearchResult {
@@ -1782,7 +2379,17 @@ pub fn iterative_deepening_root_with_tt(
         }
 
         // Main thread: full iterative deepening with aspiration & deadline.
-        result = id_search_single(chess_board, conductor, tt, max_depth, is_white, deadline, stop.clone(), on_depth, noise_cp);
+        result = id_search_single(
+            chess_board,
+            conductor,
+            tt,
+            max_depth,
+            is_white,
+            deadline,
+            stop.clone(),
+            on_depth,
+            noise_cp,
+        );
 
         // Main thread done — signal helpers to stop.
         helper_stop.store(true, Ordering::Release);
@@ -1825,7 +2432,19 @@ fn id_search_single(
         }
 
         let result = if depth <= 2 {
-            search_root(chess_board, conductor, tt, &mut ctx, depth, i32::MIN + 1, i32::MAX, is_white, prev_move, stop.clone(), noise_cp)
+            search_root(
+                chess_board,
+                conductor,
+                tt,
+                &mut ctx,
+                depth,
+                i32::MIN + 1,
+                i32::MAX,
+                is_white,
+                prev_move,
+                stop.clone(),
+                noise_cp,
+            )
         } else {
             // Progressive aspiration window: start narrow, multiply delta on failure
             // instead of opening directly to full window.  Saves re-searches.
@@ -1833,7 +2452,19 @@ fn id_search_single(
             let mut lo = prev_score.saturating_sub(delta);
             let mut hi = prev_score.saturating_add(delta);
             loop {
-                let result = search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone(), noise_cp);
+                let result = search_root(
+                    chess_board,
+                    conductor,
+                    tt,
+                    &mut ctx,
+                    depth,
+                    lo,
+                    hi,
+                    is_white,
+                    prev_move,
+                    stop.clone(),
+                    noise_cp,
+                );
                 if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
                     break result;
                 }
@@ -1841,13 +2472,33 @@ fn id_search_single(
                     break result;
                 } else if result.0 <= lo {
                     delta = (delta * 4).min(2000);
-                    lo = if delta >= 2000 { i32::MIN + 1 } else { prev_score.saturating_sub(delta) };
+                    lo = if delta >= 2000 {
+                        i32::MIN + 1
+                    } else {
+                        prev_score.saturating_sub(delta)
+                    };
                 } else {
                     delta = (delta * 4).min(2000);
-                    hi = if delta >= 2000 { i32::MAX } else { prev_score.saturating_add(delta) };
+                    hi = if delta >= 2000 {
+                        i32::MAX
+                    } else {
+                        prev_score.saturating_add(delta)
+                    };
                 }
                 if lo == i32::MIN + 1 && hi == i32::MAX {
-                    break search_root(chess_board, conductor, tt, &mut ctx, depth, lo, hi, is_white, prev_move, stop.clone(), noise_cp);
+                    break search_root(
+                        chess_board,
+                        conductor,
+                        tt,
+                        &mut ctx,
+                        depth,
+                        lo,
+                        hi,
+                        is_white,
+                        prev_move,
+                        stop.clone(),
+                        noise_cp,
+                    );
                 }
             }
         };
@@ -1868,13 +2519,15 @@ fn id_search_single(
         }
 
         if let Some(dl) = deadline {
-            if Instant::now() >= dl { break; }
+            if Instant::now() >= dl {
+                break;
+            }
         }
     }
 
-    let ponder_move = best.1.and_then(|bm| {
-        extract_ponder_move(chess_board, conductor, tt, bm, is_white)
-    });
+    let ponder_move = best
+        .1
+        .and_then(|bm| extract_ponder_move(chess_board, conductor, tt, bm, is_white));
 
     SearchResult {
         score: best.0,
@@ -1919,8 +2572,17 @@ fn smp_helper(
         let mut stopped = false;
 
         for depth in start_depth..=max_depth {
-            if helper_stop.load(Ordering::Relaxed) { stopped = true; break; }
-            if ext_stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) { stopped = true; break; }
+            if helper_stop.load(Ordering::Relaxed) {
+                stopped = true;
+                break;
+            }
+            if ext_stop
+                .as_ref()
+                .map_or(false, |s| s.load(Ordering::Relaxed))
+            {
+                stopped = true;
+                break;
+            }
 
             if depth > start_depth {
                 ctx.age_history();
@@ -1929,30 +2591,71 @@ fn smp_helper(
             // Use aspiration windows (same as main thread) at depth >= 3.
             let stop = Some(Arc::clone(&helper_stop));
             let result = if depth <= 2 {
-                search_root(chess_board, conductor, tt, &mut ctx, depth,
-                    i32::MIN + 1, i32::MAX, is_white, prev_move, stop, 0)
+                search_root(
+                    chess_board,
+                    conductor,
+                    tt,
+                    &mut ctx,
+                    depth,
+                    i32::MIN + 1,
+                    i32::MAX,
+                    is_white,
+                    prev_move,
+                    stop,
+                    0,
+                )
             } else {
                 let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
                 let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
                 loop {
-                    let r = search_root(chess_board, conductor, tt, &mut ctx, depth,
-                        lo, hi, is_white, prev_move, Some(Arc::clone(&helper_stop)), 0);
-                    if helper_stop.load(Ordering::Relaxed) { break r; }
-                    if r.0 > lo && r.0 < hi { break r; }
-                    else if r.0 <= lo { lo = i32::MIN + 1; }
-                    else              { hi = i32::MAX; }
+                    let r = search_root(
+                        chess_board,
+                        conductor,
+                        tt,
+                        &mut ctx,
+                        depth,
+                        lo,
+                        hi,
+                        is_white,
+                        prev_move,
+                        Some(Arc::clone(&helper_stop)),
+                        0,
+                    );
+                    if helper_stop.load(Ordering::Relaxed) {
+                        break r;
+                    }
+                    if r.0 > lo && r.0 < hi {
+                        break r;
+                    } else if r.0 <= lo {
+                        lo = i32::MIN + 1;
+                    } else {
+                        hi = i32::MAX;
+                    }
                     if lo == i32::MIN + 1 && hi == i32::MAX {
-                        break search_root(chess_board, conductor, tt, &mut ctx, depth,
-                            lo, hi, is_white, prev_move, Some(Arc::clone(&helper_stop)), 0);
+                        break search_root(
+                            chess_board,
+                            conductor,
+                            tt,
+                            &mut ctx,
+                            depth,
+                            lo,
+                            hi,
+                            is_white,
+                            prev_move,
+                            Some(Arc::clone(&helper_stop)),
+                            0,
+                        );
                     }
                 }
             };
 
             prev_score = result.0;
-            prev_move  = result.1;
+            prev_move = result.1;
         }
         local_nodes += ctx.nodes;
-        if stopped { break 'outer; }
+        if stopped {
+            break 'outer;
+        }
         // Completed one full pass — loop back for the next pass.
     }
     total_nodes.fetch_add(local_nodes, Ordering::Relaxed);
@@ -1982,15 +2685,30 @@ mod tests {
     #[test]
     fn capture_generation_matches_filter_based_approach() {
         let cases: &[(&str, bool)] = &[
-            ("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1", true),   // White captures black queen
-            ("4k3/8/8/3q4/3Q4/8/8/4K3 b - - 0 1", false),  // Black captures white queen
-            ("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4", true),
-            ("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4", false),
-            ("rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq d6 0 4", true),
-            ("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", true),
+            ("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1", true), // White captures black queen
+            ("4k3/8/8/3q4/3Q4/8/8/4K3 b - - 0 1", false), // Black captures white queen
+            (
+                "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+                true,
+            ),
+            (
+                "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4",
+                false,
+            ),
+            (
+                "rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR w KQkq d6 0 4",
+                true,
+            ),
+            (
+                "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+                true,
+            ),
             ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", true),
             ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 b - - 0 1", false),
-            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", true), // No captures
+            (
+                "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                true,
+            ), // No captures
         ];
         let c = conductor();
         for &(fen, is_white) in cases {
@@ -1998,23 +2716,37 @@ mod tests {
             board.set_from_fen(fen);
 
             let mut all_moves_for_filter = Vec::new();
-            get_all_legal_moves_for_color(&mut board, &c, is_white, &mut all_moves_for_filter, &mut Vec::new());
+            get_all_legal_moves_for_color(
+                &mut board,
+                &c,
+                is_white,
+                &mut all_moves_for_filter,
+                &mut Vec::new(),
+            );
             let mut expected: Vec<_> = all_moves_for_filter
                 .into_iter()
                 .filter(|m| m.capture.is_some())
                 .collect();
             let mut actual = Vec::new();
-            get_all_legal_captures_for_color(&mut board, &c, is_white, &mut actual, &mut Vec::new());
+            get_all_legal_captures_for_color(
+                &mut board,
+                &c,
+                is_white,
+                &mut actual,
+                &mut Vec::new(),
+            );
 
             // Sort both by (start, target) for order-independent comparison.
             expected.sort_by_key(|m| (m.start_square(), m.target_square()));
             actual.sort_by_key(|m| (m.start_square(), m.target_square()));
 
             assert_eq!(
-                actual.len(), expected.len(),
+                actual.len(),
+                expected.len(),
                 "Capture count mismatch: fen={fen}, is_white={is_white}: \
                  expected {} captures, got {}",
-                expected.len(), actual.len()
+                expected.len(),
+                actual.len()
             );
             for (e, a) in expected.iter().zip(actual.iter()) {
                 assert_eq!(
@@ -2040,11 +2772,17 @@ mod tests {
         // Each entry: (fen, is_white, depth, expected_start_sq, expected_target_sq)
         let cases: &[(&str, bool, i32, u16, u16)] = &[
             // White captures hanging queen: d4→d5
-            ("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1", true,  2, 27, 35),
+            ("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1", true, 2, 27, 35),
             // Black captures hanging queen: d5→d4
             ("4k3/8/8/3q4/3Q4/8/8/4K3 b - - 0 1", false, 2, 35, 27),
             // White finds mate in 1: Qf7#
-            ("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4", true, 2, 39, 53),
+            (
+                "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+                true,
+                2,
+                39,
+                53,
+            ),
         ];
 
         for &(fen, is_white, depth, exp_from, exp_to) in cases {
@@ -2053,9 +2791,11 @@ mod tests {
             let (_, mv) = alpha_beta_root(&mut board, &c, None, depth, is_white);
             let m = mv.unwrap_or_else(|| panic!("No move found for {fen}"));
             assert_eq!(
-                (m.start_square(), m.target_square()), (exp_from, exp_to),
+                (m.start_square(), m.target_square()),
+                (exp_from, exp_to),
                 "Wrong move for {fen}: got ({}, {}), expected ({exp_from}, {exp_to})",
-                m.start_square(), m.target_square()
+                m.start_square(),
+                m.target_square()
             );
         }
     }
@@ -2069,7 +2809,10 @@ mod tests {
         let mut board = ChessBoard::new();
         let c = conductor();
         let (_, mv) = alpha_beta_root(&mut board, &c, None, 2, true);
-        assert!(mv.is_some(), "Engine must return a move from the starting position");
+        assert!(
+            mv.is_some(),
+            "Engine must return a move from the starting position"
+        );
     }
 
     #[test]
@@ -2100,7 +2843,10 @@ mod tests {
         let m = mv.expect("Engine must find a move");
         assert_eq!(m.start_square(), 27, "Should move from d4 (square 27)");
         assert_eq!(m.target_square(), 35, "Should capture on d5 (square 35)");
-        assert!(score > 800, "Score should reflect a queen-up advantage, got {score}");
+        assert!(
+            score > 800,
+            "Score should reflect a queen-up advantage, got {score}"
+        );
     }
 
     /// Same position, but now it is black to move — black should capture white's queen.
@@ -2113,7 +2859,10 @@ mod tests {
         let m = mv.expect("Engine must find a move");
         assert_eq!(m.start_square(), 35, "Should move from d5 (square 35)");
         assert_eq!(m.target_square(), 27, "Should capture on d4 (square 27)");
-        assert!(score < -800, "Score should reflect black's queen-up advantage, got {score}");
+        assert!(
+            score < -800,
+            "Score should reflect black's queen-up advantage, got {score}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2191,7 +2940,19 @@ mod tests {
 
         let tt = TranspositionTable::new(1 << 16);
         let mut ctx = SearchContext::new();
-        let (ab_score, _) = alpha_beta(&mut board, &c, &tt, &mut ctx, 2, 0, i32::MIN + 1, i32::MAX, true, true, None);
+        let (ab_score, _) = alpha_beta(
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            2,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
+        );
 
         assert_eq!(
             root_score, ab_score,
@@ -2234,7 +2995,10 @@ mod tests {
         let mut board = ChessBoard::new();
         let c = conductor();
         let r = iterative_deepening_root(&mut board, &c, None, 3, true, None, None, 0);
-        assert!(r.best_move.is_some(), "ID must return a move from the starting position");
+        assert!(
+            r.best_move.is_some(),
+            "ID must return a move from the starting position"
+        );
     }
 
     /// ID must find that white wins the free queen (Qxd5 captures undefended).
@@ -2247,8 +3011,10 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
         let id_score = iterative_deepening_root(&mut board, &c, None, 3, true, None, None, 0).score;
-        assert!(id_score > 900,
-            "White wins a free queen so score must be > 900, got {id_score}");
+        assert!(
+            id_score > 900,
+            "White wins a free queen so score must be > 900, got {id_score}"
+        );
     }
 
     #[test]
@@ -2257,8 +3023,11 @@ mod tests {
         let hash_before = board.current_hash();
         let c = conductor();
         let _ = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
-        assert_eq!(board.current_hash(), hash_before,
-            "ID must not leave the board in a modified state");
+        assert_eq!(
+            board.current_hash(),
+            hash_before,
+            "ID must not leave the board in a modified state"
+        );
     }
 
     /// ID must find the forced capture even through multiple depth iterations.
@@ -2301,7 +3070,10 @@ mod tests {
         board_after.make_move(&mut mv_copy);
         let mut replies = Vec::new();
         get_all_legal_moves_for_color(&mut board_after, &c, false, &mut replies, &mut Vec::new());
-        assert!(replies.is_empty(), "After ID's best move black should have no legal replies");
+        assert!(
+            replies.is_empty(),
+            "After ID's best move black should have no legal replies"
+        );
     }
 
     /// ID must find checkmate-in-one for black across multiple depth iterations.
@@ -2317,7 +3089,10 @@ mod tests {
         board_after.make_move(&mut mv_copy);
         let mut replies = Vec::new();
         get_all_legal_moves_for_color(&mut board_after, &c, true, &mut replies, &mut Vec::new());
-        assert!(replies.is_empty(), "After ID's best move white should have no legal replies");
+        assert!(
+            replies.is_empty(),
+            "After ID's best move white should have no legal replies"
+        );
     }
 
     /// ID at depth=4 exercises NMP (depth>=3) and LMR across all iterations.
@@ -2330,8 +3105,16 @@ mod tests {
         let c = conductor();
         let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
         assert!(r.best_move.is_some(), "ID must return a move at depth 4");
-        assert!(r.score > 800, "ID with NMP/LMR must still reflect a queen-up advantage, got {}", r.score);
-        assert_eq!(board.current_hash(), hash_before, "Board must be clean after search");
+        assert!(
+            r.score > 800,
+            "ID with NMP/LMR must still reflect a queen-up advantage, got {}",
+            r.score
+        );
+        assert_eq!(
+            board.current_hash(),
+            hash_before,
+            "Board must be clean after search"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2342,7 +3125,10 @@ mod tests {
     fn zugzwang_prone_kings_only() {
         let mut board = ChessBoard::new();
         board.set_from_fen("k7/8/8/8/8/8/8/7K w - - 0 1");
-        assert!(is_zugzwang_prone(&board, true), "K vs K should be zugzwang-prone");
+        assert!(
+            is_zugzwang_prone(&board, true),
+            "K vs K should be zugzwang-prone"
+        );
     }
 
     #[test]
@@ -2350,20 +3136,29 @@ mod tests {
         let mut board = ChessBoard::new();
         // White K+R vs black K: white has 1 rook → prone (< 2 minor/major for white).
         board.set_from_fen("k7/8/8/8/8/8/8/6RK w - - 0 1");
-        assert!(is_zugzwang_prone(&board, true), "K+R vs K should be zugzwang-prone");
+        assert!(
+            is_zugzwang_prone(&board, true),
+            "K+R vs K should be zugzwang-prone"
+        );
     }
 
     #[test]
     fn not_zugzwang_prone_two_rooks() {
         let mut board = ChessBoard::new();
         board.set_from_fen("k7/8/8/8/8/8/8/5RRK w - - 0 1");
-        assert!(!is_zugzwang_prone(&board, true), "K+2R vs K should not be zugzwang-prone");
+        assert!(
+            !is_zugzwang_prone(&board, true),
+            "K+2R vs K should not be zugzwang-prone"
+        );
     }
 
     #[test]
     fn not_zugzwang_prone_starting_position() {
         let board = ChessBoard::new();
-        assert!(!is_zugzwang_prone(&board, true), "Starting position should not be zugzwang-prone");
+        assert!(
+            !is_zugzwang_prone(&board, true),
+            "Starting position should not be zugzwang-prone"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2379,8 +3174,15 @@ mod tests {
         let c = conductor();
         let (score, mv) = alpha_beta_root(&mut board, &c, None, 4, true);
         assert!(mv.is_some(), "Engine must return a move at depth 4");
-        assert!(score > 800, "Score should reflect a queen-up advantage, got {score}");
-        assert_eq!(board.current_hash(), hash_before, "Board must be clean after search");
+        assert!(
+            score > 800,
+            "Score should reflect a queen-up advantage, got {score}"
+        );
+        assert_eq!(
+            board.current_hash(),
+            hash_before,
+            "Board must be clean after search"
+        );
     }
 
     #[test]
@@ -2391,8 +3193,15 @@ mod tests {
         let c = conductor();
         let (score, mv) = alpha_beta_root(&mut board, &c, None, 4, false);
         assert!(mv.is_some(), "Engine must return a move at depth 4");
-        assert!(score < -800, "Score should reflect black's queen-up advantage, got {score}");
-        assert_eq!(board.current_hash(), hash_before, "Board must be clean after search");
+        assert!(
+            score < -800,
+            "Score should reflect black's queen-up advantage, got {score}"
+        );
+        assert_eq!(
+            board.current_hash(),
+            hash_before,
+            "Board must be clean after search"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2406,8 +3215,15 @@ mod tests {
         let hash_before = board.current_hash();
         let c = conductor();
         let (_, mv) = alpha_beta_root(&mut board, &c, None, 3, true);
-        assert!(mv.is_some(), "Engine must return an evasion move when in check");
-        assert_eq!(board.current_hash(), hash_before, "Board must be clean after search");
+        assert!(
+            mv.is_some(),
+            "Engine must return an evasion move when in check"
+        );
+        assert_eq!(
+            board.current_hash(),
+            hash_before,
+            "Board must be clean after search"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2421,10 +3237,25 @@ mod tests {
         let c = conductor();
         let mut moves = Vec::new();
         get_all_legal_moves_for_color(&mut board, &c, false, &mut moves, &mut Vec::new());
-        assert!(moves.is_empty(), "Black should have no legal moves (stalemate)");
+        assert!(
+            moves.is_empty(),
+            "Black should have no legal moves (stalemate)"
+        );
         let tt = TranspositionTable::new(1 << 16);
         let mut ctx = SearchContext::new();
-        let (score, _) = alpha_beta(&mut board, &c, &tt, &mut ctx, 2, 0, i32::MIN + 1, i32::MAX, false, true, None);
+        let (score, _) = alpha_beta(
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            2,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            false,
+            true,
+            None,
+        );
         assert_eq!(score, 0, "Stalemate must evaluate to 0 (draw), got {score}");
     }
 
@@ -2435,7 +3266,10 @@ mod tests {
         let c = conductor();
         let (score, mv) = alpha_beta_root(&mut board, &c, None, 4, true);
         let m = mv.expect("Engine must return a move");
-        assert!(score > 500, "White is winning, score should be large, got {score}");
+        assert!(
+            score > 500,
+            "White is winning, score should be large, got {score}"
+        );
         assert!(
             !(m.target_square() == 40),
             "Engine must not play Qa6 (stalemate)"
@@ -2453,12 +3287,21 @@ mod tests {
         let c = conductor();
         let tt = TranspositionTable::new(TT_SIZE);
         let mut ctx = SearchContext::new();
-        let (score, mv) = search_root(&mut board, &c, &tt, &mut ctx, 4, -50, 50, false, None, None, 0);
-        assert!(score < -200 || score <= -50,
-            "Black should win material or fail-low, got {score}");
+        let (score, mv) = search_root(
+            &mut board, &c, &tt, &mut ctx, 4, -50, 50, false, None, None, 0,
+        );
+        assert!(
+            score < -200 || score <= -50,
+            "Black should win material or fail-low, got {score}"
+        );
         if score > -50 && score < 50 {
             let m = mv.expect("Must return a move");
-            assert_eq!(m.target_square(), 18, "Should capture on c3 (sq 18), got {}", m.target_square());
+            assert_eq!(
+                m.target_square(),
+                18,
+                "Should capture on c3 (sq 18), got {}",
+                m.target_square()
+            );
         }
     }
 
@@ -2469,8 +3312,11 @@ mod tests {
         let c = conductor();
         let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
         let m = r.best_move.expect("Must return a move");
-        assert!(r.score > -200,
-            "White should not blunder a piece, score {}", r.score);
+        assert!(
+            r.score > -200,
+            "White should not blunder a piece, score {}",
+            r.score
+        );
         let _ = m;
     }
 
@@ -2483,8 +3329,11 @@ mod tests {
         let m = r.best_move.expect("Must return a move");
         let mut legal = Vec::new();
         get_all_legal_moves_for_color(&mut board, &c, true, &mut legal, &mut Vec::new());
-        assert!(legal.iter().any(|lm| lm.start_square() == m.start_square() && lm.target_square() == m.target_square()),
-            "Engine must return a legal move");
+        assert!(
+            legal.iter().any(|lm| lm.start_square() == m.start_square()
+                && lm.target_square() == m.target_square()),
+            "Engine must return a legal move"
+        );
     }
 
     #[test]
@@ -2495,19 +3344,38 @@ mod tests {
 
         let tt1 = TranspositionTable::new(TT_SIZE);
         let mut ctx1 = SearchContext::new();
-        let (score_full, mv_full) = search_root(&mut board, &c, &tt1, &mut ctx1, 4, i32::MIN + 1, i32::MAX, true, None, None, 0);
+        let (score_full, mv_full) = search_root(
+            &mut board,
+            &c,
+            &tt1,
+            &mut ctx1,
+            4,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            None,
+            None,
+            0,
+        );
 
         let tt2 = TranspositionTable::new(TT_SIZE);
         let mut ctx2 = SearchContext::new();
-        let (score_asp, _) = search_root(&mut board, &c, &tt2, &mut ctx2, 4, -50, 50, true, None, None, 0);
+        let (score_asp, _) = search_root(
+            &mut board, &c, &tt2, &mut ctx2, 4, -50, 50, true, None, None, 0,
+        );
 
         let m = mv_full.expect("Full window must return a move");
-        assert!(score_full > 200, "White should win material, got {score_full}");
+        assert!(
+            score_full > 200,
+            "White should win material, got {score_full}"
+        );
         if score_asp > -50 && score_asp < 50 {
             panic!("Aspiration search returned {score_asp} — should have failed high");
         }
-        assert!(score_asp >= 50 || score_asp <= -50,
-            "Aspiration should fail, got {score_asp}");
+        assert!(
+            score_asp >= 50 || score_asp <= -50,
+            "Aspiration should fail, got {score_asp}"
+        );
         let _ = m;
     }
 
@@ -2525,8 +3393,10 @@ mod tests {
         for depth in 2..=6 {
             let (score, mv) = alpha_beta_root(&mut board, &c, None, depth, true);
             assert!(mv.is_some(), "depth {depth}: must return a move");
-            assert!(score >= 999_000,
-                "depth {depth}: mate score expected, got {score}");
+            assert!(
+                score >= 999_000,
+                "depth {depth}: mate score expected, got {score}"
+            );
         }
     }
 
@@ -2540,8 +3410,10 @@ mod tests {
         for depth in 2..=6 {
             let (score, mv) = alpha_beta_root(&mut board, &c, None, depth, false);
             assert!(mv.is_some(), "depth {depth}: must return a move");
-            assert!(score <= -999_000,
-                "depth {depth}: mate score expected, got {score}");
+            assert!(
+                score <= -999_000,
+                "depth {depth}: mate score expected, got {score}"
+            );
         }
     }
 
@@ -2553,12 +3425,16 @@ mod tests {
         let c = conductor();
 
         for max_depth in 2..=6 {
-            let r = iterative_deepening_root(
-                &mut board, &c, None, max_depth, true, None, None, 0,
+            let r = iterative_deepening_root(&mut board, &c, None, max_depth, true, None, None, 0);
+            assert!(
+                r.best_move.is_some(),
+                "ID depth {max_depth}: must return a move"
             );
-            assert!(r.best_move.is_some(), "ID depth {max_depth}: must return a move");
-            assert!(r.score >= 999_000,
-                "ID depth {max_depth}: mate score expected, got {}", r.score);
+            assert!(
+                r.score >= 999_000,
+                "ID depth {max_depth}: mate score expected, got {}",
+                r.score
+            );
         }
     }
 
@@ -2574,15 +3450,11 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
 
-        let r1 = iterative_deepening_root(
-            &mut board, &c, None, 4, true, None, None, 0,
-        );
+        let r1 = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
         let score_no_flag = r1.score;
 
         let stop = Arc::new(AtomicBool::new(false));
-        let r2 = iterative_deepening_root(
-            &mut board, &c, None, 4, true, None, Some(stop), 0,
-        );
+        let r2 = iterative_deepening_root(&mut board, &c, None, 4, true, None, Some(stop), 0);
         let score_with_flag = r2.score;
 
         assert_eq!(score_no_flag, score_with_flag,
@@ -2599,15 +3471,11 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
 
-        let r1 = iterative_deepening_root(
-            &mut board, &c, None, 4, true, None, None, 0,
-        );
+        let r1 = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
         let score_no_dl = r1.score;
 
         let deadline = Some(Instant::now() + Duration::from_secs(60));
-        let r2 = iterative_deepening_root(
-            &mut board, &c, None, 4, true, deadline, None, 0,
-        );
+        let r2 = iterative_deepening_root(&mut board, &c, None, 4, true, deadline, None, 0);
         let score_with_dl = r2.score;
 
         assert_eq!(score_no_dl, score_with_dl,
@@ -2628,15 +3496,18 @@ mod tests {
         // With a very tight deadline, the engine should still complete
         // at least depth 1-2 and return a sensible result.
         let deadline = Some(Instant::now() + Duration::from_millis(5));
-        let r = iterative_deepening_root(
-            &mut board, &c, None, 64, true, deadline, None, 0,
-        );
+        let r = iterative_deepening_root(&mut board, &c, None, 64, true, deadline, None, 0);
 
-        assert!(r.best_move.is_some(),
-            "Must return a move even with tight deadline");
+        assert!(
+            r.best_move.is_some(),
+            "Must return a move even with tight deadline"
+        );
         // White has a hanging queen to capture — score must be positive
-        assert!(r.score > 0,
-            "Tight deadline must still use completed depth result, got {}", r.score);
+        assert!(
+            r.score > 0,
+            "Tight deadline must still use completed depth result, got {}",
+            r.score
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2659,8 +3530,10 @@ mod tests {
         board_center.set_from_fen("8/8/8/4k3/4K3/8/8/5Q2 w - - 0 1");
         let score_center = evaluate_board(&board_center, &c);
 
-        assert!(score_edge > score_center,
-            "Mop-up must prefer losing king on edge ({score_edge}) over center ({score_center})");
+        assert!(
+            score_edge > score_center,
+            "Mop-up must prefer losing king on edge ({score_edge}) over center ({score_center})"
+        );
     }
 
     /// In K+Q vs K, the winning king being close to the losing king
@@ -2679,8 +3552,10 @@ mod tests {
         board_far.set_from_fen("7K/8/8/8/8/8/8/k4Q2 w - - 0 1");
         let score_far = evaluate_board(&board_far, &c);
 
-        assert!(score_close > score_far,
-            "Mop-up must prefer winning king close ({score_close}) over far ({score_far})");
+        assert!(
+            score_close > score_far,
+            "Mop-up must prefer winning king close ({score_close}) over far ({score_far})"
+        );
     }
 
     /// In a K+Q vs K endgame, the engine should make progress toward
@@ -2693,13 +3568,14 @@ mod tests {
         let c = conductor();
 
         let initial_score = evaluate_board(&board, &c);
-        let r = iterative_deepening_root(
-            &mut board, &c, None, 4, true, None, None, 0,
-        );
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
 
         assert!(r.best_move.is_some(), "Engine must return a move");
-        assert!(r.score >= initial_score,
-            "Engine should make progress: initial={initial_score}, search={}", r.score);
+        assert!(
+            r.score >= initial_score,
+            "Engine should make progress: initial={initial_score}, search={}",
+            r.score
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2721,8 +3597,10 @@ mod tests {
         board_r7.set_from_fen("8/3P4/8/8/8/8/8/4K2k w - - 0 1");
         let score_r7 = evaluate_board(&board_r7, &c);
 
-        assert!(score_r7 > score_r5,
-            "Rank 7 passer ({score_r7}) must score higher than rank 5 ({score_r5})");
+        assert!(
+            score_r7 > score_r5,
+            "Rank 7 passer ({score_r7}) must score higher than rank 5 ({score_r5})"
+        );
     }
 
     /// A passed pawn must never be valued less than a non-passed pawn,
@@ -2741,8 +3619,10 @@ mod tests {
         board_blocked.set_from_fen("7k/8/3p4/3P4/8/8/8/K7 w - - 0 1");
         let score_blocked = evaluate_board(&board_blocked, &c);
 
-        assert!(score_passed > score_blocked,
-            "Passed pawn ({score_passed}) must score higher than blocked ({score_blocked})");
+        assert!(
+            score_passed > score_blocked,
+            "Passed pawn ({score_passed}) must score higher than blocked ({score_blocked})"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2760,9 +3640,13 @@ mod tests {
         // depth=1 is exactly when futility is active.
         let (score, mv) = alpha_beta_root(&mut board, &c, None, 1, true);
         let m = mv.expect("Must find a move at depth 1");
-        assert_eq!((m.start_square(), m.target_square()), (27, 35),
+        assert_eq!(
+            (m.start_square(), m.target_square()),
+            (27, 35),
             "Must capture the queen even at depth=1: got ({}, {})",
-            m.start_square(), m.target_square());
+            m.start_square(),
+            m.target_square()
+        );
         assert!(score > 800, "Score must reflect queen win, got {score}");
     }
 
@@ -2776,7 +3660,10 @@ mod tests {
         board.set_from_fen("k3r3/8/8/8/8/8/8/4K3 w - - 0 1");
         let c = conductor();
         let (_, mv) = alpha_beta_root(&mut board, &c, None, 3, true);
-        assert!(mv.is_some(), "Must find an evasion move — RFP must not fire when in check");
+        assert!(
+            mv.is_some(),
+            "Must find an evasion move — RFP must not fire when in check"
+        );
     }
 
     /// Aggressive LMR must not reduce first move (PV node).
@@ -2789,7 +3676,10 @@ mod tests {
         // If LMR incorrectly reduces move_index=0, the mate score would be lost.
         let (score, mv) = alpha_beta_root(&mut board, &c, None, 3, true);
         assert!(mv.is_some(), "Must return a move");
-        assert!(score >= 999_000, "Mate-in-1 score must survive LMR, got {score}");
+        assert!(
+            score >= 999_000,
+            "Mate-in-1 score must survive LMR, got {score}"
+        );
     }
 
     /// With aggressive LMR the engine must still find a mate-in-2.
@@ -2803,8 +3693,13 @@ mod tests {
         let (score, mv) = alpha_beta_root(&mut board, &c, None, 4, true);
         let m = mv.expect("Must find a move");
         // Qxf7+ should be the best move (from h5=39 to f7=53)
-        assert_eq!((m.start_square(), m.target_square()), (39, 53),
-            "Must find Qxf7+, got ({}, {})", m.start_square(), m.target_square());
+        assert_eq!(
+            (m.start_square(), m.target_square()),
+            (39, 53),
+            "Must find Qxf7+, got ({}, {})",
+            m.start_square(),
+            m.target_square()
+        );
         let _ = score;
     }
 
@@ -2816,8 +3711,24 @@ mod tests {
         let c = conductor();
         let tt = TranspositionTable::new(1 << 16);
         let mut ctx = SearchContext::new();
-        alpha_beta(&mut board, &c, &tt, &mut ctx, 4, 0, i32::MIN + 1, i32::MAX, true, true, None);
-        assert!(ctx.nodes > 0, "Node counter must be > 0 after search, got {}", ctx.nodes);
+        alpha_beta(
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            4,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
+        );
+        assert!(
+            ctx.nodes > 0,
+            "Node counter must be > 0 after search, got {}",
+            ctx.nodes
+        );
     }
 
     /// Board state must be clean after depth-6 search (RFP + futility + aggressive LMR all active).
@@ -2827,8 +3738,11 @@ mod tests {
         let hash_before = board.current_hash();
         let c = conductor();
         alpha_beta_root(&mut board, &c, None, 6, true);
-        assert_eq!(board.current_hash(), hash_before,
-            "Board must be clean after depth-6 search with all pruning active");
+        assert_eq!(
+            board.current_hash(),
+            hash_before,
+            "Board must be clean after depth-6 search with all pruning active"
+        );
     }
 
     // ── TT integrity: stored moves must be legal ──────────────────────────────
@@ -2850,14 +3764,32 @@ mod tests {
             let is_white = fen.split_whitespace().nth(1) == Some("w");
             let tt = TranspositionTable::new(TT_SIZE);
             let mut ctx = SearchContext::new();
-            search_root(&mut board, &c, &tt, &mut ctx, 4, i32::MIN + 1, i32::MAX, is_white, None, None, 0);
+            search_root(
+                &mut board,
+                &c,
+                &tt,
+                &mut ctx,
+                4,
+                i32::MIN + 1,
+                i32::MAX,
+                is_white,
+                None,
+                None,
+                0,
+            );
 
             // Probe TT for root hash and verify the stored best move (if any) is legal.
             let hash = board.current_hash();
             if let Some(entry) = tt.probe(hash) {
                 if let Some(tt_mv) = entry.best_move() {
                     let mut legal = Vec::new();
-                    get_all_legal_moves_for_color(&mut board, &c, is_white, &mut legal, &mut Vec::new());
+                    get_all_legal_moves_for_color(
+                        &mut board,
+                        &c,
+                        is_white,
+                        &mut legal,
+                        &mut Vec::new(),
+                    );
                     let is_legal = legal.iter().any(|m| {
                         m.start_square() == tt_mv.start_square()
                             && m.target_square() == tt_mv.target_square()
@@ -2865,7 +3797,9 @@ mod tests {
                     assert!(
                         is_legal,
                         "TT best_move {}→{} is not a legal move in FEN: {}",
-                        tt_mv.start_square(), tt_mv.target_square(), fen
+                        tt_mv.start_square(),
+                        tt_mv.target_square(),
+                        fen
                     );
                 }
             }
@@ -2886,21 +3820,53 @@ mod tests {
         let tt_fresh = TranspositionTable::new(TT_SIZE);
         let mut ctx = SearchContext::new();
         let (score_fresh, mv_fresh) = search_root(
-            &mut board, &c, &tt_fresh, &mut ctx, depth, i32::MIN + 1, i32::MAX, true, None, None, 0,
+            &mut board,
+            &c,
+            &tt_fresh,
+            &mut ctx,
+            depth,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            None,
+            None,
+            0,
         );
 
         // Polluted TT: search a different position first, then age it, then search the target.
         let tt_reused = TranspositionTable::new(TT_SIZE);
         let mut board2 = ChessBoard::new(); // starting position
         let mut ctx2 = SearchContext::new();
-        search_root(&mut board2, &c, &tt_reused, &mut ctx2, depth, i32::MIN + 1, i32::MAX, true, None, None, 0);
+        search_root(
+            &mut board2,
+            &c,
+            &tt_reused,
+            &mut ctx2,
+            depth,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            None,
+            None,
+            0,
+        );
         tt_reused.new_search();
 
         let mut board3 = ChessBoard::new();
         board3.set_from_fen(fen);
         let mut ctx3 = SearchContext::new();
         let (score_reused, mv_reused) = search_root(
-            &mut board3, &c, &tt_reused, &mut ctx3, depth, i32::MIN + 1, i32::MAX, true, None, None, 0,
+            &mut board3,
+            &c,
+            &tt_reused,
+            &mut ctx3,
+            depth,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            None,
+            None,
+            0,
         );
 
         assert_eq!(
@@ -2933,7 +3899,19 @@ mod tests {
             let is_white = fen.split_whitespace().nth(1) == Some("w");
             let mut ctx = SearchContext::new();
             tt.new_search();
-            search_root(&mut board, &c, &tt, &mut ctx, 3, i32::MIN + 1, i32::MAX, is_white, None, None, 0);
+            search_root(
+                &mut board,
+                &c,
+                &tt,
+                &mut ctx,
+                3,
+                i32::MIN + 1,
+                i32::MAX,
+                is_white,
+                None,
+                None,
+                0,
+            );
         }
 
         // Now search the tactical position: white has a free queen to take.
@@ -2943,11 +3921,30 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let mut ctx = SearchContext::new();
         tt.new_search();
-        let (score, mv) = search_root(&mut board, &c, &tt, &mut ctx, 4, i32::MIN + 1, i32::MAX, true, None, None, 0);
+        let (score, mv) = search_root(
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            4,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            None,
+            None,
+            0,
+        );
         let m = mv.expect("Engine must find a move after TT warm-up");
-        assert_eq!(m.target_square(), 35,
-            "Engine must capture the free queen (sq 35) after TT warm-up, got sq {}", m.target_square());
-        assert!(score > 800, "Score must be > 800cp after free queen capture, got {score}");
+        assert_eq!(
+            m.target_square(),
+            35,
+            "Engine must capture the free queen (sq 35) after TT warm-up, got sq {}",
+            m.target_square()
+        );
+        assert!(
+            score > 800,
+            "Score must be > 800cp after free queen capture, got {score}"
+        );
     }
 
     // ── Lazy SMP diagnostics ───────────────────────────────────────────────
@@ -2975,7 +3972,10 @@ mod tests {
         let r = iterative_deepening_root_with_tt(
             &mut board, &c, None, &tt, 4, true, None, None, 2, None, 0,
         );
-        assert!(r.best_move.is_some(), "2-thread Lazy SMP must return a move");
+        assert!(
+            r.best_move.is_some(),
+            "2-thread Lazy SMP must return a move"
+        );
         let mv = r.best_move.unwrap();
         assert_eq!(mv.target_square(), 35, "must capture queen on d5 (sq 35)");
     }
@@ -2989,7 +3989,10 @@ mod tests {
         let r = iterative_deepening_root_with_tt(
             &mut board, &c, None, &tt, 4, true, None, None, 4, None, 0,
         );
-        assert!(r.best_move.is_some(), "4-thread Lazy SMP must return a move");
+        assert!(
+            r.best_move.is_some(),
+            "4-thread Lazy SMP must return a move"
+        );
         let mv = r.best_move.unwrap();
         assert_eq!(mv.target_square(), 35, "must capture queen on d5 (sq 35)");
     }
@@ -3005,7 +4008,10 @@ mod tests {
         let r = iterative_deepening_root_with_tt(
             &mut board, &c, None, &tt, 64, true, deadline, None, 4, None, 0,
         );
-        assert!(r.best_move.is_some(), "4-thread Lazy SMP with deadline must return a move");
+        assert!(
+            r.best_move.is_some(),
+            "4-thread Lazy SMP with deadline must return a move"
+        );
     }
 
     #[test]
@@ -3021,9 +4027,22 @@ mod tests {
             stop_c.store(true, Ordering::Relaxed);
         });
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 64, true, None, Some(stop), 4, None, 0,
+            &mut board,
+            &c,
+            None,
+            &tt,
+            64,
+            true,
+            None,
+            Some(stop),
+            4,
+            None,
+            0,
         );
-        assert!(r.best_move.is_some(), "4-thread Lazy SMP with stop flag must return a move");
+        assert!(
+            r.best_move.is_some(),
+            "4-thread Lazy SMP with stop flag must return a move"
+        );
     }
 
     #[test]
@@ -3036,8 +4055,11 @@ mod tests {
         let _ = iterative_deepening_root_with_tt(
             &mut board, &c, None, &tt, 4, false, None, None, 4, None, 0,
         );
-        assert_eq!(board.current_hash(), hash_before,
-            "board hash must be unchanged after multi-threaded search");
+        assert_eq!(
+            board.current_hash(),
+            hash_before,
+            "board hash must be unchanged after multi-threaded search"
+        );
     }
 
     // ── Zugzwang / NMP correctness ────────────────────────────────────────────
@@ -3053,20 +4075,26 @@ mod tests {
         // White KPP vs Black KQQ: white has no minor/major pieces → prone.
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/3qq3/8/8/8/8/3PP4/4K3 w - - 0 1");
-        assert!(is_zugzwang_prone(&board, true),
-            "White with only pawns/king must be zugzwang-prone even if opponent has queens");
+        assert!(
+            is_zugzwang_prone(&board, true),
+            "White with only pawns/king must be zugzwang-prone even if opponent has queens"
+        );
 
         // Black KPP vs White KQQ: black has no minor/major pieces → prone (black to move).
         let mut board2 = ChessBoard::new();
         board2.set_from_fen("4k3/3pp4/8/8/8/8/3QQ3/4K3 b - - 0 1");
-        assert!(is_zugzwang_prone(&board2, false),
-            "Black with only pawns/king must be zugzwang-prone even if opponent has queens");
+        assert!(
+            is_zugzwang_prone(&board2, false),
+            "Black with only pawns/king must be zugzwang-prone even if opponent has queens"
+        );
 
         // Both sides have major pieces: neither side is zugzwang-prone.
         let mut board3 = ChessBoard::new();
         board3.set_from_fen("4k3/3rr3/8/8/8/8/3RR3/4K3 w - - 0 1");
-        assert!(!is_zugzwang_prone(&board3, true),
-            "White with 2 rooks must not be zugzwang-prone");
+        assert!(
+            !is_zugzwang_prone(&board3, true),
+            "White with 2 rooks must not be zugzwang-prone"
+        );
     }
 
     // ── Mate distance pruning ─────────────────────────────────────────────────
@@ -3088,8 +4116,17 @@ mod tests {
 
         // With a full-window search, white finds the mate-in-1 quickly.
         let (score, mv) = alpha_beta(
-            &mut board, &c, &tt, &mut ctx,
-            3, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            3,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
         assert!(score > 999_000, "Must find a mate score, got {score}");
         assert!(mv.is_some(), "Must find a best move");
@@ -3103,18 +4140,24 @@ mod tests {
         // Retrieved with halfmove_clock = 96 (only 4 half-moves remaining).
         // The mate requires 5 plies but only 4 are available → downgrade.
         let mate_in_5_stored = 1_000_000 - 5 + 0; // score_to_tt at ply=0: +0 → stored = 999_995
-        // At retrieval ply=0, halfmove_clock=96 (4 plies remaining):
+                                                  // At retrieval ply=0, halfmove_clock=96 (4 plies remaining):
         let retrieved = score_from_tt(mate_in_5_stored + 0, 0, 96);
         // 5 plies needed, 4 remaining → should be downgraded
-        assert!(retrieved < 999_000,
-            "Mate score must be downgraded near 50-move boundary, got {retrieved}");
-        assert!(retrieved > 0,
-            "Downgraded score must still be positive (winning), got {retrieved}");
+        assert!(
+            retrieved < 999_000,
+            "Mate score must be downgraded near 50-move boundary, got {retrieved}"
+        );
+        assert!(
+            retrieved > 0,
+            "Downgraded score must still be positive (winning), got {retrieved}"
+        );
 
         // With plenty of time (clock=0), the same mate should NOT be downgraded.
         let retrieved_ok = score_from_tt(mate_in_5_stored, 0, 0);
-        assert!(retrieved_ok > 999_000,
-            "Mate score must NOT be downgraded with low halfmove clock, got {retrieved_ok}");
+        assert!(
+            retrieved_ok > 999_000,
+            "Mate score must NOT be downgraded with low halfmove clock, got {retrieved_ok}"
+        );
     }
 
     // ── History malus ─────────────────────────────────────────────────────────
@@ -3130,12 +4173,30 @@ mod tests {
 
         // Starting position — run a depth-4 search to populate history.
         let mut board = ChessBoard::new();
-        alpha_beta(&mut board, &c, &tt, &mut ctx, 4, 0, i32::MIN + 1, i32::MAX, true, true, None);
+        alpha_beta(
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            4,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
+        );
 
         // After search, some history values should be negative (malus applied).
-        let has_negative = ctx.history.iter().flat_map(|row| row.iter()).any(|&v| v < 0);
-        assert!(has_negative,
-            "History table must contain negative values (malus) after a search with cutoffs");
+        let has_negative = ctx
+            .history
+            .iter()
+            .flat_map(|row| row.iter())
+            .any(|&v| v < 0);
+        assert!(
+            has_negative,
+            "History table must contain negative values (malus) after a search with cutoffs"
+        );
     }
 
     /// apply_history_malus clamps at -16_384.
@@ -3186,14 +4247,23 @@ mod tests {
         board.set_from_fen("4k3/3qq3/8/8/8/8/3PP4/4K3 b - - 0 1");
         let hash_before = board.current_hash();
         let (_score, _mv) = alpha_beta(
-            &mut board, &c, &tt, &mut ctx,
-            5, 0, i32::MIN + 1, i32::MAX,
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            5,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
             false, // is_white = false (black to move)
             true,  // null_move_allowed
             None,
         );
-        assert_eq!(board.current_hash(), hash_before,
-            "Board must be clean after search in zugzwang-prone position");
+        assert_eq!(
+            board.current_hash(),
+            hash_before,
+            "Board must be clean after search in zugzwang-prone position"
+        );
     }
 
     // ── LMR lookup table ─────────────────────────────────────────────────────
@@ -3204,19 +4274,21 @@ mod tests {
     #[test]
     fn lmr_table_values_match_formula() {
         let cases = [
-            (3usize, 2usize),  // shallow, few moves
-            (7,  5),           // typical middlegame node
-            (7,  15),          // many moves searched
-            (10, 10),          // deeper search
-            (20, 30),          // high depth, high move index
-            (1,  1),           // edge: depth=1 should give 0 (capped)
+            (3usize, 2usize), // shallow, few moves
+            (7, 5),           // typical middlegame node
+            (7, 15),          // many moves searched
+            (10, 10),         // deeper search
+            (20, 30),         // high depth, high move index
+            (1, 1),           // edge: depth=1 should give 0 (capped)
         ];
         for (depth, mi) in cases {
             let expected = ((depth as f64).ln() * ((mi + 1) as f64).ln() / 1.5) as i32;
             let expected = expected.max(0);
             let got = lmr_reduction(depth as i32, mi);
-            assert_eq!(got, expected,
-                "lmr_reduction({depth}, {mi}): expected {expected}, got {got}");
+            assert_eq!(
+                got, expected,
+                "lmr_reduction({depth}, {mi}): expected {expected}, got {got}"
+            );
         }
     }
 
@@ -3229,8 +4301,8 @@ mod tests {
         let mut ctx = SearchContext::new();
         // Simulate: at ply 3, the previous move played was e2→e4 (squares 12→28).
         let prev_from = 12usize;
-        let prev_to   = 28usize;
-        let prev_mv   = ChessMove::new(prev_from as u16, prev_to as u16);
+        let prev_to = 28usize;
+        let prev_mv = ChessMove::new(prev_from as u16, prev_to as u16);
         ctx.prev_moves[3] = Some(prev_mv);
 
         // The cutoff move at ply 3 is d7→d5 (squares 51→35).
@@ -3238,10 +4310,21 @@ mod tests {
         ctx.record_cutoff(3, 3, cutoff_mv);
 
         let stored = ctx.countermoves[prev_from][prev_to];
-        assert!(stored.is_some(), "countermoves must be set after record_cutoff");
+        assert!(
+            stored.is_some(),
+            "countermoves must be set after record_cutoff"
+        );
         let stored = stored.unwrap();
-        assert_eq!(stored.start_square(),  cutoff_mv.start_square(),  "from square mismatch");
-        assert_eq!(stored.target_square(), cutoff_mv.target_square(), "to square mismatch");
+        assert_eq!(
+            stored.start_square(),
+            cutoff_mv.start_square(),
+            "from square mismatch"
+        );
+        assert_eq!(
+            stored.target_square(),
+            cutoff_mv.target_square(),
+            "to square mismatch"
+        );
     }
 
     /// Without a `prev_moves` entry the countermove table must not be updated.
@@ -3253,7 +4336,10 @@ mod tests {
         ctx.record_cutoff(5, 3, cutoff_mv);
         // No prev_move was set, so no countermove should be stored anywhere.
         let any_set = ctx.countermoves.iter().flatten().any(|e| e.is_some());
-        assert!(!any_set, "No countermove must be stored when prev_move is absent");
+        assert!(
+            !any_set,
+            "No countermove must be stored when prev_move is absent"
+        );
     }
 
     /// The countermove heuristic must not alter the final search score — it is
@@ -3268,8 +4354,17 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4");
         let (score1, _) = alpha_beta(
-            &mut board, &c, &tt1, &mut ctx1,
-            5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board,
+            &c,
+            &tt1,
+            &mut ctx1,
+            5,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
 
         // Pre-populate countermoves with arbitrary (potentially misleading) data.
@@ -3283,12 +4378,23 @@ mod tests {
         let mut board2 = ChessBoard::new();
         board2.set_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4");
         let (score2, _) = alpha_beta(
-            &mut board2, &c, &tt2, &mut ctx2,
-            5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board2,
+            &c,
+            &tt2,
+            &mut ctx2,
+            5,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
 
-        assert_eq!(score1, score2,
-            "Countermove table content must not change the search score ({score1} vs {score2})");
+        assert_eq!(
+            score1, score2,
+            "Countermove table content must not change the search score ({score1} vs {score2})"
+        );
     }
 
     // ── Pawn hash (tested via evaluate_board in board_evaluation.rs) ──────────
@@ -3304,18 +4410,38 @@ mod tests {
         let tt = TranspositionTable::new(1 << 16);
         let mut ctx = SearchContext::new();
         let (score1, _) = alpha_beta(
-            &mut board, &c, &tt, &mut ctx,
-            5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            5,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
         // Second call: pawn hash is now warm.
         let tt2 = TranspositionTable::new(1 << 16);
         let mut ctx2 = SearchContext::new();
         let (score2, _) = alpha_beta(
-            &mut board, &c, &tt2, &mut ctx2,
-            5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board,
+            &c,
+            &tt2,
+            &mut ctx2,
+            5,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
-        assert_eq!(score1, score2,
-            "Score must be identical with warm pawn cache ({score1} vs {score2})");
+        assert_eq!(
+            score1, score2,
+            "Score must be identical with warm pawn cache ({score1} vs {score2})"
+        );
     }
 
     // ── Greek Gift sacrifice ──────────────────────────────────────────────────
@@ -3338,8 +4464,17 @@ mod tests {
         board.set_from_fen("r3r1k1/ppq2ppp/n1pb1p2/8/3P2b1/2PB1N2/PPQ2PPP/R1B2RK1 w - - 4 12");
 
         let (_, mv) = alpha_beta(
-            &mut board, &c, &tt, &mut ctx,
-            7, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            7,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
         let mv = mv.expect("Engine must return a move");
 
@@ -3347,7 +4482,8 @@ mod tests {
             (mv.start_square(), mv.target_square()),
             (19, 55),
             "Engine must find Greek Gift Bxh7+ (d3→h7, sq 19→55), got {}→{}",
-            mv.start_square(), mv.target_square()
+            mv.start_square(),
+            mv.target_square()
         );
     }
 
@@ -3368,8 +4504,17 @@ mod tests {
         board.set_from_fen("r1b1r1k1/ppq2ppp/n1pb1p2/8/3P4/2PB1N2/PPQ2PPP/R1B2RK1 b - - 3 11");
 
         let (_, mv) = alpha_beta(
-            &mut board, &c, &tt, &mut ctx,
-            6, 0, i32::MIN + 1, i32::MAX, false, true, None,
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            6,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            false,
+            true,
+            None,
         );
         let mv = mv.expect("Engine must return a move");
 
@@ -3403,8 +4548,17 @@ mod tests {
         board.set_from_fen("3r1rk1/1p4pp/p2qp3/3p1B2/8/P3QN1P/1PP2P2/3nR1K1 w - - 0 20");
 
         let (_, mv) = alpha_beta(
-            &mut board, &c, &tt, &mut ctx,
-            7, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            7,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
         let mv = mv.expect("Engine must return a move");
 
@@ -3413,7 +4567,8 @@ mod tests {
             (mv.start_square(), mv.target_square()),
             (37, 44),
             "Engine must play Be6+ (f5→e6, sq 37→44), got {}→{}",
-            mv.start_square(), mv.target_square()
+            mv.start_square(),
+            mv.target_square()
         );
     }
 
@@ -3431,8 +4586,17 @@ mod tests {
         board.set_from_fen("3r1rk1/1p4pp/p2qp3/3p1B2/8/P3QN1P/1PP2P2/3nR1K1 w - - 0 20");
 
         let (_, mv) = alpha_beta(
-            &mut board, &c, &tt, &mut ctx,
-            5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            5,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
         let mv = mv.expect("Engine must return a move");
 
@@ -3478,8 +4642,10 @@ mod tests {
         // White is winning: K+P vs lone king with pawn on rank 6.
         // A positive score is required; without the fix LMP could prune
         // the decisive king step and mis-evaluate to ~0 or even negative.
-        assert!(score > 0,
-            "K+P vs K (Pa6 advanced) must be winning for white at depth 9, got {score}");
+        assert!(
+            score > 0,
+            "K+P vs K (Pa6 advanced) must be winning for white at depth 9, got {score}"
+        );
     }
 
     /// Symmetric: black K+P endgame must be scored as winning for black
@@ -3492,8 +4658,10 @@ mod tests {
         board.set_from_fen("8/8/8/8/8/k7/1p6/K7 b - - 0 1");
         let (score, mv) = alpha_beta_root(&mut board, &c, None, 9, false);
         assert!(mv.is_some(), "Must find a move at depth 9 for black");
-        assert!(score < 0,
-            "Black K+P (Pb2 advanced) must be winning (score < 0 from white's view), got {score}");
+        assert!(
+            score < 0,
+            "Black K+P (Pb2 advanced) must be winning (score < 0 from white's view), got {score}"
+        );
     }
 
     // ── Fix 2: RFP depth limit ────────────────────────────────────────────────
@@ -3516,8 +4684,10 @@ mod tests {
         board.set_from_fen("7k/P7/8/8/8/8/8/K7 w - - 0 1");
         let (score, mv) = alpha_beta_root(&mut board, &c, None, 8, true);
         assert!(mv.is_some(), "Must find a move at depth 8");
-        assert!(score > 0,
-            "K+P (a7 pawn) vs lone king must be winning at depth 8, got {score}");
+        assert!(
+            score > 0,
+            "K+P (a7 pawn) vs lone king must be winning at depth 8, got {score}"
+        );
     }
 
     /// RFP must still fire at depth ≤ 7 to preserve search efficiency.
@@ -3527,7 +4697,7 @@ mod tests {
     fn rfp_still_active_at_depth_5() {
         let c = conductor();
         let tt = TranspositionTable::new(1 << 16);
-        let mut ctx_rfp    = SearchContext::new();
+        let mut ctx_rfp = SearchContext::new();
         let ctx_no_rfp = SearchContext::new();
 
         // Materially crushing position: white has queen + rook vs lone king.
@@ -3535,12 +4705,24 @@ mod tests {
         board.set_from_fen("7k/8/8/8/8/8/8/K3QR2 w - - 0 1");
 
         let (score, _) = alpha_beta(
-            &mut board, &c, &tt, &mut ctx_rfp, 5, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx_rfp,
+            5,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
         // Both should find a very high score; just assert it's positive.
         let _ = ctx_no_rfp;
-        assert!(score > 500,
-            "K+Q+R vs K must score very high at depth 5 (RFP active), got {score}");
+        assert!(
+            score > 500,
+            "K+Q+R vs K must score very high at depth 5 (RFP active), got {score}"
+        );
     }
 
     // ── Fix 3: Quiescence depth ───────────────────────────────────────────────
@@ -3562,12 +4744,23 @@ mod tests {
         let tt = TranspositionTable::new(1 << 14);
         let mut ctx = SearchContext::new();
         let (score, _) = alpha_beta(
-            &mut board, &c, &tt, &mut ctx,
-            0, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            0,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
         // Stand-pat from a symmetric position; allow a small PST deviation.
-        assert!(score.abs() < 200,
-            "Symmetric 3-rook position must evaluate close to 0, got {score}");
+        assert!(
+            score.abs() < 200,
+            "Symmetric 3-rook position must evaluate close to 0, got {score}"
+        );
     }
 
     /// Qsearch must correctly handle a long capture-recapture chain and not
@@ -3592,13 +4785,24 @@ mod tests {
         let tt = TranspositionTable::new(1 << 14);
         let mut ctx = SearchContext::new();
         let (score, _) = alpha_beta(
-            &mut board, &c, &tt, &mut ctx,
-            0, 0, i32::MIN + 1, i32::MAX, true, true, None,
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            0,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
         );
         // After resolving the full exchange the score must not be extreme
         // (within ±700 cp to allow for PST asymmetry in the starting position).
-        assert!(score.abs() < 700,
-            "After a 4-rook symmetric exchange chain the score must not be extreme, got {score}");
+        assert!(
+            score.abs() < 700,
+            "After a 4-rook symmetric exchange chain the score must not be extreme, got {score}"
+        );
     }
 
     /// Board state must be clean after a very deep (depth=12) search that
@@ -3610,8 +4814,11 @@ mod tests {
         board.set_from_fen("8/4kp2/8/1p2P1KP/8/8/8/8 w - - 0 1");
         let hash_before = board.current_hash();
         alpha_beta_root(&mut board, &c, None, 10, true);
-        assert_eq!(board.current_hash(), hash_before,
-            "Board must be clean after depth-10 endgame search (LMP/RFP/qsearch all changed)");
+        assert_eq!(
+            board.current_hash(),
+            hash_before,
+            "Board must be clean after depth-10 endgame search (LMP/RFP/qsearch all changed)"
+        );
     }
 
     /// Null-move test: note that the futility margin (200·depth) was NOT changed.
@@ -3649,22 +4856,22 @@ mod tests {
 
     #[test]
     fn halfkp_piece_slot_ours() {
-        assert_eq!(halfkp_piece_slot(PieceType::Pawn,   true), 0);
+        assert_eq!(halfkp_piece_slot(PieceType::Pawn, true), 0);
         assert_eq!(halfkp_piece_slot(PieceType::Knight, true), 1);
         assert_eq!(halfkp_piece_slot(PieceType::Bishop, true), 2);
-        assert_eq!(halfkp_piece_slot(PieceType::Rook,   true), 3);
-        assert_eq!(halfkp_piece_slot(PieceType::Queen,  true), 4);
-        assert_eq!(halfkp_piece_slot(PieceType::King,   true), 5);
+        assert_eq!(halfkp_piece_slot(PieceType::Rook, true), 3);
+        assert_eq!(halfkp_piece_slot(PieceType::Queen, true), 4);
+        assert_eq!(halfkp_piece_slot(PieceType::King, true), 5);
     }
 
     #[test]
     fn halfkp_piece_slot_theirs() {
-        assert_eq!(halfkp_piece_slot(PieceType::Pawn,   false), 6);
+        assert_eq!(halfkp_piece_slot(PieceType::Pawn, false), 6);
         assert_eq!(halfkp_piece_slot(PieceType::Knight, false), 7);
         assert_eq!(halfkp_piece_slot(PieceType::Bishop, false), 8);
-        assert_eq!(halfkp_piece_slot(PieceType::Rook,   false), 9);
-        assert_eq!(halfkp_piece_slot(PieceType::Queen,  false), 10);
-        assert_eq!(halfkp_piece_slot(PieceType::King,   false), 11);
+        assert_eq!(halfkp_piece_slot(PieceType::Rook, false), 9);
+        assert_eq!(halfkp_piece_slot(PieceType::Queen, false), 10);
+        assert_eq!(halfkp_piece_slot(PieceType::King, false), 11);
     }
 
     // ── Accumulator stack ─────────────────────────────────────────────────
@@ -3672,8 +4879,11 @@ mod tests {
     #[test]
     fn acc_size_covers_max_ply_plus_quiescence() {
         // ACC_SIZE must be big enough for MAX_PLY main-search plies + 12 qsearch plies.
-        assert!(ACC_SIZE >= MAX_PLY + 12,
-            "ACC_SIZE={ACC_SIZE} too small; need at least MAX_PLY+12={}", MAX_PLY + 12);
+        assert!(
+            ACC_SIZE >= MAX_PLY + 12,
+            "ACC_SIZE={ACC_SIZE} too small; need at least MAX_PLY+12={}",
+            MAX_PLY + 12
+        );
     }
 
     #[test]
@@ -3687,8 +4897,10 @@ mod tests {
         let mut mv = ChessMove::new(4, 6);
         mv.set_piece(ChessPiece::new(PieceType::King, true));
 
-        assert!(!ctx.acc_push(0, &mv, &board),
-            "acc_push must return false (no-op) when acc_valid=false");
+        assert!(
+            !ctx.acc_push(0, &mv, &board),
+            "acc_push must return false (no-op) when acc_valid=false"
+        );
     }
 
     #[test]
@@ -3701,8 +4913,10 @@ mod tests {
         let mut mv = ChessMove::new(4, 6); // e1→g1, king
         mv.set_piece(ChessPiece::new(PieceType::King, true));
 
-        assert!(ctx.acc_push(0, &mv, &board),
-            "King move must return true (signals caller to call acc_recompute)");
+        assert!(
+            ctx.acc_push(0, &mv, &board),
+            "King move must return true (signals caller to call acc_recompute)"
+        );
     }
 
     #[test]
@@ -3715,8 +4929,10 @@ mod tests {
         let mut mv = ChessMove::new(12, 28); // e2→e4, pawn
         mv.set_piece(ChessPiece::new(PieceType::Pawn, true));
 
-        assert!(!ctx.acc_push(0, &mv, &board),
-            "Non-king move must return false (incremental update applied, no recompute needed)");
+        assert!(
+            !ctx.acc_push(0, &mv, &board),
+            "Non-king move must return false (incremental update applied, no recompute needed)"
+        );
     }
 
     #[test]
@@ -3740,10 +4956,14 @@ mod tests {
         ctx.acc_push(0, &mv, &board);
 
         // No model → delta operations are no-ops → child must equal parent.
-        assert_eq!(ctx.acc_white[1], ctx.acc_white[0],
-            "acc_white[1] must be initialised from acc_white[0]");
-        assert_eq!(ctx.acc_black[1], ctx.acc_black[0],
-            "acc_black[1] must be initialised from acc_black[0]");
+        assert_eq!(
+            ctx.acc_white[1], ctx.acc_white[0],
+            "acc_white[1] must be initialised from acc_white[0]"
+        );
+        assert_eq!(
+            ctx.acc_black[1], ctx.acc_black[0],
+            "acc_black[1] must be initialised from acc_black[0]"
+        );
     }
 
     #[test]
@@ -3763,6 +4983,9 @@ mod tests {
         mv.set_piece(ChessPiece::new(PieceType::Pawn, true));
         ctx.acc_push(0, &mv, &board);
 
-        assert_eq!(ctx.acc_white[0], original, "acc_push must never modify the parent ply");
+        assert_eq!(
+            ctx.acc_white[0], original,
+            "acc_push must never modify the parent ply"
+        );
     }
 }
