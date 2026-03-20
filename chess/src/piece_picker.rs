@@ -367,10 +367,13 @@ pub fn drop_piece(
 
                         // Check if the AI has any legal moves before starting the search.
                         let ai_is_white = *player_color == PlayerColor::Black;
-                        let ai_moves = get_all_legal_moves_for_color(
+                        let mut ai_moves = Vec::new();
+                        get_all_legal_moves_for_color(
                             &mut chess_board.chess_board,
                             &move_generator_res.magic,
                             ai_is_white,
+                            &mut ai_moves,
+                            &mut Vec::new(),
                         );
                         if ai_moves.is_empty() {
                             if move_generator_res.magic.is_king_in_check(&chess_board.chess_board, ai_is_white) {

@@ -117,8 +117,8 @@ fn find_start_square(
             }
         }
 
-        let pseudo_moves =
-            get_pseudo_legal_move_list_from_square(sq, board, &conductor, is_white);
+        let mut pseudo_moves = Vec::new();
+        get_pseudo_legal_move_list_from_square(sq, board, &conductor, is_white, &mut pseudo_moves);
 
         for mv in pseudo_moves {
             if mv.target_square() != target_square {

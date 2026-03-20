@@ -365,7 +365,8 @@ impl OpeningBook {
 
                 // Advance the board using the legal move (picks up correct flags).
                 let is_white = board.is_white_active();
-                let legal = get_all_legal_moves_for_color(&mut board, conductor, is_white);
+                let mut legal = Vec::new();
+                get_all_legal_moves_for_color(&mut board, conductor, is_white, &mut legal, &mut Vec::new());
                 if let Some(mut m) = legal
                     .into_iter()
                     .find(|m| m.start_square() == from && m.target_square() == to)
@@ -387,7 +388,8 @@ impl OpeningBook {
                 let parsed = ChessMove::from_san(uci);
                 let from = parsed.start_square();
                 let to = parsed.target_square();
-                let legal = get_all_legal_moves_for_color(&mut board, conductor, is_white);
+                let mut legal = Vec::new();
+                get_all_legal_moves_for_color(&mut board, conductor, is_white, &mut legal, &mut Vec::new());
                 if let Some(mut m) = legal
                     .into_iter()
                     .find(|m| m.start_square() == from && m.target_square() == to)

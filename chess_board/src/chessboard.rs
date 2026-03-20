@@ -410,7 +410,6 @@ impl ChessBoard {
         let target_square_bb = Bitboard::from_square_index(target_square);
 
         let is_white = self.is_white_active();
-        //self.white.is_set(start_square as usize);
         if (is_white && !self.white.is_set(start_square as usize))
             || (!is_white && !self.black.is_set(start_square as usize))
         {
@@ -418,14 +417,21 @@ impl ChessBoard {
             return false;
         }
 
+        // Capture early state for incremental Zobrist hash.
+        let old_castling_rights = self.castling_rights;
+        let mut h = self.current_hash();
+        let t = ZobristTable::get();
+
         if let Some(piece_type) = self.get_piece_type(start_square) {
             chess_move.set_piece(ChessPiece::new(piece_type, is_white));
+
+            // XOR out moving piece from source square.
+            h ^= t.pieces[ZobristTable::piece_idx(piece_type, is_white)][start_square as usize];
 
             // Check for en passant
             if piece_type == PieceType::Pawn
                 && chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG)
             {
-                // Calculate the position of the captured pawn
                 let captured_pawn_square = if is_white {
                     target_square - 8
                 } else {
@@ -433,10 +439,11 @@ impl ChessBoard {
                 };
 
                 if let Some(captured_pawn) = self.get_piece_at_square(captured_pawn_square) {
-                    chess_move.set_capture(captured_pawn); //hmm, this is not a capture?
-                                                           // Remove the captured pawn
+                    chess_move.set_capture(captured_pawn);
                     let captured_pawn_bb = Bitboard::from_square_index(captured_pawn_square);
                     self.clear_piece_bitboard(PieceType::Pawn, captured_pawn_bb, !is_white);
+                    // XOR out captured pawn
+                    h ^= t.pieces[ZobristTable::piece_idx(PieceType::Pawn, !is_white)][captured_pawn_square as usize];
                 } else {
                     chess_move.clear_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG);
                 }
@@ -449,8 +456,8 @@ impl ChessBoard {
                 }
                 chess_move.set_capture(captured_piece);
                 self.clear_piece_bitboard(captured_piece.piece_type(), target_square_bb, !is_white);
-            } else {
-                // println!("No piece captured");
+                // XOR out captured piece
+                h ^= t.pieces[ZobristTable::piece_idx(captured_piece.piece_type(), !is_white)][target_square as usize];
             }
 
             // store history before altering castling rights/halfmove clock!
@@ -465,16 +472,14 @@ impl ChessBoard {
                 self.halfmove_clock += 1;
             }
             if chess_move.has_flag(ChessMove::CASTLE_FLAG) {
-                // Determine rook's initial and final positions based on the castling type
                 let (rook_start_square, rook_target_square) = match target_square {
-                    6 => (7, 5),    // White kingside castling
-                    2 => (0, 3),    // White queenside castling
-                    62 => (63, 61), // Black kingside castling
-                    58 => (56, 59), // Black queenside castling
+                    6 => (7u16, 5u16),
+                    2 => (0u16, 3u16),
+                    62 => (63u16, 61u16),
+                    58 => (56u16, 59u16),
                     _ => panic!("Invalid castling move"),
                 };
 
-                // Move the rook
                 let rook_start_square_bb = Bitboard::from_square_index(rook_start_square);
                 let rook_target_square_bb = Bitboard::from_square_index(rook_target_square);
                 self.update_piece_bitboard(
@@ -484,7 +489,10 @@ impl ChessBoard {
                 );
                 self.update_color_bitboard(is_white, rook_start_square_bb, rook_target_square_bb);
 
-                // Update castling rights
+                // XOR out rook at old position, XOR in at new position
+                h ^= t.pieces[ZobristTable::piece_idx(PieceType::Rook, is_white)][rook_start_square as usize];
+                h ^= t.pieces[ZobristTable::piece_idx(PieceType::Rook, is_white)][rook_target_square as usize];
+
                 self.castling_rights &= if is_white {
                     !(CastlingRights::WhiteKingSide as u8 | CastlingRights::WhiteQueenSide as u8)
                 } else {
@@ -511,9 +519,6 @@ impl ChessBoard {
                     self.castling_rights &= !(CastlingRights::BlackKingSide as u8 | CastlingRights::BlackQueenSide as u8)
                 }
             }
-            // If an opponent's rook is captured on its starting square, clear the
-            // corresponding castling right.  Without this, the engine could
-            // generate an illegal castling move using a rook that no longer exists.
             if let Some(captured) = chess_move.capture {
                 if captured.piece_type() == PieceType::Rook {
                     match target_square {
@@ -529,19 +534,28 @@ impl ChessBoard {
             // Update the piece's bitboard and color bitboards for regular moves
             self.update_piece_bitboard(piece_type, start_square_bb, target_square_bb);
             self.update_color_bitboard(is_white, start_square_bb, target_square_bb);
+
+            // XOR in moving piece at target square.
+            h ^= t.pieces[ZobristTable::piece_idx(piece_type, is_white)][target_square as usize];
+
             // Handle pawn promotion
             if let Some(promotion_piece) = chess_move.promotion_piece_type() {
-                // Clear the pawn from the target square and replace it with the promotion piece
                 self.clear_piece_bitboard(PieceType::Pawn, target_square_bb, is_white);
                 self.set_piece_bitboard(promotion_piece, target_square_bb, is_white);
+                // XOR out pawn at target, XOR in promoted piece at target.
+                h ^= t.pieces[ZobristTable::piece_idx(PieceType::Pawn, is_white)][target_square as usize];
+                h ^= t.pieces[ZobristTable::piece_idx(promotion_piece, is_white)][target_square as usize];
             }
         }
         self.white_is_active = !self.white_is_active;
-        // Increment fullmove number after black's move.
         if !is_white {
             self.fullmove_number += 1;
         }
-        let h = self.compute_hash();
+        // XOR out old castling rights, XOR in new castling rights.
+        h ^= t.castling[(old_castling_rights & 0xF) as usize];
+        h ^= t.castling[(self.castling_rights & 0xF) as usize];
+        // Toggle side to move.
+        h ^= t.side_to_move;
         self.position_history.push(h);
         true
     }
@@ -988,5 +1002,64 @@ mod tests {
         board.undo_null_move();
         // Undo restores the original last move.
         assert!(board.get_last_move().map_or(false, |m| m.has_flag(ChessMove::PAWN_TWO_UP_FLAG)));
+    }
+
+    #[test]
+    fn test_incremental_hash_matches_full_recompute() {
+        let c = crate::zobrist::ZobristTable::get(); // just ensure it compiles
+        let _ = c;
+
+        fn check(board: &ChessBoard, label: &str) {
+            let incremental = board.current_hash();
+            let full = board.compute_hash();
+            assert_eq!(incremental, full, "Hash mismatch after {label}");
+        }
+
+        // 1. Normal pawn push e2e4
+        let mut board = ChessBoard::new();
+        let mut mv = ChessMove::new_with_flag(12, 28, ChessMove::PAWN_TWO_UP_FLAG);
+        board.make_move(&mut mv);
+        check(&board, "e2e4");
+        let h_after_e4 = board.current_hash();
+        board.undo_move();
+        assert_eq!(board.current_hash(), board.compute_hash(), "Hash after undo e4");
+
+        // 2. Capture
+        board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
+        let mut mv = ChessMove::new(27, 35); // Qd4xQd5
+        board.make_move(&mut mv);
+        check(&board, "Qd4xd5 capture");
+        board.undo_move();
+        assert_eq!(board.current_hash(), board.compute_hash(), "Hash after undo capture");
+
+        // 3. En passant capture
+        board.set_from_fen("8/8/8/pP6/8/8/8/4K2k w - a6 0 1");
+        let mut mv = ChessMove::new_with_flag(33, 40, ChessMove::EN_PASSANT_CAPTURE_FLAG);
+        board.make_move(&mut mv);
+        check(&board, "en passant");
+        board.undo_move();
+        assert_eq!(board.current_hash(), board.compute_hash(), "Hash after undo en passant");
+
+        // 4. Castling kingside
+        board.set_from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        let mut mv = ChessMove::new_with_flag(4, 6, ChessMove::CASTLE_FLAG);
+        board.make_move(&mut mv);
+        check(&board, "white kingside castle");
+        board.undo_move();
+        assert_eq!(board.current_hash(), board.compute_hash(), "Hash after undo castle");
+
+        // 5. Promotion
+        board.set_from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1");
+        let mut mv = ChessMove::new_with_flag(48, 56, ChessMove::PROMOTE_TO_QUEEN_FLAG);
+        board.make_move(&mut mv);
+        check(&board, "promotion to queen");
+        board.undo_move();
+        assert_eq!(board.current_hash(), board.compute_hash(), "Hash after undo promotion");
+
+        // Re-check that e4 hash matches expected
+        let mut board2 = ChessBoard::new();
+        let mut mv2 = ChessMove::new_with_flag(12, 28, ChessMove::PAWN_TWO_UP_FLAG);
+        board2.make_move(&mut mv2);
+        assert_eq!(board2.current_hash(), h_after_e4, "e4 hash reproducible");
     }
 }

@@ -223,6 +223,14 @@ pub struct SearchContext {
     pub acc_white: Box<[[i16; ACCUM_DIM]; ACC_SIZE]>,
     pub acc_black: Box<[[i16; ACCUM_DIM]; ACC_SIZE]>,
     pub acc_valid: bool,
+    /// Per-ply move lists, reused across depths.
+    move_lists: Vec<Vec<ChessMove>>,
+    /// Scratch buffer for pseudo-legal move generation per piece.
+    pub pseudo_buf: Vec<ChessMove>,
+    /// Scratch buffers for move ordering — reused each call.
+    good_captures_buf: Vec<(i32, ChessMove)>,
+    bad_captures_buf: Vec<(i32, ChessMove)>,
+    quiets_buf: Vec<ChessMove>,
 }
 
 impl SearchContext {
@@ -241,6 +249,11 @@ impl SearchContext {
             acc_white: Box::new([[0i16; ACCUM_DIM]; ACC_SIZE]),
             acc_black: Box::new([[0i16; ACCUM_DIM]; ACC_SIZE]),
             acc_valid: false,
+            move_lists: (0..MAX_PLY + 16).map(|_| Vec::with_capacity(64)).collect(),
+            pseudo_buf: Vec::with_capacity(64),
+            good_captures_buf: Vec::with_capacity(32),
+            bad_captures_buf: Vec::with_capacity(16),
+            quiets_buf: Vec::with_capacity(64),
         }
     }
 
@@ -531,7 +544,10 @@ fn quiescence(
             alpha = stand_pat;
         }
 
-        let mut captures = get_all_legal_captures_for_color(chess_board, conductor, is_white);
+        let mut captures = Vec::new();
+        let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
+        get_all_legal_captures_for_color(chess_board, conductor, is_white, &mut captures, &mut pseudo_buf);
+        ctx.pseudo_buf = pseudo_buf;
         captures.sort();
 
         for mut chess_move in captures {
@@ -571,7 +587,10 @@ fn quiescence(
             beta = stand_pat;
         }
 
-        let mut captures = get_all_legal_captures_for_color(chess_board, conductor, is_white);
+        let mut captures = Vec::new();
+        let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
+        get_all_legal_captures_for_color(chess_board, conductor, is_white, &mut captures, &mut pseudo_buf);
+        ctx.pseudo_buf = pseudo_buf;
         captures.sort();
 
         for mut chess_move in captures {
@@ -630,6 +649,9 @@ fn order_moves(
     board: &ChessBoard,
     conductor: &PieceConductor,
     is_white: bool,
+    good_captures_buf: &mut Vec<(i32, ChessMove)>,
+    bad_captures_buf: &mut Vec<(i32, ChessMove)>,
+    quiets_buf: &mut Vec<ChessMove>,
 ) {
     // Pull out the TT move first.
     let tt_entry = tt_move.and_then(|tt_m| {
@@ -642,10 +664,12 @@ fn order_moves(
             .map(|i| moves.swap_remove(i))
     });
 
-    // Partition into captures/promotions vs quiet, scoring captures by SEE.
-    let mut good_captures: Vec<(i32, ChessMove)> = Vec::with_capacity(moves.len());
-    let mut bad_captures:  Vec<(i32, ChessMove)> = Vec::with_capacity(4);
-    let mut quiets: Vec<ChessMove> = Vec::with_capacity(moves.len());
+    good_captures_buf.clear();
+    bad_captures_buf.clear();
+    quiets_buf.clear();
+    let good_captures = good_captures_buf;
+    let bad_captures = bad_captures_buf;
+    let quiets = quiets_buf;
 
     for m in moves.drain(..) {
         if m.capture.is_some() || m.is_promotion() {
@@ -714,13 +738,13 @@ fn order_moves(
     if let Some(tt_m) = tt_entry {
         moves.push(tt_m);
     }
-    moves.extend(good_captures.into_iter().map(|(_, m)| m));
+    moves.extend(good_captures.iter().map(|(_, m)| *m));
     moves.extend(killer_entries);
     if let Some(cm) = countermove_entry {
         moves.push(cm);
     }
-    moves.extend(quiets);
-    moves.extend(bad_captures.into_iter().map(|(_, m)| m));
+    moves.extend(quiets.drain(..));
+    moves.extend(bad_captures.iter().map(|(_, m)| *m));
 }
 
 // ── Zugzwang guard ────────────────────────────────────────────────────────────
@@ -756,10 +780,10 @@ pub fn alpha_beta(
     mut beta: i32,
     is_white: bool,
     null_move_allowed: bool,
-    stop: Option<Arc<AtomicBool>>,
+    stop: Option<&'_ AtomicBool>,
 ) -> (i32, Option<ChessMove>) {
     // Abort immediately if the hard deadline fired.
-    if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
+    if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
         return (alpha, None);
     }
     ctx.nodes += 1;
@@ -912,7 +936,7 @@ pub fn alpha_beta(
         let null_score = alpha_beta(
             chess_board, conductor, tt, ctx,
             depth - 1 - r, ply + 1, alpha, beta, !is_white,
-            false, stop.clone(),
+            false, stop,
         ).0;
         chess_board.undo_null_move();
 
@@ -932,7 +956,10 @@ pub fn alpha_beta(
         });
         if pc_feasible {
             let pc_depth = (depth - 4).max(1);
-            let captures = get_all_legal_captures_for_color(chess_board, conductor, is_white);
+            let mut captures = Vec::new();
+            let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
+            get_all_legal_captures_for_color(chess_board, conductor, is_white, &mut captures, &mut pseudo_buf);
+            ctx.pseudo_buf = pseudo_buf;
             for mut pc_mv in captures {
                 let see_val = see(chess_board, conductor,
                     pc_mv.start_square() as usize, pc_mv.target_square() as usize, is_white);
@@ -945,7 +972,7 @@ pub fn alpha_beta(
                 } else { true };
                 if !likely { continue; }
 
-                if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) { break; }
+                if stop.map_or(false, |s| s.load(Ordering::Relaxed)) { break; }
 
                 let pc_king_moved = ctx.acc_push(ply, &pc_mv, chess_board);
                 chess_board.make_move(&mut pc_mv);
@@ -958,7 +985,7 @@ pub fn alpha_beta(
                 let (pc_score, _) = alpha_beta(
                     chess_board, conductor, tt, ctx,
                     pc_depth, ply + 1, pc_alpha, pc_beta, !is_white,
-                    false, stop.clone(),
+                    false, stop,
                 );
                 chess_board.undo_move();
 
@@ -983,7 +1010,7 @@ pub fn alpha_beta(
             chess_board, conductor, tt, ctx,
             depth - 2, ply, alpha, beta, is_white,
             false, // no null move in IID to avoid recursion overhead
-            stop.clone(),
+            stop,
         );
         // Re-probe the TT — the reduced search will have stored its best move.
         tt.probe(hash).and_then(|e| e.best_move())
@@ -1025,7 +1052,7 @@ pub fn alpha_beta(
                     se_beta - 1, se_beta,
                     is_white,
                     false,
-                    stop.clone(),
+                    stop,
                 );
                 ctx.excluded_move[p] = None;
                 (se_score < se_beta, se_score, se_beta)
@@ -1039,7 +1066,10 @@ pub fn alpha_beta(
         (false, 0, 0)
     };
 
-    let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+    let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
+    let mut legal_moves = std::mem::take(&mut ctx.move_lists[ply.min(MAX_PLY - 1)]);
+    get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal_moves, &mut pseudo_buf);
+    ctx.pseudo_buf = pseudo_buf;
 
     if legal_moves.is_empty() {
         if in_check {
@@ -1084,7 +1114,19 @@ pub fn alpha_beta(
     });
 
     order_moves(&mut legal_moves, tt_move, killers, countermove, history, capture_history,
-                ch1, ch2, prev1, prev2, chess_board, conductor, is_white);
+                ch1, ch2, prev1, prev2, chess_board, conductor, is_white,
+                {
+                    let good_cap_ptr: *mut Vec<(i32, ChessMove)> = &mut ctx.good_captures_buf;
+                    unsafe { &mut *good_cap_ptr }
+                },
+                {
+                    let bad_cap_ptr: *mut Vec<(i32, ChessMove)> = &mut ctx.bad_captures_buf;
+                    unsafe { &mut *bad_cap_ptr }
+                },
+                {
+                    let quiets_ptr: *mut Vec<ChessMove> = &mut ctx.quiets_buf;
+                    unsafe { &mut *quiets_ptr }
+                });
     // `killers` borrow of ctx ends here (it is not used again below).
 
     let mut best_move: Option<ChessMove> = None;
@@ -1096,7 +1138,8 @@ pub fn alpha_beta(
         let mut tried_quiets: Vec<ChessMove> = Vec::with_capacity(8);
 
         let mut quiet_count = 0usize;
-        for (move_index, mut chess_move) in legal_moves.into_iter().enumerate() {
+        for move_index in 0..legal_moves.len() {
+            let mut chess_move = legal_moves[move_index];
             // Skip the excluded move (used during singular extension searches).
             if ctx.excluded_move[p].map_or(false, |em| em == chess_move) {
                 continue;
@@ -1179,26 +1222,26 @@ pub fn alpha_beta(
             } else if move_index == 0 {
                 // PV node: full window search for first move (with possible SE).
                 alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1 + move_ext, ply + 1, alpha, beta, false, true, stop.clone()).0
+                    depth - 1 + move_ext, ply + 1, alpha, beta, false, true, stop).0
             } else if lmr_r > 0 {
                 // LMR: reduced null-window search.
                 let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1 - lmr_r, ply + 1, alpha, alpha + 1, false, true, stop.clone()).0;
+                    depth - 1 - lmr_r, ply + 1, alpha, alpha + 1, false, true, stop).0;
                 if reduced > alpha {
                     // Reduced search beat alpha — re-search at full depth, full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, false, true, stop.clone()).0
+                        depth - 1, ply + 1, alpha, beta, false, true, stop).0
                 } else {
                     reduced
                 }
             } else {
                 // PVS: null-window search for non-PV moves.
                 let score = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, alpha, alpha + 1, false, true, stop.clone()).0;
+                    depth - 1, ply + 1, alpha, alpha + 1, false, true, stop).0;
                 if score > alpha && score < beta {
                     // Fail high — re-search with full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, false, true, stop.clone()).0
+                        depth - 1, ply + 1, alpha, beta, false, true, stop).0
                 } else {
                     score
                 }
@@ -1233,6 +1276,8 @@ pub fn alpha_beta(
                 break;
             }
         }
+        legal_moves.clear();
+        ctx.move_lists[ply.min(MAX_PLY - 1)] = legal_moves;
 
         let flag = if max_eval >= original_beta {
             TtFlag::LowerBound
@@ -1248,7 +1293,8 @@ pub fn alpha_beta(
         let mut tried_quiets: Vec<ChessMove> = Vec::with_capacity(8);
 
         let mut quiet_count = 0usize;
-        for (move_index, mut chess_move) in legal_moves.into_iter().enumerate() {
+        for move_index in 0..legal_moves.len() {
+            let mut chess_move = legal_moves[move_index];
             // Skip the excluded move (used during singular extension searches).
             if ctx.excluded_move[p].map_or(false, |em| em == chess_move) {
                 continue;
@@ -1315,26 +1361,26 @@ pub fn alpha_beta(
             } else if move_index == 0 {
                 // PV node: full window search for first move (with possible SE).
                 alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1 + move_ext, ply + 1, alpha, beta, true, true, stop.clone()).0
+                    depth - 1 + move_ext, ply + 1, alpha, beta, true, true, stop).0
             } else if lmr_r > 0 {
                 // LMR: reduced null-window search.
                 let reduced = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1 - lmr_r, ply + 1, beta - 1, beta, true, true, stop.clone()).0;
+                    depth - 1 - lmr_r, ply + 1, beta - 1, beta, true, true, stop).0;
                 if reduced < beta {
                     // Reduced search beat beta — re-search at full depth, full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, true, true, stop.clone()).0
+                        depth - 1, ply + 1, alpha, beta, true, true, stop).0
                 } else {
                     reduced
                 }
             } else {
                 // PVS: null-window search for non-PV moves.
                 let score = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, ply + 1, beta - 1, beta, true, true, stop.clone()).0;
+                    depth - 1, ply + 1, beta - 1, beta, true, true, stop).0;
                 if score < beta && score > alpha {
                     // Fail low — re-search with full window.
                     alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, ply + 1, alpha, beta, true, true, stop.clone()).0
+                        depth - 1, ply + 1, alpha, beta, true, true, stop).0
                 } else {
                     score
                 }
@@ -1367,6 +1413,8 @@ pub fn alpha_beta(
                 break;
             }
         }
+        legal_moves.clear();
+        ctx.move_lists[ply.min(MAX_PLY - 1)] = legal_moves;
 
         let flag = if min_eval <= original_alpha {
             TtFlag::UpperBound
@@ -1402,7 +1450,11 @@ pub fn search_root(
     stop: Option<Arc<AtomicBool>>,
     noise_cp: i32,
 ) -> (i32, Option<ChessMove>) {
-    let mut legal_moves = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+    let stop = stop.as_deref();
+    let mut legal_moves = Vec::new();
+    let mut pseudo_buf = std::mem::take(&mut ctx.pseudo_buf);
+    get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal_moves, &mut pseudo_buf);
+    ctx.pseudo_buf = pseudo_buf;
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board, conductor), None);
     }
@@ -1411,7 +1463,19 @@ pub fn search_root(
     let ch1_root: &ContHistTable = unsafe { &*ch1_ptr };
     let ch2_root: &ContHistTable = unsafe { &*ch2_ptr };
     order_moves(&mut legal_moves, prev_best, &ctx.killers[0], None, &ctx.history, &ctx.capture_history,
-                ch1_root, ch2_root, None, None, chess_board, conductor, is_white);
+                ch1_root, ch2_root, None, None, chess_board, conductor, is_white,
+                {
+                    let good_cap_ptr: *mut Vec<(i32, ChessMove)> = &mut ctx.good_captures_buf;
+                    unsafe { &mut *good_cap_ptr }
+                },
+                {
+                    let bad_cap_ptr: *mut Vec<(i32, ChessMove)> = &mut ctx.bad_captures_buf;
+                    unsafe { &mut *bad_cap_ptr }
+                },
+                {
+                    let quiets_ptr: *mut Vec<ChessMove> = &mut ctx.quiets_buf;
+                    unsafe { &mut *quiets_ptr }
+                });
 
     let mut best_move: Option<ChessMove> = legal_moves.first().copied();
 
@@ -1427,7 +1491,7 @@ pub fn search_root(
         let mut alpha = alpha;
 
         for (i, mut chess_move) in legal_moves.into_iter().enumerate() {
-            if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
+            if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
                 break;
             }
             let root_king_moved = ctx.acc_push(0, &chess_move, chess_board);
@@ -1438,13 +1502,13 @@ pub fn search_root(
                 0
             } else if i == 0 {
                 alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, 1, alpha, beta, false, true, stop.clone()).0
+                    depth - 1, 1, alpha, beta, false, true, stop).0
             } else {
                 let score = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, 1, alpha, alpha + 1, false, true, stop.clone()).0;
+                    depth - 1, 1, alpha, alpha + 1, false, true, stop).0;
                 if score > alpha && score < beta {
                     alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, 1, alpha, beta, false, true, stop.clone()).0
+                        depth - 1, 1, alpha, beta, false, true, stop).0
                 } else {
                     score
                 }
@@ -1472,7 +1536,7 @@ pub fn search_root(
         let mut beta = beta;
 
         for (i, mut chess_move) in legal_moves.into_iter().enumerate() {
-            if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
+            if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
                 break;
             }
             let root_king_moved = ctx.acc_push(0, &chess_move, chess_board);
@@ -1483,13 +1547,13 @@ pub fn search_root(
                 0
             } else if i == 0 {
                 alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, 1, alpha, beta, true, true, stop.clone()).0
+                    depth - 1, 1, alpha, beta, true, true, stop).0
             } else {
                 let score = alpha_beta(chess_board, conductor, tt, ctx,
-                    depth - 1, 1, beta - 1, beta, true, true, stop.clone()).0;
+                    depth - 1, 1, beta - 1, beta, true, true, stop).0;
                 if score < beta && score > alpha {
                     alpha_beta(chess_board, conductor, tt, ctx,
-                        depth - 1, 1, alpha, beta, true, true, stop.clone()).0
+                        depth - 1, 1, alpha, beta, true, true, stop).0
                 } else {
                     score
                 }
@@ -1527,7 +1591,8 @@ pub fn alpha_beta_root(
 ) -> (i32, Option<ChessMove>) {
     if let Some(book) = book {
         if let Some((from, to)) = book.probe(chess_board) {
-            let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+            let mut legal = Vec::new();
+            get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal, &mut Vec::new());
             if let Some(book_move) = legal
                 .into_iter()
                 .find(|m| m.start_square() == from && m.target_square() == to)
@@ -1588,7 +1653,8 @@ pub fn extract_ponder_move(
 
     // Validate: the ponder move must be legal
     let ponder = ponder.and_then(|pm| {
-        let legal = get_all_legal_moves_for_color(chess_board, conductor, opponent_white);
+        let mut legal = Vec::new();
+        get_all_legal_moves_for_color(chess_board, conductor, opponent_white, &mut legal, &mut Vec::new());
         if legal.iter().any(|m| m.start_square() == pm.start_square() && m.target_square() == pm.target_square()) {
             Some(pm)
         } else {
@@ -1664,7 +1730,8 @@ pub fn iterative_deepening_root_with_tt(
     // Book probe before spawning any threads.
     if let Some(book) = book {
         if let Some((from, to)) = book.probe(chess_board) {
-            let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+            let mut legal = Vec::new();
+            get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal, &mut Vec::new());
             if let Some(book_move) = legal
                 .into_iter()
                 .find(|m| m.start_square() == from && m.target_square() == to)
@@ -1919,11 +1986,14 @@ mod tests {
             let mut board = ChessBoard::new();
             board.set_from_fen(fen);
 
-            let mut expected: Vec<_> = get_all_legal_moves_for_color(&mut board, &c, is_white)
+            let mut all_moves_for_filter = Vec::new();
+            get_all_legal_moves_for_color(&mut board, &c, is_white, &mut all_moves_for_filter, &mut Vec::new());
+            let mut expected: Vec<_> = all_moves_for_filter
                 .into_iter()
                 .filter(|m| m.capture.is_some())
                 .collect();
-            let mut actual = get_all_legal_captures_for_color(&mut board, &c, is_white);
+            let mut actual = Vec::new();
+            get_all_legal_captures_for_color(&mut board, &c, is_white, &mut actual, &mut Vec::new());
 
             // Sort both by (start, target) for order-independent comparison.
             expected.sort_by_key(|m| (m.start_square(), m.target_square()));
@@ -2052,7 +2122,8 @@ mod tests {
         let mut board_after = board.clone();
         let mut mv_copy = m;
         board_after.make_move(&mut mv_copy);
-        let replies = get_all_legal_moves_for_color(&mut board_after, &c, false);
+        let mut replies = Vec::new();
+        get_all_legal_moves_for_color(&mut board_after, &c, false, &mut replies, &mut Vec::new());
         assert!(
             replies.is_empty(),
             "After white's best move ({}) black should have no legal replies",
@@ -2073,7 +2144,8 @@ mod tests {
         let mut board_after = board.clone();
         let mut mv_copy = m;
         board_after.make_move(&mut mv_copy);
-        let replies = get_all_legal_moves_for_color(&mut board_after, &c, true);
+        let mut replies = Vec::new();
+        get_all_legal_moves_for_color(&mut board_after, &c, true, &mut replies, &mut Vec::new());
         assert!(
             replies.is_empty(),
             "After black's best move ({}) white should have no legal replies",
@@ -2216,7 +2288,8 @@ mod tests {
         let mut board_after = board.clone();
         let mut mv_copy = m;
         board_after.make_move(&mut mv_copy);
-        let replies = get_all_legal_moves_for_color(&mut board_after, &c, false);
+        let mut replies = Vec::new();
+        get_all_legal_moves_for_color(&mut board_after, &c, false, &mut replies, &mut Vec::new());
         assert!(replies.is_empty(), "After ID's best move black should have no legal replies");
     }
 
@@ -2231,7 +2304,8 @@ mod tests {
         let mut board_after = board.clone();
         let mut mv_copy = m;
         board_after.make_move(&mut mv_copy);
-        let replies = get_all_legal_moves_for_color(&mut board_after, &c, true);
+        let mut replies = Vec::new();
+        get_all_legal_moves_for_color(&mut board_after, &c, true, &mut replies, &mut Vec::new());
         assert!(replies.is_empty(), "After ID's best move white should have no legal replies");
     }
 
@@ -2334,7 +2408,8 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("k7/8/1QK5/8/8/8/8/8 b - - 0 1");
         let c = conductor();
-        let moves = get_all_legal_moves_for_color(&mut board, &c, false);
+        let mut moves = Vec::new();
+        get_all_legal_moves_for_color(&mut board, &c, false, &mut moves, &mut Vec::new());
         assert!(moves.is_empty(), "Black should have no legal moves (stalemate)");
         let tt = TranspositionTable::new(1 << 16);
         let mut ctx = SearchContext::new();
@@ -2395,7 +2470,8 @@ mod tests {
         let c = conductor();
         let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
         let m = r.best_move.expect("Must return a move");
-        let legal = get_all_legal_moves_for_color(&mut board, &c, true);
+        let mut legal = Vec::new();
+        get_all_legal_moves_for_color(&mut board, &c, true, &mut legal, &mut Vec::new());
         assert!(legal.iter().any(|lm| lm.start_square() == m.start_square() && lm.target_square() == m.target_square()),
             "Engine must return a legal move");
     }
@@ -2769,7 +2845,8 @@ mod tests {
             let hash = board.current_hash();
             if let Some(entry) = tt.probe(hash) {
                 if let Some(tt_mv) = entry.best_move() {
-                    let legal = get_all_legal_moves_for_color(&mut board, &c, is_white);
+                    let mut legal = Vec::new();
+                    get_all_legal_moves_for_color(&mut board, &c, is_white, &mut legal, &mut Vec::new());
                     let is_legal = legal.iter().any(|m| {
                         m.start_square() == tt_mv.start_square()
                             && m.target_square() == tt_mv.target_square()

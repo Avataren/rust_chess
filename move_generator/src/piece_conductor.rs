@@ -149,29 +149,19 @@ impl PieceConductor {
         bishop_table
     }
 
-    pub fn get_rook_moves(
-        &self,
-        square: u16,
-        relevant_blockers: Bitboard,
-        chess_board: &ChessBoard,
-    ) -> Vec<ChessMove> {
+    #[inline]
+    pub fn get_rook_moves(&self, square: u16, relevant_blockers: Bitboard, chess_board: &ChessBoard, move_list: &mut Vec<ChessMove>) {
         let magic_index = Self::rook_magic_index(square as usize, chess_board.get_all_pieces());
         let mut moves_bitboard = self.rook_table[square as usize][magic_index] & !relevant_blockers;
-        let mut move_list = Vec::with_capacity(14);
         while !moves_bitboard.is_empty() {
             let target_square = moves_bitboard.pop_lsb();
             move_list.push(ChessMove::new(square, target_square as u16));
         }
-        move_list
     }
 
-    pub fn get_pawn_moves(
-        &self,
-        square: u16,
-        is_white: bool,
-        chess_board: &ChessBoard,
-    ) -> Vec<ChessMove> {
-        let mut move_list = Vec::with_capacity(4);
+    #[inline]
+    pub fn get_pawn_moves(&self, square: u16, is_white: bool, chess_board: &ChessBoard, move_list: &mut Vec<ChessMove>) {
+        let start_idx = move_list.len();
 
         // Calculate rank and file for the pawn
         let rank = square >> 3;
@@ -295,12 +285,12 @@ impl PieceConductor {
             }
         }
 
-        // Expand promotion moves in-place without an intermediate allocation.
-        let promotion_rank = if is_white { 7 } else { 0 };
-        if move_list.iter().any(|cm| cm.target_square() >> 3 == promotion_rank) {
-            let orig = std::mem::take(&mut move_list);
-            move_list = Vec::with_capacity(orig.len() * 4);
-            for cm in orig {
+        // Expand promotions in-place
+        let promotion_rank: u16 = if is_white { 7 } else { 0 };
+        let has_promotions = move_list[start_idx..].iter().any(|cm| cm.target_square() >> 3 == promotion_rank);
+        if has_promotions {
+            let added: Vec<ChessMove> = move_list.drain(start_idx..).collect();
+            for cm in added {
                 if cm.target_square() >> 3 == promotion_rank {
                     for flag in [
                         ChessMove::PROMOTE_TO_QUEEN_FLAG,
@@ -312,12 +302,13 @@ impl PieceConductor {
                             cm.start_square(), cm.capture, cm.target_square(), flag,
                         ));
                     }
+                } else {
+                    move_list.push(cm);
                 }
             }
         }
-
-        move_list
     }
+    #[inline]
     pub fn get_rook_attacks(
         &self,
         square: usize,
@@ -328,6 +319,7 @@ impl PieceConductor {
         self.rook_table[square][magic_index]
     }
 
+    #[inline]
     pub fn get_bishop_attacks(
         &self,
         square: usize,
@@ -369,74 +361,45 @@ impl PieceConductor {
         attacks
     }
 
-    pub fn get_bishop_moves(
-        &self,
-        square: u16,
-        relevant_blockers: Bitboard,
-        chess_board: &ChessBoard,
-    ) -> Vec<ChessMove> {
+    #[inline]
+    pub fn get_bishop_moves(&self, square: u16, relevant_blockers: Bitboard, chess_board: &ChessBoard, move_list: &mut Vec<ChessMove>) {
         let magic_index = Self::bishop_magic_index(square as usize, chess_board.get_all_pieces());
-        let mut moves_bitboard =
-            self.bishop_table[square as usize][magic_index] & !relevant_blockers;
-        let mut move_list = Vec::with_capacity(13);
+        let mut moves_bitboard = self.bishop_table[square as usize][magic_index] & !relevant_blockers;
         while !moves_bitboard.is_empty() {
             let target_square = moves_bitboard.pop_lsb();
             move_list.push(ChessMove::new(square, target_square as u16));
         }
-        move_list
     }
 
-    pub fn get_knight_moves(
-        &self,
-        square: u16,
-        friendly_pieces_bitboard: Bitboard,
-    ) -> Vec<ChessMove> {
+    #[inline]
+    pub fn get_knight_moves(&self, square: u16, friendly_pieces_bitboard: Bitboard, move_list: &mut Vec<ChessMove>) {
         let knight_moves_bitboard = self.knight_lut[square as usize];
         let valid_moves_bitboard = knight_moves_bitboard & !friendly_pieces_bitboard;
-        let mut move_list = Vec::with_capacity(8);
-
         let mut moves_bitboard = valid_moves_bitboard;
         while !moves_bitboard.is_empty() {
             let target_square = moves_bitboard.pop_lsb();
             move_list.push(ChessMove::new(square, target_square as u16));
         }
-
-        move_list
     }
 
-    pub fn get_king_moves(
-        &self,
-        square: u16,
-        friendly_pieces_bb: Bitboard,
-        chess_board: &ChessBoard,
-        is_white: bool,
-    ) -> Vec<ChessMove> {
+    #[inline]
+    pub fn get_king_moves(&self, square: u16, friendly_pieces_bb: Bitboard, chess_board: &ChessBoard, is_white: bool, move_list: &mut Vec<ChessMove>) {
         let king_moves_bitboard = self.king_lut[square as usize];
         let valid_moves_bitboard = king_moves_bitboard & !friendly_pieces_bb;
-        let mut move_list = Vec::with_capacity(10);
-
         let mut moves_bitboard = valid_moves_bitboard;
         while !moves_bitboard.is_empty() {
             let target_square = moves_bitboard.pop_lsb();
             move_list.push(ChessMove::new(square, target_square as u16));
         }
-
-        move_list.extend(self.get_castling_moves(chess_board, square, is_white));
-        move_list
+        self.get_castling_moves(chess_board, square, is_white, move_list);
     }
 
-    pub fn get_castling_moves(
-        &self,
-        chess_board: &ChessBoard,
-        square: u16,
-        is_white: bool,
-    ) -> Vec<ChessMove> {
-        let mut castling_moves = Vec::new();
-
+    #[inline]
+    pub fn get_castling_moves(&self, chess_board: &ChessBoard, square: u16, is_white: bool, move_list: &mut Vec<ChessMove>) {
         // Assume the king is in its original square; otherwise, castling isn't possible.
         let original_king_square = if is_white { 4 } else { 60 };
         if square != original_king_square {
-            return castling_moves; // Return an empty list if the king isn't in its original square.
+            return;
         }
 
         // Determine castling rights based on the color
@@ -492,7 +455,7 @@ impl PieceConductor {
             && king_not_in_check
             && king_side_squares_safe
         {
-            castling_moves.push(ChessMove::new_with_flag(
+            move_list.push(ChessMove::new_with_flag(
                 square,
                 square + 2,
                 ChessMove::CASTLE_FLAG,
@@ -505,14 +468,12 @@ impl PieceConductor {
             && king_not_in_check
             && queen_side_squares_safe
         {
-            castling_moves.push(ChessMove::new_with_flag(
+            move_list.push(ChessMove::new_with_flag(
                 square,
                 square - 2,
                 ChessMove::CASTLE_FLAG,
             ));
         }
-
-        castling_moves
     }
 
     pub fn generate_threat_map(
@@ -652,8 +613,8 @@ mod tests {
             return (1, 0, 0, 0, 0); // Leaf node, count as a single position
         }
         let mut nodes = 0;
-        let legal_moves =
-            get_all_legal_moves_for_color(chess_board, magic, chess_board.is_white_active());
+        let mut legal_moves = Vec::new();
+        get_all_legal_moves_for_color(chess_board, magic, chess_board.is_white_active(), &mut legal_moves, &mut Vec::new());
         let mut captures = 0;
         let mut castles = 0;
         let mut promotions = 0;

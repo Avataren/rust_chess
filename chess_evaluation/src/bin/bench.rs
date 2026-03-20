@@ -92,7 +92,8 @@ fn bench_sequential(fen: &str, is_white: bool, depth: i32) -> (u64, u128, i32) {
     let tt = TranspositionTable::new(TT_SIZE);
     let mut ctx = SearchContext::new();
 
-    let moves = get_all_legal_moves_for_color(&mut board, &conductor, is_white);
+    let mut moves = Vec::new();
+    get_all_legal_moves_for_color(&mut board, &conductor, is_white, &mut moves, &mut Vec::new());
     if moves.is_empty() {
         return (0, 0, 0);
     }

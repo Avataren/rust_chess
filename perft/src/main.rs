@@ -18,8 +18,8 @@ fn perft(
     }
 
     let mut total_nodes = 0u64;
-    let legal_moves =
-        get_all_legal_moves_for_color(chess_board, conductor, chess_board.is_white_active());
+    let mut legal_moves = Vec::new();
+    get_all_legal_moves_for_color(chess_board, conductor, chess_board.is_white_active(), &mut legal_moves, &mut Vec::new());
 
     for mut m in legal_moves {
         // Make the move on the chess board

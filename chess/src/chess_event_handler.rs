@@ -144,7 +144,8 @@ async fn alpha_beta_task(
     {
         // Opening book fast path (no worker needed).
         if let Some((from, to)) = book.probe(chess_board) {
-            let legal = get_all_legal_moves_for_color(chess_board, conductor, is_white);
+            let mut legal = Vec::new();
+            get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal, &mut Vec::new());
             if let Some(bm) = legal
                 .into_iter()
                 .find(|m| m.start_square() == from && m.target_square() == to)
@@ -251,7 +252,8 @@ fn launch_multi_ponder(
 
     let opponent_is_white = !ai_is_white;
     let mut board_for_gen = board.clone();
-    let legal = get_all_legal_moves_for_color(&mut board_for_gen, conductor, opponent_is_white);
+    let mut legal = Vec::new();
+    get_all_legal_moves_for_color(&mut board_for_gen, conductor, opponent_is_white, &mut legal, &mut Vec::new());
     if legal.is_empty() {
         return;
     }
@@ -368,10 +370,13 @@ pub fn handle_async_moves(
                     pending = Some((score, bm, pm, false, 0));
                 } else {
                     let forced = {
-                        let moves = get_all_legal_moves_for_color(
+                        let mut moves = Vec::new();
+                        get_all_legal_moves_for_color(
                             &mut chess_board.chess_board,
                             &move_generator.magic,
                             ai_is_white,
+                            &mut moves,
+                            &mut Vec::new(),
                         );
                         if moves.len() == 1 { Some(moves[0]) } else { None }
                     };
@@ -411,8 +416,10 @@ pub fn handle_async_moves(
     eprintln!("AI result: score={score}");
 
     if best_move.is_none() {
-        let all_moves = get_all_legal_moves_for_color(
+        let mut all_moves = Vec::new();
+        get_all_legal_moves_for_color(
             &mut chess_board.chess_board, &move_generator.magic, ai_is_white,
+            &mut all_moves, &mut Vec::new(),
         );
         if all_moves.is_empty() {
             *game_over_state =
@@ -451,8 +458,10 @@ pub fn handle_async_moves(
         };
         pending_move_sound.0 = Some(sound);
 
-        let player_moves = get_all_legal_moves_for_color(
+        let mut player_moves = Vec::new();
+        get_all_legal_moves_for_color(
             &mut chess_board.chess_board, &move_generator.magic, player_is_white,
+            &mut player_moves, &mut Vec::new(),
         );
         if chess_board.chess_board.is_repetition(3) {
             eprintln!("Draw by repetition!");

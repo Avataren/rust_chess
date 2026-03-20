@@ -2,6 +2,7 @@ use crate::piece_conductor::PieceConductor;
 use chess_board::ChessBoard;
 use chess_foundation::{Bitboard, ChessMove};
 
+#[inline]
 pub fn get_legal_move_list_from_square(
     square: u16,
     chess_board: &mut ChessBoard,
@@ -10,134 +11,139 @@ pub fn get_legal_move_list_from_square(
     if chess_board.is_white_active() && !chess_board.get_white().contains_square(square as i32) {
         return Vec::new();
     }
-
     if !chess_board.is_white_active() && !chess_board.get_black().contains_square(square as i32) {
         return Vec::new();
     }
-
-    let mut move_list = Vec::new();
+    let mut result = Vec::new();
+    let mut pseudo_buf = Vec::new();
     let is_white = chess_board.get_white().contains_square(square as i32);
-    let pseudo_legal_moves =
-        get_pseudo_legal_move_list_from_square(square, chess_board, conductor, is_white);
-    // check if move would leave king in check
-    for mut chess_move in pseudo_legal_moves {
+    get_pseudo_legal_move_list_from_square(square, chess_board, conductor, is_white, &mut pseudo_buf);
+    for mut chess_move in pseudo_buf.drain(..) {
         chess_board.make_move(&mut chess_move);
-        let in_check = conductor.is_king_in_check(chess_board, is_white);
-        if !in_check {
-            move_list.push(chess_move);
+        if !conductor.is_king_in_check(chess_board, is_white) {
+            result.push(chess_move);
         }
         chess_board.undo_move();
     }
-
-    move_list
+    result
 }
 
 pub fn get_all_legal_moves_for_color(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
     is_white: bool,
-) -> Vec<ChessMove> {
-    let mut move_list = Vec::new();
+    result: &mut Vec<ChessMove>,
+    pseudo_buf: &mut Vec<ChessMove>,
+) {
+    result.clear();
     let mut friendly_pieces_bitboard = if is_white {
         chess_board.get_white()
     } else {
         chess_board.get_black()
     };
-
     while friendly_pieces_bitboard != Bitboard::default() {
         let square = friendly_pieces_bitboard.pop_lsb() as u16;
-        let pseudo_legal_moves =
-            get_pseudo_legal_move_list_from_square(square, chess_board, conductor, is_white);
-        // check if move would leave king in check
-        for mut chess_move in pseudo_legal_moves {
+        pseudo_buf.clear();
+        get_pseudo_legal_move_list_from_square(square, chess_board, conductor, is_white, pseudo_buf);
+        for mut chess_move in pseudo_buf.drain(..) {
             chess_board.make_move(&mut chess_move);
-            let in_check = conductor.is_king_in_check(chess_board, is_white);
-            if !in_check {
-                move_list.push(chess_move);
+            if !conductor.is_king_in_check(chess_board, is_white) {
+                result.push(chess_move);
             }
             chess_board.undo_move();
         }
     }
-
-    move_list
 }
 
-/// Like `get_all_legal_moves_for_color` but only returns captures (and promotions).
-/// Skips the make_move/undo_move legality check for quiet moves, which makes
-/// quiescence search significantly cheaper.
 pub fn get_all_legal_captures_for_color(
     chess_board: &mut ChessBoard,
     conductor: &PieceConductor,
     is_white: bool,
-) -> Vec<ChessMove> {
-    let mut move_list = Vec::new();
+    result: &mut Vec<ChessMove>,
+    pseudo_buf: &mut Vec<ChessMove>,
+) {
+    result.clear();
     let mut friendly_pieces_bitboard = if is_white {
         chess_board.get_white()
     } else {
         chess_board.get_black()
     };
-
-    // The capture field is populated *by* make_move, not before it, so we detect
-    // captures via the enemy-piece bitboard before paying the legality-check cost.
     let enemy = if is_white { chess_board.get_black() } else { chess_board.get_white() };
-
     while friendly_pieces_bitboard != Bitboard::default() {
         let square = friendly_pieces_bitboard.pop_lsb() as u16;
-        let pseudo_legal_moves =
-            get_pseudo_legal_move_list_from_square(square, chess_board, conductor, is_white);
-        for mut chess_move in pseudo_legal_moves {
-            // A move is a capture if the target square holds an enemy piece,
-            // or if it carries the en-passant flag (captured pawn is off the target square),
-            // or if it is a queen promotion (always worth searching in qsearch to avoid
-            // the horizon effect of evaluating a position with a pawn on rank 7).
+        pseudo_buf.clear();
+        get_pseudo_legal_move_list_from_square(square, chess_board, conductor, is_white, pseudo_buf);
+        for mut chess_move in pseudo_buf.drain(..) {
             let is_capture = enemy.contains_square(chess_move.target_square() as i32)
                 || chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG)
                 || chess_move.has_flag(ChessMove::PROMOTE_TO_QUEEN_FLAG);
-            if !is_capture {
-                continue;
-            }
+            if !is_capture { continue; }
             chess_board.make_move(&mut chess_move);
-            let in_check = conductor.is_king_in_check(chess_board, is_white);
-            if !in_check {
-                move_list.push(chess_move);
+            if !conductor.is_king_in_check(chess_board, is_white) {
+                result.push(chess_move);
             }
             chess_board.undo_move();
         }
     }
-
-    move_list
 }
 
+#[inline]
 pub fn get_pseudo_legal_move_list_from_square(
     square: u16,
     chess_board: &ChessBoard,
     conductor: &PieceConductor,
     is_white: bool,
-) -> Vec<ChessMove> {
-    let mut move_list = Vec::new();
-
-    let friendly_pieces_bitboard = if is_white {
-        chess_board.get_white()
-    } else {
-        chess_board.get_black()
-    };
-
+    move_list: &mut Vec<ChessMove>,
+) {
+    let friendly_pieces_bitboard = if is_white { chess_board.get_white() } else { chess_board.get_black() };
     let relevant_blockers = friendly_pieces_bitboard;
-
     if chess_board.get_rooks().contains_square(square as i32) {
-        move_list = conductor.get_rook_moves(square, relevant_blockers, chess_board);
+        conductor.get_rook_moves(square, relevant_blockers, chess_board, move_list);
     } else if chess_board.get_bishops().contains_square(square as i32) {
-        move_list = conductor.get_bishop_moves(square, relevant_blockers, chess_board);
+        conductor.get_bishop_moves(square, relevant_blockers, chess_board, move_list);
     } else if chess_board.get_queens().contains_square(square as i32) {
-        move_list = conductor.get_rook_moves(square, relevant_blockers, chess_board);
-        move_list.extend(conductor.get_bishop_moves(square, relevant_blockers, chess_board));
+        conductor.get_rook_moves(square, relevant_blockers, chess_board, move_list);
+        conductor.get_bishop_moves(square, relevant_blockers, chess_board, move_list);
     } else if chess_board.get_kings().contains_square(square as i32) {
-        move_list = conductor.get_king_moves(square, relevant_blockers, chess_board, is_white);
+        conductor.get_king_moves(square, relevant_blockers, chess_board, is_white, move_list);
     } else if chess_board.get_knights().contains_square(square as i32) {
-        move_list = conductor.get_knight_moves(square, relevant_blockers);
+        conductor.get_knight_moves(square, relevant_blockers, move_list);
     } else if chess_board.get_pawns().contains_square(square as i32) {
-        move_list = conductor.get_pawn_moves(square, is_white, chess_board);
+        conductor.get_pawn_moves(square, is_white, chess_board, move_list);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::piece_conductor::PieceConductor;
+    use chess_board::ChessBoard;
+
+    #[test]
+    fn test_legal_move_count_startpos() {
+        let conductor = PieceConductor::new();
+        let mut board = ChessBoard::new();
+        let mut result = Vec::new();
+        let mut pseudo_buf = Vec::new();
+        get_all_legal_moves_for_color(&mut board, &conductor, true, &mut result, &mut pseudo_buf);
+        assert_eq!(result.len(), 20, "Starting position should have 20 legal moves for white");
     }
 
-    move_list
+    #[test]
+    fn test_move_gen_buffer_reuse_consistency() {
+        let conductor = PieceConductor::new();
+        let mut board = ChessBoard::new();
+        let mut result1 = Vec::new();
+        let mut result2 = Vec::new();
+        let mut pseudo_buf = Vec::new();
+
+        get_all_legal_moves_for_color(&mut board, &conductor, true, &mut result1, &mut pseudo_buf);
+        get_all_legal_moves_for_color(&mut board, &conductor, true, &mut result2, &mut pseudo_buf);
+
+        let mut s1: Vec<_> = result1.iter().map(|m| (m.start_square(), m.target_square())).collect();
+        let mut s2: Vec<_> = result2.iter().map(|m| (m.start_square(), m.target_square())).collect();
+        s1.sort();
+        s2.sort();
+        assert_eq!(s1, s2, "Buffer reuse must not affect results");
+    }
 }

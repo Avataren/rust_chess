@@ -123,7 +123,8 @@ fn apply_position(board: &mut ChessBoard, conductor: &PieceConductor, tokens: &[
     if tokens.get(idx) == Some(&"moves") {
         for uci in &tokens[idx + 1..] {
             let is_white = board.is_white_active();
-            let legal = get_all_legal_moves_for_color(board, conductor, is_white);
+            let mut legal = Vec::new();
+            get_all_legal_moves_for_color(board, conductor, is_white, &mut legal, &mut Vec::new());
             if let Some(mut mv) = parse_uci_move(uci, &legal) {
                 board.make_move(&mut mv);
                 move_count += 1;

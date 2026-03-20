@@ -236,7 +236,8 @@ impl MultiPonder {
     ) -> Self {
         let opponent_white = !is_white_next;
         let mut board_for_gen = board.clone();
-        let legal = get_all_legal_moves_for_color(&mut board_for_gen, conductor, opponent_white);
+        let mut legal = Vec::new();
+        get_all_legal_moves_for_color(&mut board_for_gen, conductor, opponent_white, &mut legal, &mut Vec::new());
 
         if legal.is_empty() {
             return MultiPonder { threads: Vec::new() };
@@ -404,7 +405,8 @@ fn play_game(
         let is_white = if first_is_white { ply % 2 == 0 } else { ply % 2 != 0 };
 
         // ── Termination checks ──
-        let legal = get_all_legal_moves_for_color(&mut board, conductor, is_white);
+        let mut legal = Vec::new();
+        get_all_legal_moves_for_color(&mut board, conductor, is_white, &mut legal, &mut Vec::new());
 
         if legal.is_empty() {
             if let Some(p) = active_ponder.take() { p.stop_all(); }
