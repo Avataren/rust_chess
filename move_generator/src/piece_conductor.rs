@@ -278,6 +278,23 @@ impl PieceConductor {
             }
         }
 
+        // Also check for an en-passant target supplied directly from a FEN position.
+        if let Some(ep_sq) = chess_board.get_ep_target_from_fen() {
+            let ep_sq = ep_sq as u16;
+            let ep_file = ep_sq & 7;
+            let en_passant_rank = if is_white { 4 } else { 3 };
+            let pawn_rank = square >> 3;
+            let pawn_file = square & 7;
+            let is_adjacent_file = (pawn_file as i32 - ep_file as i32).abs() == 1;
+            if pawn_rank == en_passant_rank && is_adjacent_file {
+                move_list.push(ChessMove::new_with_flag(
+                    square,
+                    ep_sq,
+                    ChessMove::EN_PASSANT_CAPTURE_FLAG,
+                ));
+            }
+        }
+
         // Expand promotion moves in-place without an intermediate allocation.
         let promotion_rank = if is_white { 7 } else { 0 };
         if move_list.iter().any(|cm| cm.target_square() >> 3 == promotion_rank) {

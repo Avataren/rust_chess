@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /c/src/rust_chess && cargo build -p chess_evaluation 2>&1)",
+      "Bash(cd /c/src/rust_chess && cargo build -p chess 2>&1)",
+      "Bash(cd /c/src/rust_chess && cargo test -p chess_evaluation -p chess_board 2>&1)",
+      "Bash(cd /c/src/rust_chess && cargo test -p chess_board -p chess_evaluation 2>&1)",
+      "Bash(cd /c/src/rust_chess && cargo test -p chess_evaluation 2>&1)",
+      "Bash(cd C:/src/rust_chess && cargo build -p chess_uci --release 2>&1)",
+      "Bash(cd C:/src/rust_chess && cargo build -p self_play --release 2>&1)",
+      "Bash(cd C:/src/rust_chess && cargo build -p chess_evaluation 2>&1)",
+      "Bash(cd C:/src/rust_chess && cargo test -p chess_evaluation 2>&1)",
+      "WebFetch(domain:www.chessprogramming.org)",
+      "Bash(cargo build:*)",
+      "Bash(./target/release/self_play.exe ./target/release/chess_uci.exe ./target/release/chess_uci.exe --games 8 --movetime 200 --fen \"4k3/8/8/8/8/8/8/4K2Q w - - 0 1\" 2>&1)",
+      "Bash(./target/release/self_play.exe ./target/release/chess_uci.exe ./target/release/chess_uci_legacy.exe --games 10 --movetime 200 --fen \"4k3/8/8/8/8/8/8/4K2Q w - - 0 1\" 2>&1)",
+      "WebSearch",
+      "Bash(echo -e \"uci\\\\nisready\\\\nposition fen 4k3/8/8/8/8/8/8/4K2Q w - - 0 1\\\\ngo movetime 200\\\\n\" | timeout 5 ./target/release/chess_uci.exe 2>&1 || true)",
+      "Bash(echo -e \"uci\\\\nisready\\\\nposition fen 4k3/8/8/8/8/8/8/4K2Q w - - 0 1\\\\ngo movetime 1000\\\\n\" | timeout 5 ./target/release/chess_uci.exe 2>&1 || true)",
+      "Bash(cargo test:*)",
+      "Bash(./target/release/self_play.exe ./target/release/chess_uci.exe ./target/release/chess_uci_legacy.exe --games 40 --movetime 200 2>&1)",
+      "Bash(bash endgame_bench.sh 2>&1)",
+      "Bash(grep -r \"expected\\\\|predicted\\\\|opponent.*reply\\\\|ponder\" --include=\"*.rs\" 2>/dev/null | head -30)"
+    ]
+  }
+}

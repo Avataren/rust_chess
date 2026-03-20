@@ -31,7 +31,9 @@ pub struct ChessBoard {
     /// Halfmove clock for the 50-move rule: incremented each ply, reset on
     /// pawn moves and captures.
     halfmove_clock: u32,
-    move_history: Vec<(ChessMove, u8, u32)>,
+    fullmove_number: u32,
+    ep_target_from_fen: Option<u8>,
+    move_history: Vec<(ChessMove, u8, u32, u32, Option<u8>)>,
     /// Zobrist hash after every position, including the starting position.
     /// Used for threefold-repetition detection.
     position_history: Vec<u64>,
@@ -52,6 +54,8 @@ impl ChessBoard {
             kings: Bitboard(0x1000_0000_0000_0010),   // e1, e8
             castling_rights: CastlingRights::AllCastlingRights as u8,
             halfmove_clock: 0,
+            fullmove_number: 1,
+            ep_target_from_fen: None,
             move_history: Vec::with_capacity(100),
             position_history: Vec::with_capacity(100),
             game_state: GameState::InProgress,
@@ -74,12 +78,44 @@ impl ChessBoard {
         self.halfmove_clock = clock;
     }
 
+    pub fn get_fullmove_number(&self) -> u32 {
+        self.fullmove_number
+    }
+
+    pub fn set_fullmove_number(&mut self, n: u32) {
+        self.fullmove_number = n;
+    }
+
+    pub fn get_ep_target_from_fen(&self) -> Option<u8> {
+        self.ep_target_from_fen
+    }
+
+    /// Set the en-passant target square from a FEN string field (e.g. "e3" or "-").
+    /// Stores it so move generation can produce the correct EP capture for this position.
+    pub fn set_en_passant_from_fen(&mut self, ep_str: &str) {
+        if ep_str == "-" {
+            self.ep_target_from_fen = None;
+            return;
+        }
+        let chars: Vec<char> = ep_str.chars().collect();
+        if chars.len() != 2 {
+            return;
+        }
+        let file = chars[0] as i32 - 'a' as i32;
+        let rank = chars[1] as i32 - '1' as i32;
+        if !(0..=7).contains(&file) || !(0..=7).contains(&rank) {
+            return;
+        }
+        self.ep_target_from_fen = Some((rank * 8 + file) as u8);
+    }
+
     /// Give the opponent a free move without moving any piece.
     /// Must always be followed by exactly one `undo_null_move()`.
     pub fn make_null_move(&mut self) {
         // Sentinel with flag=0 (NO_FLAG): get_last_move() will not report
         // PAWN_TWO_UP_FLAG, erasing en-passant rights for the sub-search.
-        self.move_history.push((ChessMove::new(0, 0), self.castling_rights, self.halfmove_clock));
+        let prev_ep = self.ep_target_from_fen.take();
+        self.move_history.push((ChessMove::new(0, 0), self.castling_rights, self.halfmove_clock, self.fullmove_number, prev_ep));
         self.halfmove_clock += 1;
         self.white_is_active = !self.white_is_active;
         // Incremental hash update: only the side-to-move bit changes.
@@ -89,7 +125,10 @@ impl ChessBoard {
     }
 
     pub fn undo_null_move(&mut self) {
-        self.move_history.pop();
+        if let Some((_, _, prev_halfmove, _, prev_ep)) = self.move_history.pop() {
+            self.halfmove_clock = prev_halfmove;
+            self.ep_target_from_fen = prev_ep;
+        }
         self.position_history.pop();
         self.white_is_active = !self.white_is_active;
     }
@@ -105,6 +144,8 @@ impl ChessBoard {
         self.kings = Bitboard(0);
         self.castling_rights = CastlingRights::AllCastlingRights as u8;
         self.halfmove_clock = 0;
+        self.fullmove_number = 1;
+        self.ep_target_from_fen = None;
         self.move_history.clear();
         self.position_history.clear();
         self.game_state = GameState::InProgress;
@@ -184,6 +225,9 @@ impl ChessBoard {
         if self.castling_rights & CastlingRights::BlackQueenSide as u8 != 0 {
             result.push('q');
         }
+        if result.is_empty() {
+            result.push('-');
+        }
         result
     }
 
@@ -258,11 +302,13 @@ impl ChessBoard {
     pub fn get_last_move(&self) -> Option<ChessMove> {
         self.move_history
             .last()
-            .map(|(chess_move, _, _)| chess_move.clone())
+            .map(|(chess_move, _, _, _, _)| chess_move.clone())
     }
 
     pub fn undo_move(&mut self) {
-        if let Some((chess_move, prev_castling_rights, prev_halfmove)) = self.move_history.pop() {
+        if let Some((chess_move, prev_castling_rights, prev_halfmove, prev_fullmove, prev_ep)) = self.move_history.pop() {
+            self.fullmove_number = prev_fullmove;
+            self.ep_target_from_fen = prev_ep;
             let target_square = chess_move.target_square();
             let start_square = chess_move.start_square();
             let target_square_bb = Bitboard::from_square_index(target_square);
@@ -409,8 +455,9 @@ impl ChessBoard {
 
             // store history before altering castling rights/halfmove clock!
             let prev_halfmove = self.halfmove_clock;
+            let prev_ep = self.ep_target_from_fen.take();
             self.move_history
-                .push((*chess_move, self.castling_rights, prev_halfmove));
+                .push((*chess_move, self.castling_rights, prev_halfmove, self.fullmove_number, prev_ep));
             // Reset on pawn move or capture; increment otherwise.
             if piece_type == PieceType::Pawn || chess_move.capture.is_some() {
                 self.halfmove_clock = 0;
@@ -490,6 +537,10 @@ impl ChessBoard {
             }
         }
         self.white_is_active = !self.white_is_active;
+        // Increment fullmove number after black's move.
+        if !is_white {
+            self.fullmove_number += 1;
+        }
         let h = self.compute_hash();
         self.position_history.push(h);
         true
@@ -654,6 +705,9 @@ impl ChessBoard {
         }
         if self.castling_rights & 0b0001 != 0 {
             result.push('q');
+        }
+        if result.is_empty() {
+            result.push('-');
         }
         result
     }

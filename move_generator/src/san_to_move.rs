@@ -1,210 +1,210 @@
+//! SAN (Standard Algebraic Notation) move parsing.
+//!
+//! Parses a SAN string into a [`ChessMove`] for the current board position.
+//! Supports piece moves, pawn moves, captures (`x`), promotions (`=Q` etc.),
+//! castling (`O-O` / `O-O-O`), and disambiguation by file or rank.
+//! Check (`+`) and checkmate (`#`) suffixes are stripped automatically.
 
-fn san_to_target_square(&self, san: &str) -> Option<u16> {
-    // Assuming the last two characters of the SAN string represent the target square
-    // e.g., "e4", "h8", etc.
-    let len = san.len();
-    if len < 2 {
+use chess_board::ChessBoard;
+use chess_foundation::{piece::PieceType, ChessMove};
+
+use crate::move_generator::get_pseudo_legal_move_list_from_square;
+use crate::piece_conductor::PieceConductor;
+
+/// Convert an algebraic square string (e.g. `"e4"`) to a board square index.
+///
+/// Square indexing: a1 = 0, h1 = 7, a2 = 8, …, h8 = 63.
+pub fn san_to_square(sq: &str) -> Option<u16> {
+    let mut chars = sq.chars();
+    let file = chars.next()?;
+    let rank = chars.next()?.to_digit(10)?;
+    if !('a'..='h').contains(&file) || !(1..=8).contains(&rank) {
         return None;
     }
-
-    let file = san.chars().nth(len - 2)?;
-    let rank = san.chars().nth(len - 1)?.to_digit(10)?;
-
-    if file < 'a' || file > 'h' || rank < 1 || rank > 8 {
-        return None;
-    }
-
-    // Convert file and rank to 0-based indices
-    let file_index = file as u16 - 'a' as u16; // 0 to 7
-    let rank_index = rank as u16 - 1; // 0 to 7
-
-    // Convert to square index, assuming a8 is 0, b8 is 1, ..., a1 is 56, h1 is 63
-    Some((7 - rank_index) * 8 + file_index)
+    let file_idx = file as u16 - 'a' as u16;
+    let rank_idx = rank as u16 - 1;
+    Some(rank_idx * 8 + file_idx)
 }
 
+/// Convert a board square index to its algebraic name (e.g. `28` → `"e4"`).
+pub fn square_to_san(sq: u16) -> String {
+    let file = (sq % 8) as u8 + b'a';
+    let rank = (sq / 8) as u8 + b'1';
+    format!("{}{}", file as char, rank as char)
+}
+
+fn char_to_piece_type(c: char) -> Option<PieceType> {
+    match c {
+        'N' => Some(PieceType::Knight),
+        'B' => Some(PieceType::Bishop),
+        'R' => Some(PieceType::Rook),
+        'Q' => Some(PieceType::Queen),
+        'K' => Some(PieceType::King),
+        _ => None,
+    }
+}
+
+fn promotion_flag(c: char) -> Option<u16> {
+    match c.to_ascii_uppercase() {
+        'Q' => Some(ChessMove::PROMOTE_TO_QUEEN_FLAG),
+        'R' => Some(ChessMove::PROMOTE_TO_ROOK_FLAG),
+        'B' => Some(ChessMove::PROMOTE_TO_BISHOP_FLAG),
+        'N' => Some(ChessMove::PROMOTE_TO_KNIGHT_FLAG),
+        _ => None,
+    }
+}
+
+fn handle_castling(board: &ChessBoard, san: &str) -> Option<ChessMove> {
+    let is_white = board.is_white_active();
+    let (king_start, king_target) = match (san, is_white) {
+        ("O-O", true) => (4u16, 6u16),
+        ("O-O-O", true) => (4u16, 2u16),
+        ("O-O", false) => (60u16, 62u16),
+        ("O-O-O", false) => (60u16, 58u16),
+        _ => return None,
+    };
+    Some(ChessMove::new_with_flag(king_start, king_target, ChessMove::CASTLE_FLAG))
+}
+
+/// Find the starting square of the piece matching the given criteria.
+///
+/// Iterates over pseudo-legal moves from all friendly pieces of the given type,
+/// applying optional file/rank disambiguation hints.  Returns `None` if no
+/// unique match is found.
 fn find_start_square(
-    &self,
+    board: &ChessBoard,
     piece_type: PieceType,
     target_square: u16,
     is_capture: bool,
+    hint_file: Option<char>,
+    hint_rank: Option<char>,
 ) -> Option<u16> {
-    // Get all pieces of the specified type for the current player
-    let pieces_bitboard = match piece_type {
-        PieceType::Pawn => {
-            self.pawns
-                & if self.white_is_active {
-                    self.white
-                } else {
-                    self.black
-                }
-        }
-        PieceType::Knight => {
-            self.knights
-                & if self.white_is_active {
-                    self.white
-                } else {
-                    self.black
-                }
-        }
-        PieceType::Bishop => {
-            self.bishops
-                & if self.white_is_active {
-                    self.white
-                } else {
-                    self.black
-                }
-        }
-        PieceType::Rook => {
-            self.rooks
-                & if self.white_is_active {
-                    self.white
-                } else {
-                    self.black
-                }
-        }
-        PieceType::Queen => {
-            self.queens
-                & if self.white_is_active {
-                    self.white
-                } else {
-                    self.black
-                }
-        }
-        PieceType::King => {
-            self.kings
-                & if self.white_is_active {
-                    self.white
-                } else {
-                    self.black
-                }
-        }
-        _ => Bitboard(0),
+    let is_white = board.is_white_active();
+    let color_bb = if is_white { board.get_white() } else { board.get_black() };
+    let piece_bb = match piece_type {
+        PieceType::Pawn => board.get_pawns() & color_bb,
+        PieceType::Knight => board.get_knights() & color_bb,
+        PieceType::Bishop => board.get_bishops() & color_bb,
+        PieceType::Rook => board.get_rooks() & color_bb,
+        PieceType::Queen => board.get_queens() & color_bb,
+        PieceType::King => board.get_kings() & color_bb,
+        PieceType::None => return None,
     };
 
     let conductor = PieceConductor::new();
-    // Iterate over each piece of the given type
-    for start_square in 0..64 {
-        if pieces_bitboard.contains_square(start_square as i32) {
-            // Generate pseudo-legal moves for this piece
-            let pseudo_legal_moves = get_pseudo_legal_move_list_from_square(
-                start_square as u16,
-                self,
-                &conductor, 
-                self.white_is_active,
-            );
 
-            // Filter moves to find one that matches the target square and capture status
-            for chess_move in pseudo_legal_moves {
-                if chess_move.target_square() == target_square {
-                    // Check if the move is a capture if required
-                    if !is_capture || chess_move.capture.is_some() {
-                        return Some(start_square as u16);
-                    }
-                }
+    // Whether there is an opponent piece on the target square (regular capture).
+    let opponent_on_target = board
+        .get_piece_at_square(target_square)
+        .map_or(false, |p| p.is_white() != is_white);
+
+    let mut found: Option<u16> = None;
+
+    for sq in 0u16..64 {
+        if !piece_bb.contains_square(sq as i32) {
+            continue;
+        }
+        // Apply file disambiguation hint
+        if let Some(f) = hint_file {
+            if (sq % 8) as u8 + b'a' != f as u8 {
+                continue;
             }
         }
-    }
-
-    None // No matching start square found
-}
-
-pub fn handle_san_castling(&self, san: &str) -> Option<ChessMove> {
-    let is_white = self.is_white_active();
-    let (king_start_square, king_target_square, rook_start_square, rook_target_square) =
-        match (san, is_white) {
-            ("O-O", true) => (4, 6, 7, 5),        // White king-side castling
-            ("O-O-O", true) => (4, 2, 0, 3),      // White queen-side castling
-            ("O-O", false) => (60, 62, 63, 61),   // Black king-side castling
-            ("O-O-O", false) => (60, 58, 56, 59), // Black queen-side castling
-            _ => return None,                     // Invalid castling notation
-        };
-
-    // Create a ChessMove for the king's move in castling
-    let mut castling_move = ChessMove::new_with_flag(
-        king_start_square,
-        king_target_square,
-        ChessMove::CASTLE_FLAG,
-    );
-
-    Some(castling_move)
-}
-
-fn char_to_piece_type(&self, c: char) -> PieceType {
-    match c {
-        'P' => PieceType::Pawn,
-        'N' => PieceType::Knight,
-        'B' => PieceType::Bishop,
-        'R' => PieceType::Rook,
-        'Q' => PieceType::Queen,
-        'K' => PieceType::King,
-        _ => panic!("Invalid piece type character: {}", c),
-    }
-}
-
-pub fn get_move_from_san(&self, san: &str) -> Option<ChessMove> {
-    // Parse SAN to identify piece, capture, target square, and special moves
-    let mut piece_type = PieceType::Pawn; // Assume Pawn by default
-    let mut target_square = 0;
-    let mut flag = ChessMove::NO_FLAG;
-    let mut promotion = None;
-
-    // Handle castling
-    if san == "O-O" || san == "O-O-O" {
-        return self.handle_san_castling(san);
-    }
-
-    // Handle other moves
-    let mut chars = san.chars();
-    let first_char = chars.next().unwrap();
-
-    // Check if the first character specifies a piece
-    if first_char.is_uppercase() {
-        piece_type = self.char_to_piece_type(first_char);
-    } else {
-        // If not, it's a pawn move, so we rewind the iterator
-        chars = san.chars();
-    }
-
-    // Collect remaining characters for further processing
-    let rest: String = chars.collect();
-
-    // Handle captures, promotions, and target square
-    if let Some(capture_index) = rest.find('x') {
-        // Logic to handle captures
-        //todo!()
-    }
-
-    // Handle promotion
-    if let Some(promotion_index) = rest.find('=') {
-        // Logic to handle promotion
-        //todo!()
-    }
-
-    // Determine target square from SAN
-    if let Some(ts) = self.san_to_target_square(&rest) {
-        target_square = ts;
-    } else {
-        return None;
-    }
-
-    // Find the start square based on the piece type, target square, and the current board state
-    if let Some(start_square) =
-        Self::find_start_square(piece_type, target_square, san.contains('x'))
-    {
-        let mut chess_move = ChessMove::new(start_square, target_square);
-
-        // Set special flags if necessary (e.g., en passant, promotion)
-        chess_move.set_flag(flag);
-
-        // Handle promotion
-        if let Some(promo) = promotion {
-            chess_move =
-                ChessMove::new_capture_with_flag(start_square, None, target_square, flag);
-            // Logic to set the promotion piece type on `chess_move`
+        // Apply rank disambiguation hint
+        if let Some(r) = hint_rank {
+            if (sq / 8) as u8 + b'1' != r as u8 {
+                continue;
+            }
         }
 
-        Some(chess_move)
-    } else {
-        None
+        let pseudo_moves =
+            get_pseudo_legal_move_list_from_square(sq, board, &conductor, is_white);
+
+        for mv in pseudo_moves {
+            if mv.target_square() != target_square {
+                continue;
+            }
+            let is_ep = mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG);
+            // Reject if SAN marks a capture but neither opponent piece nor EP
+            if is_capture && !opponent_on_target && !is_ep {
+                continue;
+            }
+            // Reject quiet pawn move if there is an opponent on the target
+            if !is_capture && piece_type == PieceType::Pawn && opponent_on_target {
+                continue;
+            }
+            if found.is_some() {
+                // Ambiguous — cannot resolve without legality filter
+                return None;
+            }
+            found = Some(sq);
+        }
     }
+    found
+}
+
+/// Parse a SAN move string and return the corresponding [`ChessMove`] for the
+/// current board position.
+///
+/// # Examples
+/// ```ignore
+/// let mv = get_move_from_san(&board, "e4");
+/// let mv = get_move_from_san(&board, "Nxf3");
+/// let mv = get_move_from_san(&board, "e8=Q");
+/// let mv = get_move_from_san(&board, "O-O");
+/// ```
+pub fn get_move_from_san(board: &ChessBoard, san: &str) -> Option<ChessMove> {
+    // Strip check/checkmate annotations
+    let san = san.trim_end_matches(|c| c == '+' || c == '#');
+
+    if san == "O-O" || san == "O-O-O" {
+        return handle_castling(board, san);
+    }
+
+    let mut chars = san.chars().peekable();
+
+    // Leading uppercase letter → named piece; otherwise pawn move
+    let mut piece_type = PieceType::Pawn;
+    if let Some(&first) = chars.peek() {
+        if let Some(pt) = char_to_piece_type(first) {
+            piece_type = pt;
+            chars.next();
+        }
+    }
+
+    let rest: String = chars.collect();
+
+    // Extract promotion suffix "=X"
+    let (rest, promo_flag) = if let Some(eq_pos) = rest.find('=') {
+        let promo_char = rest.chars().nth(eq_pos + 1)?;
+        let flag = promotion_flag(promo_char)?;
+        (rest[..eq_pos].to_string(), Some(flag))
+    } else {
+        (rest, None)
+    };
+
+    // Split on capture marker 'x'
+    let (pre_x, is_capture, post_x) = if let Some(x_pos) = rest.find('x') {
+        (rest[..x_pos].to_string(), true, rest[x_pos + 1..].to_string())
+    } else {
+        (String::new(), false, rest)
+    };
+
+    // Target square is always the last two characters
+    if post_x.len() < 2 {
+        return None;
+    }
+    let target_str = &post_x[post_x.len() - 2..];
+    let target_square = san_to_square(target_str)?;
+
+    // Disambiguation characters: everything except the target square
+    let disambiguation = format!("{}{}", pre_x, &post_x[..post_x.len() - 2]);
+    let hint_file = disambiguation.chars().find(|c| ('a'..='h').contains(c));
+    let hint_rank = disambiguation.chars().find(|c| c.is_ascii_digit());
+
+    let start_square =
+        find_start_square(board, piece_type, target_square, is_capture, hint_file, hint_rank)?;
+
+    let flag = promo_flag.unwrap_or(ChessMove::NO_FLAG);
+    Some(ChessMove::new_with_flag(start_square, target_square, flag))
 }

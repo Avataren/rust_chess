@@ -1,7 +1,8 @@
 // src/fen.rs
 
 use crate::ChessBoard;
-use chess_foundation::piece::PieceType; // Ensure this path matches your project structure
+use chess_foundation::piece::PieceType;
+use chess_foundation::ChessMove;
 
 pub struct FENParser;
 
@@ -26,9 +27,9 @@ impl FENParser {
         let board_layout = parts[0];
         let active_color = parts[1];
         let castling_rights = parts[2];
-        // let en_passant = parts[3];
+        let en_passant = parts[3];
         let halfmove_clock = parts[4].parse::<u32>().unwrap_or(0);
-        // let fullmove_number = parts[5].parse::<u32>().unwrap_or(1);
+        let fullmove_number = parts[5].parse::<u32>().unwrap_or(1);
 
         // Set pieces on the board
         Self::set_pieces_from_fen(board, board_layout);
@@ -44,6 +45,8 @@ impl FENParser {
         // board.set_en_passant_target(en_passant);
 
         board.set_halfmove_clock(halfmove_clock);
+        board.set_en_passant_from_fen(en_passant);
+        board.set_fullmove_number(fullmove_number);
     }
 
     fn set_pieces_from_fen(board: &mut ChessBoard, layout: &str) {
@@ -105,22 +108,40 @@ impl FENParser {
 
         // 3. Castling availability
         fen.push(' ');
-        fen.push_str(&board.get_castling_rights());
+        fen.push_str(&board.get_fen_castling_rights());
 
         // 4. En passant target square
         fen.push(' ');
-        //fen.push_str(&board.get_en_passant_target().unwrap_or("-".to_string()));
-        fen.push('-');
+        let ep_str = if let Some(ep_sq) = board.get_ep_target_from_fen() {
+            let file = (ep_sq % 8) as u8 + b'a';
+            let rank = (ep_sq / 8) as u8 + b'1';
+            format!("{}{}", file as char, rank as char)
+        } else if let Some(last_move) = board.get_last_move() {
+            if last_move.has_flag(ChessMove::PAWN_TWO_UP_FLAG) {
+                let pawn_dest = last_move.target_square();
+                let ep_sq = if board.is_white_active() {
+                    pawn_dest + 8  // black pawn just moved two-up; EP target is one rank above
+                } else {
+                    pawn_dest - 8  // white pawn just moved two-up; EP target is one rank below
+                };
+                let file = (ep_sq % 8) as u8 + b'a';
+                let rank = (ep_sq / 8) as u8 + b'1';
+                format!("{}{}", file as char, rank as char)
+            } else {
+                "-".to_string()
+            }
+        } else {
+            "-".to_string()
+        };
+        fen.push_str(&ep_str);
 
         // 5. Halfmove clock
         fen.push(' ');
-        fen.push('0');
-        //fen.push_str(&board.get_halfmove_clock().to_string());
+        fen.push_str(&board.get_halfmove_clock().to_string());
 
         // 6. Fullmove number
         fen.push(' ');
-        fen.push('1');
-        //fen.push_str(&board.get_fullmove_number().to_string());
+        fen.push_str(&board.get_fullmove_number().to_string());
 
         fen
     }
