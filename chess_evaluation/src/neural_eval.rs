@@ -32,9 +32,9 @@ use chess_foundation::bitboard::Bitboard;
 
 // ── Architecture constants ────────────────────────────────────────────────
 
-pub(crate) const HIDDEN1: usize = 512;
+pub(crate) const HIDDEN1: usize = 1024;
 const HIDDEN2: usize = 32;
-const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 1024
+const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 2048
 
 // ── SCReLU activation: clamp(x,0,1)² ──────────────────────────────────────
 

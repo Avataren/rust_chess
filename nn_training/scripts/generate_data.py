@@ -183,7 +183,8 @@ def main():
                     help="Minimum Elo for both players (default 2200, 0 to disable)")
     ap.add_argument("--max-elo", type=int, default=0,
                     help="Maximum Elo for both players (default 0 = no limit)")
-    ap.add_argument("--max-positions", type=int, default=200000)
+    ap.add_argument("--max-positions", type=int, default=None,
+                    help="Maximum positions to label (default: all when --fens provided, 200000 otherwise)")
     ap.add_argument("--skip-games", type=int, default=0,
                     help="Skip the first N qualifying games in the PGN (use to get non-overlapping batches)")
     ap.add_argument("--eval-depth", type=int, default=12)
@@ -202,7 +203,12 @@ def main():
     # ── Collect FENs first (fast, no engine needed) ────────────────────────
     fens: list[str] = []
 
-    pgn_cap = args.max_positions if args.selfplay_games == 0 else args.max_positions // 2
+    max_pos = args.max_positions if args.max_positions is not None else (
+        float("inf") if args.fens else 200000
+    )
+    pgn_cap = int(max_pos) if max_pos != float("inf") else 10_000_000_000
+    if args.selfplay_games > 0:
+        pgn_cap = pgn_cap // 2
 
     if args.fens:
         print(f"Loading pre-extracted FENs from {args.fens}...")
