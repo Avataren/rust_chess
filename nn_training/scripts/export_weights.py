@@ -57,11 +57,18 @@ def main():
     )
     args = ap.parse_args()
 
-    cfg = yaml.safe_load(open(args.config, "r", encoding="utf-8"))
-    mcfg = cfg["model"]
-
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     state = ckpt["model_state"]
+
+    # Prefer config saved inside the checkpoint (always matches the trained weights).
+    # Fall back to the --config file if the checkpoint predates config saving.
+    if "config" in ckpt:
+        cfg = ckpt["config"]
+        if args.config:
+            print(f"Note: using config from checkpoint (ignoring {args.config})")
+    else:
+        cfg = yaml.safe_load(open(args.config, "r", encoding="utf-8"))
+    mcfg = cfg["model"]
 
     # Auto-detect dual model: shared embedding + fc2 has 1024 input columns
     is_dual = mcfg.get("dual_perspective", False) or (
