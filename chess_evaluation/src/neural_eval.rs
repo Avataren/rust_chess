@@ -373,6 +373,103 @@ fn sub_col(acc: &mut [i16; HIDDEN1], col: &[i16]) {
     sub_col_scalar(acc, col)
 }
 
+// ── SCReLU dequantization: i16 accumulator → f32 ─────────────────────────
+//
+// Converts raw i16 accumulator values to f32 with SCReLU applied:
+//   clamp(x / scale, 0, 1)²
+//
+// AVX2 path: processes 8 i16 per iteration via cvtepi16→cvtepi32→cvtepi32_ps.
+// Scalar fallback used on non-AVX2 targets.
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn screlu_deq_avx2(acc: &[i16], scale: f32, out: &mut [f32]) {
+    use std::arch::x86_64::*;
+    debug_assert_eq!(acc.len(), out.len());
+    let zero     = _mm256_setzero_ps();
+    let vscale   = _mm256_set1_ps(scale);
+    let inv_sc   = _mm256_set1_ps(1.0 / scale);
+    let chunks   = acc.len() / 8;
+    for k in 0..chunks {
+        let vi16 = _mm_loadu_si128(acc.as_ptr().add(k * 8) as *const __m128i);
+        let vi32 = _mm256_cvtepi16_epi32(vi16);
+        let vf   = _mm256_cvtepi32_ps(vi32);
+        let clp  = _mm256_min_ps(_mm256_max_ps(vf, zero), vscale);
+        let norm = _mm256_mul_ps(clp, inv_sc);
+        _mm256_storeu_ps(out.as_mut_ptr().add(k * 8), _mm256_mul_ps(norm, norm));
+    }
+    for k in chunks * 8..acc.len() {
+        out[k] = screlu_i16(acc[k], scale);
+    }
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+fn screlu_deq_avx2(acc: &[i16], scale: f32, out: &mut [f32]) {
+    for (o, &a) in out.iter_mut().zip(acc.iter()) {
+        *o = screlu_i16(a, scale);
+    }
+}
+
+#[inline(always)]
+fn screlu_deq(acc: &[i16], scale: f32, out: &mut [f32]) {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe { return screlu_deq_avx2(acc, scale, out); }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    for (o, &a) in out.iter_mut().zip(acc.iter()) {
+        *o = screlu_i16(a, scale);
+    }
+}
+
+// ── Column-major GEMV for fc2 (input_dim × HIDDEN2 = 32) ─────────────────
+//
+// w is stored column-major: w[i * HIDDEN2 + j] = weight for output j, input i.
+// acc is pre-initialised with bias; x is the input vector.
+//
+// AVX2 + FMA path: holds all 32 outputs in 4 YMM registers, streams
+// through x once — each input element touches its 32-wide weight column
+// without evicting the accumulator registers.
+//
+// Note: hardcoded for HIDDEN2 == 32 (4 × 8-wide YMM registers).
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2", enable = "fma")]
+unsafe fn gemv_col32_avx2(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
+    use std::arch::x86_64::*;
+    debug_assert_eq!(HIDDEN2, 32);
+    debug_assert_eq!(w.len(), x.len() * HIDDEN2);
+    let mut a0 = _mm256_loadu_ps(acc.as_ptr());
+    let mut a1 = _mm256_loadu_ps(acc.as_ptr().add(8));
+    let mut a2 = _mm256_loadu_ps(acc.as_ptr().add(16));
+    let mut a3 = _mm256_loadu_ps(acc.as_ptr().add(24));
+    for i in 0..x.len() {
+        let xi  = _mm256_set1_ps(*x.get_unchecked(i));
+        let col = w.as_ptr().add(i * HIDDEN2);
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(col),        xi, a0);
+        a1 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(8)),  xi, a1);
+        a2 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(16)), xi, a2);
+        a3 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(24)), xi, a3);
+    }
+    _mm256_storeu_ps(acc.as_mut_ptr(),        a0);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(8),  a1);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(16), a2);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(24), a3);
+}
+
+fn gemv_col32_scalar(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
+    for i in 0..x.len() {
+        let xi  = x[i];
+        let col = &w[i * HIDDEN2..(i + 1) * HIDDEN2];
+        for j in 0..HIDDEN2 { acc[j] += col[j] * xi; }
+    }
+}
+
+#[inline(always)]
+fn gemv_col32(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe { return gemv_col32_avx2(w, x, acc); }
+    gemv_col32_scalar(w, x, acc)
+}
+
 // ── Evaluator ─────────────────────────────────────────────────────────────
 
 pub struct NeuralEvaluator {
@@ -476,6 +573,18 @@ impl NeuralEvaluator {
             }
         }
 
+        // Transpose w2 from row-major (HIDDEN2 × input_dim) to column-major
+        // (input_dim × HIDDEN2) so the GEMV can stream through the input once
+        // and update all HIDDEN2 outputs simultaneously — better cache utilisation.
+        let input_dim_l2 = if dual { HIDDEN1_DUAL } else { HIDDEN1 };
+        let w2_row = dq(&w2_i16);
+        let mut w2_col = vec![0.0f32; HIDDEN2 * input_dim_l2];
+        for j in 0..HIDDEN2 {
+            for i in 0..input_dim_l2 {
+                w2_col[i * HIDDEN2 + j] = w2_row[j * input_dim_l2 + i];
+            }
+        }
+
         Ok(Self {
             feature_dim,
             dual_perspective: dual,
@@ -484,7 +593,7 @@ impl NeuralEvaluator {
             b1: dq(&b1_raw),
             w1_t_i16,
             b1_i16: b1_raw,
-            w2: dq(&w2_i16),
+            w2: w2_col,
             b2: dq(&b2_i16),
             w3: dq(&w3_i16),
             b3: dq(&b3_i16),
@@ -555,44 +664,30 @@ impl NeuralEvaluator {
         bucket: usize,
     ) -> (i32, f32) {
         debug_assert!(self.dual_perspective);
-        let s = self.scale;
         let mut h_w = [0.0f32; HIDDEN1];
         let mut h_b = [0.0f32; HIDDEN1];
-        for (h, &a) in h_w.iter_mut().zip(acc_white.iter()) {
-            *h = screlu_i16(a, s);
-        }
-        for (h, &a) in h_b.iter_mut().zip(acc_black.iter()) {
-            *h = screlu_i16(a, s);
-        }
+        screlu_deq(acc_white, self.scale, &mut h_w);
+        screlu_deq(acc_black, self.scale, &mut h_b);
         self.forward_l2_heads_dual(&h_w, &h_b, bucket)
     }
 
     /// Layer 2 + heads for dual model: input is [h_w(1024) | h_b(1024)].
     fn forward_l2_heads_dual(&self, h_w: &[f32; HIDDEN1], h_b: &[f32; HIDDEN1], bucket: usize) -> (i32, f32) {
-        let mut h2 = [0.0f32; HIDDEN2];
-        for j in 0..HIDDEN2 {
-            let row = &self.w2[j * HIDDEN1_DUAL..(j + 1) * HIDDEN1_DUAL];
-            let mut acc = self.b2[j];
-            for i in 0..HIDDEN1 {
-                acc += row[i] * h_w[i];
-                acc += row[HIDDEN1 + i] * h_b[i];
-            }
-            h2[j] = screlu_f32(acc);
-        }
+        // w2 is column-major (HIDDEN1_DUAL × HIDDEN2).
+        // Split into the h_w half and the h_b half.
+        let mut h2 = self.b2[..HIDDEN2].try_into().unwrap();
+        gemv_col32(&self.w2[..HIDDEN1 * HIDDEN2],        h_w, &mut h2);
+        gemv_col32(&self.w2[HIDDEN1 * HIDDEN2..],        h_b, &mut h2);
+        for v in h2.iter_mut() { *v = screlu_f32(*v); }
         self.forward_heads(&h2, bucket)
     }
 
     /// Layer 2 + heads for single-perspective model: input is h1(1024).
     fn forward_l2_heads_single(&self, h1: &[f32; HIDDEN1], bucket: usize) -> (i32, f32) {
-        let mut h2 = [0.0f32; HIDDEN2];
-        for j in 0..HIDDEN2 {
-            let row = &self.w2[j * HIDDEN1..(j + 1) * HIDDEN1];
-            let mut acc = self.b2[j];
-            for i in 0..HIDDEN1 {
-                acc += row[i] * h1[i];
-            }
-            h2[j] = screlu_f32(acc);
-        }
+        // w2 is column-major (HIDDEN1 × HIDDEN2).
+        let mut h2: [f32; HIDDEN2] = self.b2[..HIDDEN2].try_into().unwrap();
+        gemv_col32(&self.w2, h1, &mut h2);
+        for v in h2.iter_mut() { *v = screlu_f32(*v); }
         self.forward_heads(&h2, bucket)
     }
 
