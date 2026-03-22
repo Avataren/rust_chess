@@ -53,7 +53,9 @@ fn screlu_f32(x: f32) -> f32 {
     c * c
 }
 
-const HALFKP_FEATURE_DIM: usize = 12 * 64 * 32; // 24,576
+pub(crate) const KING_BUCKETS: usize = 32;
+const NUM_PIECE_SLOTS: usize = 12;
+const HALFKP_FEATURE_DIM: usize = NUM_PIECE_SLOTS * 64 * KING_BUCKETS; // 24,576
 const LEGACY_FEATURE_DIM: usize = 768;
 
 // ── Global state ──────────────────────────────────────────────────────────
@@ -803,7 +805,7 @@ pub(crate) fn encode_dual_halfkp(
                 bb.0 &= bb.0 - 1;
                 if wc < 32 {
                     let mapped = if mirror_w { sq ^ 7 } else { sq };
-                    w_indices[wc] = $slot * 64 * 32 + mapped * 32 + wk_bucket;
+                    w_indices[wc] = $slot * 64 * KING_BUCKETS + mapped * KING_BUCKETS + wk_bucket;
                     wc += 1;
                 }
             }
@@ -819,7 +821,7 @@ pub(crate) fn encode_dual_halfkp(
                 if bc < 32 {
                     let rank_flipped = sq ^ 56;
                     let mapped = if mirror_b { rank_flipped ^ 7 } else { rank_flipped };
-                    b_indices[bc] = $slot * 64 * 32 + mapped * 32 + bk_bucket;
+                    b_indices[bc] = $slot * 64 * KING_BUCKETS + mapped * KING_BUCKETS + bk_bucket;
                     bc += 1;
                 }
             }
@@ -923,7 +925,7 @@ fn encode_active_features_halfkp(board: &ChessBoard) -> ([usize; 32], usize) {
                 let sq = bb.0.trailing_zeros() as usize;
                 bb.0 &= bb.0 - 1;
                 let mapped = if flip { sq ^ 56 } else { sq };
-                indices[count] = $slot * 64 * 32 + mapped * 32 + bucket;
+                indices[count] = $slot * 64 * KING_BUCKETS + mapped * KING_BUCKETS + bucket;
                 count += 1;
             }
         };
@@ -1221,7 +1223,7 @@ mod tests {
         let file_bucket  = if mapped % 8 <= 3 { mapped % 8 } else { 7 - mapped % 8 };
         let rank_quarter = (mapped / 8) / 2;
         let bucket       = rank_quarter * 4 + file_bucket;
-        let expected    = 5 * 64 * 32 + mapped * 32 + bucket;
+        let expected    = 5 * 64 * KING_BUCKETS + mapped * KING_BUCKETS + bucket;
         assert!(
             w_idx[..wc].contains(&expected),
             "White king index {expected} not found in dual white-pov features"
@@ -1242,7 +1244,7 @@ mod tests {
         let file_bucket  = if mapped % 8 <= 3 { mapped % 8 } else { 7 - mapped % 8 };
         let rank_quarter = (mapped / 8) / 2;
         let bucket       = rank_quarter * 4 + file_bucket;
-        let expected     = 5 * 64 * 32 + mapped * 32 + bucket;
+        let expected     = 5 * 64 * KING_BUCKETS + mapped * KING_BUCKETS + bucket;
         assert!(
             b_idx[..bc].contains(&expected),
             "Black king index {expected} not found in dual black-pov features"

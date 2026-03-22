@@ -1,6 +1,7 @@
 use chess_board::ChessBoard;
 use chess_foundation::piece::PieceType;
 use chess_foundation::ChessMove;
+use crate::neural_eval::KING_BUCKETS;
 use move_generator::{
     move_generator::{get_all_legal_captures_for_color, get_all_legal_moves_for_color},
     piece_conductor::PieceConductor,
@@ -358,11 +359,11 @@ impl SearchContext {
         let slot_b = halfkp_piece_slot(orig_pt, !piece_is_white);
         crate::neural_eval::acc_sub_feature(
             acc_w,
-            slot_w * 64 * 32 + w_sq(from_sq) * 32 + wk_bucket,
+            slot_w * 64 * KING_BUCKETS + w_sq(from_sq) * KING_BUCKETS + wk_bucket,
         );
         crate::neural_eval::acc_sub_feature(
             acc_b,
-            slot_b * 64 * 32 + b_sq(from_sq) * 32 + bk_bucket,
+            slot_b * 64 * KING_BUCKETS + b_sq(from_sq) * KING_BUCKETS + bk_bucket,
         );
 
         // Add moving piece to its destination square (promotion may change type)
@@ -375,11 +376,11 @@ impl SearchContext {
         let to_slot_b = halfkp_piece_slot(to_pt, !piece_is_white);
         crate::neural_eval::acc_add_feature(
             acc_w,
-            to_slot_w * 64 * 32 + w_sq(to_sq) * 32 + wk_bucket,
+            to_slot_w * 64 * KING_BUCKETS + w_sq(to_sq) * KING_BUCKETS + wk_bucket,
         );
         crate::neural_eval::acc_add_feature(
             acc_b,
-            to_slot_b * 64 * 32 + b_sq(to_sq) * 32 + bk_bucket,
+            to_slot_b * 64 * KING_BUCKETS + b_sq(to_sq) * KING_BUCKETS + bk_bucket,
         );
 
         // Remove captured piece (en passant: captured pawn is not at to_sq)
@@ -393,11 +394,11 @@ impl SearchContext {
             let cap_slot_b = halfkp_piece_slot(PieceType::Pawn, piece_is_white);
             crate::neural_eval::acc_sub_feature(
                 acc_w,
-                cap_slot_w * 64 * 32 + w_sq(cap_sq) * 32 + wk_bucket,
+                cap_slot_w * 64 * KING_BUCKETS + w_sq(cap_sq) * KING_BUCKETS + wk_bucket,
             );
             crate::neural_eval::acc_sub_feature(
                 acc_b,
-                cap_slot_b * 64 * 32 + b_sq(cap_sq) * 32 + bk_bucket,
+                cap_slot_b * 64 * KING_BUCKETS + b_sq(cap_sq) * KING_BUCKETS + bk_bucket,
             );
         } else if let Some(cap) = mv.capture {
             let cap_pt = cap.piece_type();
@@ -406,11 +407,11 @@ impl SearchContext {
             let cap_slot_b = halfkp_piece_slot(cap_pt, !cap_is_white);
             crate::neural_eval::acc_sub_feature(
                 acc_w,
-                cap_slot_w * 64 * 32 + w_sq(to_sq) * 32 + wk_bucket,
+                cap_slot_w * 64 * KING_BUCKETS + w_sq(to_sq) * KING_BUCKETS + wk_bucket,
             );
             crate::neural_eval::acc_sub_feature(
                 acc_b,
-                cap_slot_b * 64 * 32 + b_sq(to_sq) * 32 + bk_bucket,
+                cap_slot_b * 64 * KING_BUCKETS + b_sq(to_sq) * KING_BUCKETS + bk_bucket,
             );
         }
 
