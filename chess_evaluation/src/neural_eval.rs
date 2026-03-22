@@ -33,7 +33,7 @@ use chess_foundation::bitboard::Bitboard;
 // ── Architecture constants ────────────────────────────────────────────────
 
 pub(crate) const HIDDEN1: usize = 1024;
-const HIDDEN2: usize = 32;
+const HIDDEN2: usize = 64;
 const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 2048
 
 // ── SCReLU activation: clamp(x,0,1)² ──────────────────────────────────────
@@ -435,12 +435,16 @@ fn screlu_deq(acc: &[i16], scale: f32, out: &mut [f32]) {
 #[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn gemv_col32_avx2(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
     use std::arch::x86_64::*;
-    debug_assert_eq!(HIDDEN2, 32);
+    debug_assert_eq!(HIDDEN2 % 8, 0);
     debug_assert_eq!(w.len(), x.len() * HIDDEN2);
     let mut a0 = _mm256_loadu_ps(acc.as_ptr());
     let mut a1 = _mm256_loadu_ps(acc.as_ptr().add(8));
     let mut a2 = _mm256_loadu_ps(acc.as_ptr().add(16));
     let mut a3 = _mm256_loadu_ps(acc.as_ptr().add(24));
+    let mut a4 = _mm256_loadu_ps(acc.as_ptr().add(32));
+    let mut a5 = _mm256_loadu_ps(acc.as_ptr().add(40));
+    let mut a6 = _mm256_loadu_ps(acc.as_ptr().add(48));
+    let mut a7 = _mm256_loadu_ps(acc.as_ptr().add(56));
     for i in 0..x.len() {
         let xi  = _mm256_set1_ps(*x.get_unchecked(i));
         let col = w.as_ptr().add(i * HIDDEN2);
@@ -448,11 +452,19 @@ unsafe fn gemv_col32_avx2(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
         a1 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(8)),  xi, a1);
         a2 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(16)), xi, a2);
         a3 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(24)), xi, a3);
+        a4 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(32)), xi, a4);
+        a5 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(40)), xi, a5);
+        a6 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(48)), xi, a6);
+        a7 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(56)), xi, a7);
     }
     _mm256_storeu_ps(acc.as_mut_ptr(),        a0);
     _mm256_storeu_ps(acc.as_mut_ptr().add(8),  a1);
     _mm256_storeu_ps(acc.as_mut_ptr().add(16), a2);
     _mm256_storeu_ps(acc.as_mut_ptr().add(24), a3);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(32), a4);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(40), a5);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(48), a6);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(56), a7);
 }
 
 fn gemv_col32_scalar(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
