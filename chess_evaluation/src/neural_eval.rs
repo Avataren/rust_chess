@@ -53,7 +53,7 @@ fn screlu_f32(x: f32) -> f32 {
     c * c
 }
 
-const HALFKP_FEATURE_DIM: usize = 12 * 64 * 16; // 12,288
+const HALFKP_FEATURE_DIM: usize = 12 * 64 * 32; // 24,576
 const LEGACY_FEATURE_DIM: usize = 768;
 
 // ── Global state ──────────────────────────────────────────────────────────
@@ -755,8 +755,8 @@ pub(crate) const KING_BUCKET: [usize; 64] = {
         let file = sq % 8;
         let rank = sq / 8;
         let file_bucket = if file <= 3 { file } else { 7 - file };
-        let rank_half = if rank <= 3 { 0 } else { 1 };
-        t[sq] = rank_half * 4 + file_bucket;
+        let rank_quarter = rank / 2;
+        t[sq] = rank_quarter * 4 + file_bucket;
         sq += 1;
     }
     t
@@ -766,7 +766,7 @@ pub(crate) const KING_BUCKET: [usize; 64] = {
 ///
 /// White perspective: absolute (white king = ours, white pieces = slots 0-5).
 /// Black perspective: rank-flipped (black king = ours, black pieces = slots 0-5).
-/// Both use the same feature formula: slot*64*16 + mapped_sq*16 + king_bucket.
+/// Both use the same feature formula: slot*64*32 + mapped_sq*32 + king_bucket.
 ///
 /// Horizontal mirroring: when the king is on files 4-7 (e-h), piece square files
 /// are flipped (`sq ^ 7` flips bits 0-2, preserving rank bits 3-5).  This ensures
@@ -803,7 +803,7 @@ pub(crate) fn encode_dual_halfkp(
                 bb.0 &= bb.0 - 1;
                 if wc < 32 {
                     let mapped = if mirror_w { sq ^ 7 } else { sq };
-                    w_indices[wc] = $slot * 64 * 16 + mapped * 16 + wk_bucket;
+                    w_indices[wc] = $slot * 64 * 32 + mapped * 32 + wk_bucket;
                     wc += 1;
                 }
             }
@@ -819,7 +819,7 @@ pub(crate) fn encode_dual_halfkp(
                 if bc < 32 {
                     let rank_flipped = sq ^ 56;
                     let mapped = if mirror_b { rank_flipped ^ 7 } else { rank_flipped };
-                    b_indices[bc] = $slot * 64 * 16 + mapped * 16 + bk_bucket;
+                    b_indices[bc] = $slot * 64 * 32 + mapped * 32 + bk_bucket;
                     bc += 1;
                 }
             }
@@ -923,7 +923,7 @@ fn encode_active_features_halfkp(board: &ChessBoard) -> ([usize; 32], usize) {
                 let sq = bb.0.trailing_zeros() as usize;
                 bb.0 &= bb.0 - 1;
                 let mapped = if flip { sq ^ 56 } else { sq };
-                indices[count] = $slot * 64 * 16 + mapped * 16 + bucket;
+                indices[count] = $slot * 64 * 32 + mapped * 32 + bucket;
                 count += 1;
             }
         };
@@ -1221,7 +1221,7 @@ mod tests {
         let file_bucket = if mapped % 8 <= 3 { mapped % 8 } else { 7 - mapped % 8 };
         let rank_half   = if mapped / 8 <= 3 { 0 } else { 1 };
         let bucket      = rank_half * 4 + file_bucket;
-        let expected    = 5 * 64 * 16 + mapped * 16 + bucket;
+        let expected    = 5 * 64 * 32 + mapped * 32 + bucket;
         assert!(
             w_idx[..wc].contains(&expected),
             "White king index {expected} not found in dual white-pov features"
@@ -1242,7 +1242,7 @@ mod tests {
         let file_bucket  = if mapped % 8 <= 3 { mapped % 8 } else { 7 - mapped % 8 };
         let rank_half    = if mapped / 8 <= 3 { 0 } else { 1 };
         let bucket       = rank_half * 4 + file_bucket;
-        let expected     = 5 * 64 * 16 + mapped * 16 + bucket;
+        let expected     = 5 * 64 * 32 + mapped * 32 + bucket;
         assert!(
             b_idx[..bc].contains(&expected),
             "Black king index {expected} not found in dual black-pov features"

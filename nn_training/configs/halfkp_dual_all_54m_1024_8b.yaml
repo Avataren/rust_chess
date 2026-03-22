@@ -14,7 +14,7 @@ training:
   prefetch_factor: 4
 
 model:
-  input_dim: 12288
+  input_dim: 24576
   hidden_dim: 1024
   hidden2_dim: 64
   dropout: 0.3

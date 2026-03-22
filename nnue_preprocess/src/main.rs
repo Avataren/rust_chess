@@ -26,7 +26,7 @@ use chess_board::{ChessBoard, FENParser};
 
 // ── Architecture constants (must match chess_evaluation::neural_eval) ─────
 
-const HALFKP_DIM: usize = 12 * 64 * 16; // 12,288
+const HALFKP_DIM: usize = 12 * 64 * 32; // 24,576
 const SENTINEL: u16 = HALFKP_DIM as u16;
 const MAX_ACTIVE: usize = 32;
 const WRITE_BUF: usize = 8 * 1024 * 1024; // 8 MB per output file
@@ -41,8 +41,8 @@ const KING_BUCKET: [usize; 64] = {
         let file = sq % 8;
         let rank = sq / 8;
         let fb = if file <= 3 { file } else { 7 - file };
-        let rh = if rank <= 3 { 0 } else { 1 };
-        t[sq] = rh * 4 + fb;
+        let rq = rank / 2;
+        t[sq] = rq * 4 + fb;
         sq += 1;
     }
     t
@@ -111,7 +111,7 @@ fn encode_dual(board: &ChessBoard) -> ([u16; MAX_ACTIVE], [u16; MAX_ACTIVE], u8)
                 bb.0 &= bb.0 - 1;
                 if wc < MAX_ACTIVE {
                     let m = if mirror_w { sq ^ 7 } else { sq };
-                    w_idx[wc] = ($slot * 64 * 16 + m * 16 + wk_bucket) as u16;
+                    w_idx[wc] = ($slot * 64 * 32 + m * 32 + wk_bucket) as u16;
                     wc += 1;
                 }
             }
@@ -127,7 +127,7 @@ fn encode_dual(board: &ChessBoard) -> ([u16; MAX_ACTIVE], [u16; MAX_ACTIVE], u8)
                 if bc < MAX_ACTIVE {
                     let r = sq ^ 56;
                     let m = if mirror_b { r ^ 7 } else { r };
-                    b_idx[bc] = ($slot * 64 * 16 + m * 16 + bk_bucket) as u16;
+                    b_idx[bc] = ($slot * 64 * 32 + m * 32 + bk_bucket) as u16;
                     bc += 1;
                 }
             }
@@ -187,7 +187,7 @@ fn encode_single(board: &ChessBoard) -> ([u16; MAX_ACTIVE], u8) {
                 bb.0 &= bb.0 - 1;
                 if count < MAX_ACTIVE {
                     let m = if flip { sq ^ 56 } else { sq };
-                    indices[count] = ($slot * 64 * 16 + m * 16 + bucket) as u16;
+                    indices[count] = ($slot * 64 * 32 + m * 32 + bucket) as u16;
                     count += 1;
                 }
             }

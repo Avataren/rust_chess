@@ -43,30 +43,31 @@ def encode_board_12x64(board: chess.Board) -> np.ndarray:
 
 # ── King-bucketed HalfKP features ─────────────────────────────────────────
 #
-# Feature space: 12 piece types × 64 squares × 16 king buckets = 12,288
+# Feature space: 12 piece types × 64 squares × 32 king buckets = 24,576
 #
 # King bucket layout (from side-to-move's perspective after board mirror):
 #   Files are collapsed to 4 buckets (queenside mirror): file 0-3 → 0,1,2,3
 #                                                         file 4-7 → 3,2,1,0
-#   Ranks split into 2 halves: ranks 0-3 → half 0, ranks 4-7 → half 1
-#   bucket = rank_half * 4 + file_bucket  →  0..7 per half = 0..15 total
+#   Ranks split into 4 quarters: rank // 2  →  0,0,1,1,2,2,3,3
+#   bucket = rank_quarter * 4 + file_bucket  →  0..15 per quarter = 0..31 total
 #
 # Layout per feature:
-#   feature_index = piece_offset * 16 + piece_square * 16 + king_bucket
-# where piece_offset is 0..11 × 64 (same ordering as 12x64 above).
+#   feature_index = piece_slot * 64 * 32 + piece_square * 32 + king_bucket
+# where piece_slot is 0..11 (same ordering as 12x64 above).
 
-HALFKP_FEATURE_DIM = 12 * 64 * 16  # 12,288
+HALFKP_FEATURE_DIM = 12 * 64 * 32  # 24,576
 
 # Precompute king bucket for each of the 64 squares (from side-to-move view).
 # Files 0-3 map directly; files 4-7 are mirrored onto 3-0.
+# Ranks split into quarters (rank // 2) instead of halves for finer resolution.
 def _build_king_bucket_table() -> list[int]:
     table = []
     for sq in range(64):
         file = sq % 8
         rank = sq // 8
         file_bucket = file if file <= 3 else 7 - file
-        rank_half = 0 if rank <= 3 else 1
-        table.append(rank_half * 4 + file_bucket)
+        rank_quarter = rank // 2
+        table.append(rank_quarter * 4 + file_bucket)
     return table
 
 KING_BUCKET = _build_king_bucket_table()
@@ -124,7 +125,7 @@ def encode_board_halfkp_dual(board: chess.Board) -> tuple[np.ndarray, np.ndarray
                 break
             slot = _PIECE_SLOT[(piece.piece_type, piece.color)]
             mapped_sq = square ^ 7 if mirror else square
-            result[count] = slot * 64 * 16 + mapped_sq * 16 + bucket
+            result[count] = slot * 64 * 32 + mapped_sq * 32 + bucket
             count += 1
         return result
 
@@ -158,7 +159,7 @@ def encode_board_halfkp(board: chess.Board) -> np.ndarray:
 
     for square, piece in board.piece_map().items():
         slot = _PIECE_SLOT[(piece.piece_type, piece.color)]
-        idx = slot * 64 * 16 + square * 16 + bucket
+        idx = slot * 64 * 32 + square * 32 + bucket
         x[idx] = 1.0
 
     return x
