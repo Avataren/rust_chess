@@ -20,9 +20,11 @@ _engine: chess.engine.SimpleEngine | None = None
 _eval_depth: int = 12
 
 
-def _worker_init(stockfish_path: str, depth: int) -> None:
+def _worker_init(stockfish_path: str, depth: int, syzygy_path: str = "") -> None:
     global _engine, _eval_depth
     _engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+    if syzygy_path:
+        _engine.configure({"SyzygyPath": syzygy_path, "SyzygyProbeDepth": 1})
     _eval_depth = depth
 
 
@@ -188,6 +190,8 @@ def main():
     ap.add_argument("--skip-games", type=int, default=0,
                     help="Skip the first N qualifying games in the PGN (use to get non-overlapping batches)")
     ap.add_argument("--eval-depth", type=int, default=12)
+    ap.add_argument("--syzygy-path", type=str, default="",
+                    help="Path to Syzygy tablebase files for near-instant ≤7 piece evaluation")
     ap.add_argument("--workers", type=int, default=1,
                     help="Number of parallel Stockfish labeling workers (default 1)")
     ap.add_argument("--selfplay-games", type=int, default=50000)
@@ -271,7 +275,7 @@ def main():
         with Pool(
             processes=args.workers,
             initializer=_worker_init,
-            initargs=(args.label_engine, args.eval_depth),
+            initargs=(args.label_engine, args.eval_depth, args.syzygy_path),
         ) as pool:
             for result in tqdm(
                 pool.imap_unordered(_label_fen, fens, chunksize=chunksize),

@@ -585,14 +585,17 @@ fn quiescence(
     mut alpha: i32,
     mut beta: i32,
     is_white: bool,
+    parent_eval: Option<i32>,
     qdepth: i32,
     ply: usize,
 ) -> i32 {
     ctx.nodes += 1;
     if qdepth == 0 {
-        return eval_node(chess_board, conductor, ctx, ply);
+        return parent_eval.unwrap_or_else(|| eval_node(chess_board, conductor, ctx, ply));
     }
-    let stand_pat = eval_node(chess_board, conductor, ctx, ply);
+    // Reuse the eval passed in from the parent (avoids a redundant eval_node call
+    // at the top-level qsearch entry); recursive calls pass None.
+    let stand_pat = parent_eval.unwrap_or_else(|| eval_node(chess_board, conductor, ctx, ply));
 
     // Fail-soft quiescence: return the actual best score found, not alpha/beta.
     if is_white {
@@ -650,6 +653,7 @@ fn quiescence(
                 alpha,
                 beta,
                 false,
+                None,
                 qdepth - 1,
                 ply + 1,
             );
@@ -724,6 +728,7 @@ fn quiescence(
                 alpha,
                 beta,
                 true,
+                None,
                 qdepth - 1,
                 ply + 1,
             );
@@ -935,12 +940,15 @@ pub fn alpha_beta(
     let depth = depth + extension;
 
     if depth == 0 {
-        // 12-ply quiescence cap: deep enough to resolve long capture chains
-        // that arise in endgames (pawn races, exchange sequences) while
-        // avoiding unbounded recursion.  SEE pruning inside quiescence
-        // means the extra budget costs little in practice.
+        // Compute eval once here and pass it into quiescence so the top-level
+        // qsearch node reuses it as stand_pat without a second eval call.
+        let entry_eval = if !in_check {
+            Some(eval_node(chess_board, conductor, ctx, ply))
+        } else {
+            None
+        };
         return (
-            quiescence(chess_board, conductor, ctx, alpha, beta, is_white, 12, ply),
+            quiescence(chess_board, conductor, ctx, alpha, beta, is_white, entry_eval, 12, ply),
             None,
         );
     }
