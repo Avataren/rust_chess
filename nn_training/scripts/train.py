@@ -270,9 +270,21 @@ def main():
     ap.add_argument("--reset-best-val", action="store_true",
                     help="Reset best_val to inf when resuming (use when finetuning on a different dataset)")
     ap.add_argument("--tb-logdir", default="runs/nn_training", help="TensorBoard log directory")
+    ap.add_argument("--warmup-epochs", type=int, default=None, help="Override warmup_epochs from config")
+    ap.add_argument("--lr", type=float, default=None, help="Override lr from config")
+    ap.add_argument("--cp-weight", type=float, default=None, help="Override loss.cp_weight from config")
+    ap.add_argument("--wdl-weight", type=float, default=None, help="Override loss.wdl_weight from config")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config, "r", encoding="utf-8"))
+    if args.warmup_epochs is not None:
+        cfg["training"]["warmup_epochs"] = args.warmup_epochs
+    if args.lr is not None:
+        cfg["training"]["lr"] = args.lr
+    if args.cp_weight is not None:
+        cfg["loss"]["cp_weight"] = args.cp_weight
+    if args.wdl_weight is not None:
+        cfg["loss"]["wdl_weight"] = args.wdl_weight
     set_seed(cfg["seed"])
 
     device = detect_device()

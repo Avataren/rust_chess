@@ -19,7 +19,7 @@ chess_evaluation = { path = "chess_evaluation", default-features = false, featur
 
 [profile.release]
 strip = true
-lto = false
+lto = true
 opt-level = 3
 
 [profile.wasm-release]

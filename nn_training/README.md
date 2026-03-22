@@ -6,10 +6,13 @@ End-to-end pipeline for training a chess evaluation network used by the Rust eng
 
 Current: **Dual-perspective HalfKP NNUE** (Phase 4)
 
-- Input: 12,288 (`12 pieces × 64 squares × 16 king buckets`) sparse features, evaluated from **both** white and black's perspective simultaneously
-- Hidden: 512+512 (two shared accumulators, one per perspective) → concatenated 1024 → 32
-- Outputs: centipawn scalar (white-absolute) + 3-way WDL logits
+- Input: 24,576 (`12 pieces × 64 squares × 32 king buckets`) sparse features, evaluated from **both** white and black's perspective simultaneously
+- Hidden: 1024+1024 (two shared accumulators, one per perspective) → concatenated 2048 → 64
+- Output buckets: 8 (by piece count), each with a centipawn head + 3-way WDL head
+- CP output is white-absolute (positive = good for white); only the CP head is used at inference
 - Weights exported as int16-quantized `.npz` for Rust inference
+
+**King bucket layout** (32 buckets): files mirrored queenside (4 file buckets) × ranks split into quarters (4 rank buckets) = 16 buckets per half × 2 halves = 32 total. Feature index = `piece_slot × 64 × 32 + piece_square × 32 + king_bucket`.
 
 **Rust inference path:**
 - Accumulators maintained incrementally during search (only ~2 column updates per move)
@@ -289,8 +292,13 @@ PYTHONPATH=. python3 scripts/train.py \
   --config configs/halfkp_dual_20m.yaml \
   --out    artifacts/checkpoint_dual_20m_ft.pt \
   --resume artifacts/checkpoint_dual_20m.pt \
+  --reset-best-val \
+  --warmup-epochs 0 \
   --tb-logdir runs/dual_20m_ft
 ```
+
+Use `--warmup-epochs 0` when resuming a trained model — warmup is only needed from scratch.
+Use `--reset-best-val` when the loss weights or dataset change, so the new run can save checkpoints.
 
 Watch training live:
 ```bash
@@ -463,6 +471,25 @@ Typical finetune config differences from base training:
 
 > **ROCm note**: `reduce-overhead` causes GPU memory faults on RDNA3 (gfx1100). Use `default`.
 
+### CLI overrides
+
+Any of the following flags override the corresponding config value without editing the YAML:
+
+```
+--warmup-epochs N    override training.warmup_epochs
+--lr F               override training.lr
+--cp-weight F        override loss.cp_weight
+--wdl-weight F       override loss.wdl_weight
+```
+
+### Loss weight guidance
+
+Both `cp_weight` and `wdl_weight` affect the same Stockfish-labelled positions — the WDL targets are derived from cp scores, not actual game outcomes. At typical material imbalances (150–300cp), the WDL target is 62–81% draw, so a high `wdl_weight` causes the shared h2 representation to compress mid-range evaluations toward "draw-like" features, reducing the cp head's sensitivity to material.
+
+**Recommended**: `cp_weight: 0.7, wdl_weight: 0.3`. The WDL head provides useful gradient diversity and smooth targets at extremes, but should not dominate.
+
+To find ideal values empirically, run short sweeps (25–30 epochs each) with `--cp-weight` at 0.5, 0.7, 0.9 and compare `val/cp_mae`.
+
 ---
 
 ## Configs
@@ -478,6 +505,7 @@ Typical finetune config differences from base training:
 | `halfkp_dual_21m_endgame_ft.yaml` | `data/combined_21m/` | 1 | Endgame finetune, 40% oversample |
 | `halfkp_dual_balanced.yaml` | `data/balanced_24m/` | 2 | Balanced 24M dataset (33% endgame) |
 | `halfkp_finetune_1m.yaml` | `data/finetune_1m/` | 2 | 1M balanced finetune |
+| `halfkp_dual_all_54m_1024_8b.yaml` | `data/all_54m/` | 8 | **Active** — 54M, 32 king buckets, h1=1024, h2=64, 8 output buckets |
 
 ---
 
