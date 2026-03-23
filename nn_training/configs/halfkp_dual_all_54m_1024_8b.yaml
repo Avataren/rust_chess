@@ -22,8 +22,8 @@ model:
   n_output_buckets: 8
 
 loss:
-  cp_weight: 0.7
-  wdl_weight: 0.3
+  cp_weight: 0.9
+  wdl_weight: 0.1
 
 data:
   train_file: data/all_54m/train_all_54m.jsonl

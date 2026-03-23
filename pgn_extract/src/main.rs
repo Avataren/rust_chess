@@ -61,6 +61,12 @@ struct Extractor {
     rng: rand::rngs::ThreadRng,
 }
 
+fn elo_ok(white_elo: u32, black_elo: u32, min_elo: u32, max_elo: u32) -> bool {
+    let min_ok = min_elo == 0 || (white_elo >= min_elo && black_elo >= min_elo);
+    let max_ok = max_elo == 0 || (white_elo <= max_elo && black_elo <= max_elo);
+    min_ok && max_ok
+}
+
 impl Extractor {
     fn new(args: &Args) -> Self {
         let writer: Box<dyn Write> = match &args.output {
@@ -86,11 +92,7 @@ impl Extractor {
     }
 
     fn elo_ok(&self) -> bool {
-        let min_ok = self.min_elo == 0
-            || (self.white_elo >= self.min_elo && self.black_elo >= self.min_elo);
-        let max_ok = self.max_elo == 0
-            || (self.white_elo <= self.max_elo && self.black_elo <= self.max_elo);
-        min_ok && max_ok
+        elo_ok(self.white_elo, self.black_elo, self.min_elo, self.max_elo)
     }
 }
 
@@ -135,12 +137,14 @@ impl Visitor for Extractor {
         }
         let san = san_plus.san;
         if let Ok(mv) = san.to_move(&self.pos) {
-            self.pos = self.pos.clone().play(&mv).unwrap();
+            let old = std::mem::replace(&mut self.pos, Chess::default());
+            let new_pos = old.play(&mv).unwrap();
             self.ply += 1;
             if self.ply >= self.min_ply {
-                let fen = Fen::from_position(self.pos.clone(), shakmaty::EnPassantMode::Legal);
+                let fen = Fen::from_position(new_pos.clone(), shakmaty::EnPassantMode::Legal);
                 self.candidate_fens.push(fen.to_string());
             }
+            self.pos = new_pos;
         }
     }
 

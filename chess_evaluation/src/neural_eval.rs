@@ -152,6 +152,23 @@ pub fn try_neural_eval_accum(
     })
 }
 
+fn fill_accumulators(
+    evaluator: &NeuralEvaluator,
+    board: &ChessBoard,
+    acc_white: &mut [i16; HIDDEN1],
+    acc_black: &mut [i16; HIDDEN1],
+) {
+    let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(board);
+    acc_white.copy_from_slice(&evaluator.b1_i16);
+    for &i in &w_idx[..wc] {
+        add_col(acc_white, &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1]);
+    }
+    acc_black.copy_from_slice(&evaluator.b1_i16);
+    for &i in &b_idx[..bc] {
+        add_col(acc_black, &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1]);
+    }
+}
+
 /// Initialize both accumulators from scratch for the given board position.
 /// Returns true iff neural eval is enabled, a dual model is loaded, and
 /// initialization succeeded.  Accumulators hold raw i16 quantized values.
@@ -167,19 +184,7 @@ pub fn init_accumulators_for_board(
         Some(e) if e.dual_perspective => e,
         _ => return false,
     };
-    let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(board);
-
-    acc_white.copy_from_slice(&evaluator.b1_i16);
-    for &i in &w_idx[..wc] {
-        let col = &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
-        add_col(acc_white, col);
-    }
-
-    acc_black.copy_from_slice(&evaluator.b1_i16);
-    for &i in &b_idx[..bc] {
-        let col = &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
-        add_col(acc_black, col);
-    }
+    fill_accumulators(evaluator, board, acc_white, acc_black);
     true
 }
 
@@ -232,17 +237,7 @@ pub fn init_accumulators_direct(
         Some(e) if e.dual_perspective => e,
         _ => return false,
     };
-    let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(board);
-    acc_white.copy_from_slice(&evaluator.b1_i16);
-    for &i in &w_idx[..wc] {
-        let col = &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
-        add_col(acc_white, col);
-    }
-    acc_black.copy_from_slice(&evaluator.b1_i16);
-    for &i in &b_idx[..bc] {
-        let col = &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1];
-        add_col(acc_black, col);
-    }
+    fill_accumulators(evaluator, board, acc_white, acc_black);
     true
 }
 

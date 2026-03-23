@@ -238,6 +238,14 @@ fn open_out(prefix: &Path, ext: &str) -> BufWriter<File> {
 // ── Encode loop ───────────────────────────────────────────────────────────
 
 fn run(input: &Path, out_prefix: &Path, dual: bool, max_cp: f64) {
+    if dual {
+        run_dual(input, out_prefix, max_cp);
+    } else {
+        run_single(input, out_prefix, max_cp);
+    }
+}
+
+fn run_dual(input: &Path, out_prefix: &Path, max_cp: f64) {
     eprint!("Counting lines in {} … ", input.display());
     let n = count_lines(input);
     eprintln!("{n}");
@@ -245,103 +253,109 @@ fn run(input: &Path, out_prefix: &Path, dual: bool, max_cp: f64) {
     let mut board = ChessBoard::new();
     let reader = BufReader::with_capacity(WRITE_BUF, File::open(input).expect("cannot open input"));
 
-    if dual {
-        let mut w_f  = open_out(out_prefix, ".white_indices.npy");
-        let mut b_f  = open_out(out_prefix, ".black_indices.npy");
-        let mut c_f  = open_out(out_prefix, ".counts.npy");
-        let mut cp_f = open_out(out_prefix, ".cp.npy");
-        let mut pc_f = open_out(out_prefix, ".piece_count.npy");
+    let mut w_f  = open_out(out_prefix, ".white_indices.npy");
+    let mut b_f  = open_out(out_prefix, ".black_indices.npy");
+    let mut c_f  = open_out(out_prefix, ".counts.npy");
+    let mut cp_f = open_out(out_prefix, ".cp.npy");
+    let mut pc_f = open_out(out_prefix, ".piece_count.npy");
 
-        write_npy_header(&mut w_f,  "<u2", &[n, MAX_ACTIVE]).unwrap();
-        write_npy_header(&mut b_f,  "<u2", &[n, MAX_ACTIVE]).unwrap();
-        write_npy_header(&mut c_f,  "|u1", &[n]).unwrap();
-        write_npy_header(&mut cp_f, "<f4", &[n]).unwrap();
-        write_npy_header(&mut pc_f, "|u1", &[n]).unwrap();
+    write_npy_header(&mut w_f,  "<u2", &[n, MAX_ACTIVE]).unwrap();
+    write_npy_header(&mut b_f,  "<u2", &[n, MAX_ACTIVE]).unwrap();
+    write_npy_header(&mut c_f,  "|u1", &[n]).unwrap();
+    write_npy_header(&mut cp_f, "<f4", &[n]).unwrap();
+    write_npy_header(&mut pc_f, "|u1", &[n]).unwrap();
 
-        let t0 = Instant::now();
-        let mut i = 0usize;
-        for line in reader.lines() {
-            let line = line.expect("read error");
-            if line.trim().is_empty() { continue; }
+    let t0 = Instant::now();
+    let mut i = 0usize;
+    for line in reader.lines() {
+        let line = line.expect("read error");
+        if line.trim().is_empty() { continue; }
 
-            let v: serde_json::Value = serde_json::from_str(&line)
-                .unwrap_or_else(|e| panic!("JSON error on line {i}: {e}\n  {line}"));
-            let fen = v["fen"].as_str().expect("missing fen");
-            let mut cp = v["cp"].as_f64().expect("missing cp");
-            cp = cp.clamp(-max_cp, max_cp);
+        let v: serde_json::Value = serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("JSON error on line {i}: {e}\n  {line}"));
+        let fen = v["fen"].as_str().expect("missing fen");
+        let mut cp = v["cp"].as_f64().expect("missing cp");
+        cp = cp.clamp(-max_cp, max_cp);
 
-            board.clear();
-            FENParser::set_board_from_fen(&mut board, fen);
+        board.clear();
+        FENParser::set_board_from_fen(&mut board, fen);
 
-            if !board.is_white_active() { cp = -cp; }
+        if !board.is_white_active() { cp = -cp; }
 
-            let (w_idx, b_idx, count) = encode_dual(&board);
-            let piece_count = board.get_all_pieces().count_ones() as u8;
+        let (w_idx, b_idx, count) = encode_dual(&board);
+        let piece_count = board.get_all_pieces().count_ones() as u8;
 
-            for v in &w_idx  { w_f.write_all(&v.to_le_bytes()).unwrap(); }
-            for v in &b_idx  { b_f.write_all(&v.to_le_bytes()).unwrap(); }
-            c_f.write_all(&[count]).unwrap();
-            cp_f.write_all(&(cp as f32).to_le_bytes()).unwrap();
-            pc_f.write_all(&[piece_count]).unwrap();
+        for v in &w_idx  { w_f.write_all(&v.to_le_bytes()).unwrap(); }
+        for v in &b_idx  { b_f.write_all(&v.to_le_bytes()).unwrap(); }
+        c_f.write_all(&[count]).unwrap();
+        cp_f.write_all(&(cp as f32).to_le_bytes()).unwrap();
+        pc_f.write_all(&[piece_count]).unwrap();
 
-            i += 1;
-            if i % PROGRESS_EVERY == 0 {
-                let elapsed = t0.elapsed().as_secs_f64();
-                let rate = i as f64 / elapsed;
-                eprintln!("  {i}/{n}  ({:.0}k pos/s)", rate / 1000.0);
-            }
+        i += 1;
+        if i % PROGRESS_EVERY == 0 {
+            let elapsed = t0.elapsed().as_secs_f64();
+            let rate = i as f64 / elapsed;
+            eprintln!("  {i}/{n}  ({:.0}k pos/s)", rate / 1000.0);
         }
-        // Ensure all buffers flushed
-        for f in [&mut w_f, &mut b_f, &mut c_f, &mut cp_f, &mut pc_f] {
-            f.flush().unwrap();
-        }
-        eprintln!("Wrote dual files to {}.*", out_prefix.display());
-    } else {
-        let mut idx_f = open_out(out_prefix, ".indices.npy");
-        let mut c_f   = open_out(out_prefix, ".counts.npy");
-        let mut cp_f  = open_out(out_prefix, ".cp.npy");
-        let mut pc_f  = open_out(out_prefix, ".piece_count.npy");
-
-        write_npy_header(&mut idx_f, "<u2", &[n, MAX_ACTIVE]).unwrap();
-        write_npy_header(&mut c_f,   "|u1", &[n]).unwrap();
-        write_npy_header(&mut cp_f,  "<f4", &[n]).unwrap();
-        write_npy_header(&mut pc_f,  "|u1", &[n]).unwrap();
-
-        let t0 = Instant::now();
-        let mut i = 0usize;
-        for line in reader.lines() {
-            let line = line.expect("read error");
-            if line.trim().is_empty() { continue; }
-
-            let v: serde_json::Value = serde_json::from_str(&line)
-                .unwrap_or_else(|e| panic!("JSON error on line {i}: {e}\n  {line}"));
-            let fen = v["fen"].as_str().expect("missing fen");
-            let mut cp = v["cp"].as_f64().expect("missing cp");
-            cp = cp.clamp(-max_cp, max_cp);
-
-            board.clear();
-            FENParser::set_board_from_fen(&mut board, fen);
-
-            let (indices, count) = encode_single(&board);
-            let piece_count = board.get_all_pieces().count_ones() as u8;
-
-            for v in &indices { idx_f.write_all(&v.to_le_bytes()).unwrap(); }
-            c_f.write_all(&[count]).unwrap();
-            cp_f.write_all(&(cp as f32).to_le_bytes()).unwrap();
-            pc_f.write_all(&[piece_count]).unwrap();
-
-            i += 1;
-            if i % PROGRESS_EVERY == 0 {
-                let elapsed = t0.elapsed().as_secs_f64();
-                let rate = i as f64 / elapsed;
-                eprintln!("  {i}/{n}  ({:.0}k pos/s)", rate / 1000.0);
-            }
-        }
-        for f in [&mut idx_f, &mut c_f, &mut cp_f, &mut pc_f] {
-            f.flush().unwrap();
-        }
-        eprintln!("Wrote single files to {}.*", out_prefix.display());
     }
+    for f in [&mut w_f, &mut b_f, &mut c_f, &mut cp_f, &mut pc_f] {
+        f.flush().unwrap();
+    }
+    eprintln!("Wrote dual files to {}.*", out_prefix.display());
+}
+
+fn run_single(input: &Path, out_prefix: &Path, max_cp: f64) {
+    eprint!("Counting lines in {} … ", input.display());
+    let n = count_lines(input);
+    eprintln!("{n}");
+
+    let mut board = ChessBoard::new();
+    let reader = BufReader::with_capacity(WRITE_BUF, File::open(input).expect("cannot open input"));
+
+    let mut idx_f = open_out(out_prefix, ".indices.npy");
+    let mut c_f   = open_out(out_prefix, ".counts.npy");
+    let mut cp_f  = open_out(out_prefix, ".cp.npy");
+    let mut pc_f  = open_out(out_prefix, ".piece_count.npy");
+
+    write_npy_header(&mut idx_f, "<u2", &[n, MAX_ACTIVE]).unwrap();
+    write_npy_header(&mut c_f,   "|u1", &[n]).unwrap();
+    write_npy_header(&mut cp_f,  "<f4", &[n]).unwrap();
+    write_npy_header(&mut pc_f,  "|u1", &[n]).unwrap();
+
+    let t0 = Instant::now();
+    let mut i = 0usize;
+    for line in reader.lines() {
+        let line = line.expect("read error");
+        if line.trim().is_empty() { continue; }
+
+        let v: serde_json::Value = serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("JSON error on line {i}: {e}\n  {line}"));
+        let fen = v["fen"].as_str().expect("missing fen");
+        let mut cp = v["cp"].as_f64().expect("missing cp");
+        cp = cp.clamp(-max_cp, max_cp);
+
+        board.clear();
+        FENParser::set_board_from_fen(&mut board, fen);
+
+        let (indices, count) = encode_single(&board);
+        let piece_count = board.get_all_pieces().count_ones() as u8;
+
+        for v in &indices { idx_f.write_all(&v.to_le_bytes()).unwrap(); }
+        c_f.write_all(&[count]).unwrap();
+        cp_f.write_all(&(cp as f32).to_le_bytes()).unwrap();
+        pc_f.write_all(&[piece_count]).unwrap();
+
+        i += 1;
+        if i % PROGRESS_EVERY == 0 {
+            let elapsed = t0.elapsed().as_secs_f64();
+            let rate = i as f64 / elapsed;
+            eprintln!("  {i}/{n}  ({:.0}k pos/s)", rate / 1000.0);
+        }
+    }
+    for f in [&mut idx_f, &mut c_f, &mut cp_f, &mut pc_f] {
+        f.flush().unwrap();
+    }
+    eprintln!("Wrote single files to {}.*", out_prefix.display());
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────
