@@ -23,6 +23,10 @@ runtime-switch  = ["classical-eval"]   # original behaviour: HCE + NN, toggled a
 name = "bench"
 path = "src/bin/bench.rs"
 
+[[bin]]
+name = "puzzle_bench"
+path = "src/bin/puzzle_bench.rs"
+
 [dependencies]
 chess_foundation = { path = "../chess_foundation" }
 chess_board = { path = "../chess_board" }
@@ -31,6 +35,7 @@ rand = "0.8"
 rayon = "1.8"
 web-time = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+zstd = "0.13"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }

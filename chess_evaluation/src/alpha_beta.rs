@@ -4505,6 +4505,53 @@ mod tests {
         );
     }
 
+    /// Greek Gift with NNUE: engine must find Bxh7+ when the neural evaluator is
+    /// active.  NNUE king-safety should make the sacrifice unambiguously winning,
+    /// so h2-h3 is no longer accepted.
+    ///
+    /// Run with: cargo test -p chess_evaluation -- --include-ignored greek_gift_bxh7_with_nnue
+    #[test]
+    #[ignore = "requires src/eval.npz — run with --include-ignored"]
+    fn greek_gift_bxh7_with_nnue() {
+        let bytes = match std::fs::read("src/eval.npz") {
+            Ok(b) => b,
+            Err(e) => { println!("skipping: {e}"); return; }
+        };
+        let _ = crate::neural_eval::init_neural_eval_from_bytes(&bytes);
+        let was_enabled = crate::neural_eval::is_neural_eval_enabled();
+        crate::neural_eval::set_neural_eval_enabled(true);
+
+        let c = conductor();
+        let tt = TranspositionTable::new(1 << 20);
+        let mut ctx = SearchContext::new();
+        let mut board = ChessBoard::new();
+        board.set_from_fen("r3r1k1/ppq2ppp/n1pb1p2/8/3P2b1/2PB1N2/PPQ2PPP/R1B2RK1 w - - 4 12");
+        ctx.init_accumulators(&board);
+
+        let (score, mv) = alpha_beta(
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            7,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            true,
+            true,
+            None,
+        );
+        crate::neural_eval::set_neural_eval_enabled(was_enabled);
+
+        let mv = mv.expect("Engine must return a move");
+        assert_eq!(
+            (mv.start_square(), mv.target_square()),
+            (19, 55),
+            "With NNUE, engine must find Greek Gift Bxh7+ (d3→h7, sq 19→55); got {}→{} score={}",
+            mv.start_square(), mv.target_square(), score
+        );
+    }
+
     /// Regression: engine must NOT play Bg4 in the position just before the
     /// sacrifice is possible (Black to move, game IamhuBOM move 11).
     ///
