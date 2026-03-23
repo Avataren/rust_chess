@@ -134,29 +134,42 @@ def main() -> None:
 
     # ── Step 2: Label with Stockfish ──────────────────────────────────────────
 
-    print(f"[2/4] Labeling with Stockfish depth={args.depth} ({args.workers} workers)...")
-    labeled: list[dict] = []
-    with Pool(args.workers, initializer=_worker_init, initargs=(args.stockfish, args.depth)) as pool:
-        chunk = 256
-        for i in range(0, len(unique_fens), chunk):
-            batch = unique_fens[i : i + chunk]
-            results = pool.map(_label_fen, batch)
-            labeled.extend(r for r in results if r is not None)
-            pct = min(i + chunk, len(unique_fens)) * 100 / len(unique_fens)
-            print(f"\r  {len(labeled)}/{len(unique_fens)} labeled  ({pct:.0f}%)", end="", flush=True)
+    # Write to a temp JSONL as results arrive — avoids holding ~10 GB of dicts
+    # in memory before the shuffle step.
+    tmp_jsonl = out / f"_{name}_labeled.tmp.jsonl"
 
-    print(f"\r  {len(labeled)} positions labeled ({len(unique_fens) - len(labeled)} skipped)    ")
+    print(f"[2/4] Labeling with Stockfish depth={args.depth} ({args.workers} workers)...")
+    total_fens = len(unique_fens)
+    n_labeled = 0
+    # imap_unordered: workers pull items continuously — no batch-boundary stalls.
+    # chunksize=128 keeps dispatch overhead low while maintaining fine load balance.
+    with Pool(args.workers, initializer=_worker_init, initargs=(args.stockfish, args.depth)) as pool, \
+         open(tmp_jsonl, "w") as tmp_f:
+        for result in pool.imap_unordered(_label_fen, unique_fens, chunksize=128):
+            if result is not None:
+                tmp_f.write(json.dumps(result) + "\n")
+                n_labeled += 1
+            n_seen = n_labeled  # approximate (skipped not counted separately here)
+            if n_labeled % 5000 == 0:
+                pct = n_labeled * 100 / total_fens
+                print(f"\r  {n_labeled}/{total_fens} labeled  ({pct:.1f}%)", end="", flush=True)
+
+    del unique_fens  # free ~3 GB before shuffle
+    print(f"\r  {n_labeled} positions labeled ({total_fens - n_labeled} skipped)    ")
 
     # ── Step 3: Shuffle + split ───────────────────────────────────────────────
 
     print("[3/4] Shuffling and splitting train/val...")
-    random.seed(args.seed)
-    random.shuffle(labeled)
+    # Read back from disk, shuffle, split — peak memory is now just the labeled rows.
+    with open(tmp_jsonl) as f:
+        lines = f.readlines()
+    tmp_jsonl.unlink()  # free disk space
 
-    n_val   = max(1, int(len(labeled) * args.val_fraction))
-    n_train = len(labeled) - n_val
-    train   = labeled[:n_train]
-    val     = labeled[n_train:]
+    random.seed(args.seed)
+    random.shuffle(lines)
+
+    n_val   = max(1, int(len(lines) * args.val_fraction))
+    n_train = len(lines) - n_val
     print(f"  train: {n_train}   val: {n_val}")
 
     # ── Step 4: Write JSONL ───────────────────────────────────────────────────
@@ -166,11 +179,9 @@ def main() -> None:
     val_path   = out / f"val_{name}.jsonl"
 
     with open(train_path, "w") as f:
-        for row in train:
-            f.write(json.dumps(row) + "\n")
+        f.writelines(lines[:n_train])
     with open(val_path, "w") as f:
-        for row in val:
-            f.write(json.dumps(row) + "\n")
+        f.writelines(lines[n_train:])
 
     print(f"  {train_path}  ({train_path.stat().st_size // 1024} KB)")
     print(f"  {val_path}  ({val_path.stat().st_size // 1024} KB)")
