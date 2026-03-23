@@ -122,15 +122,28 @@ def main() -> None:
 
     # ── Step 1: Extract all FENs ──────────────────────────────────────────────
 
-    print("[1/4] Extracting positions from puzzle lines...")
-    lines = inp.read_text().splitlines()
-    all_fens: list[str] = []
-    for line in lines:
-        all_fens.extend(extract_fens(line))
+    fens_cache = out / f"_{name}_unique_fens.txt"
 
-    # Deduplicate (same position can appear in multiple puzzles)
-    unique_fens = list(dict.fromkeys(all_fens))
-    print(f"  {len(lines)} puzzles → {len(all_fens)} positions → {len(unique_fens)} unique FENs")
+    if fens_cache.exists():
+        print(f"[1/4] Loading cached FENs from {fens_cache}...")
+        unique_fens = fens_cache.read_text().splitlines()
+        print(f"  {len(unique_fens)} unique FENs")
+    else:
+        print("[1/4] Extracting positions from puzzle lines...")
+        lines = inp.read_text().splitlines()
+        all_fens: list[str] = []
+        for i, line in enumerate(lines):
+            all_fens.extend(extract_fens(line))
+            if i % 500000 == 0 and i > 0:
+                print(f"\r  {i}/{len(lines)} puzzles processed...", end="", flush=True)
+
+        # Deduplicate (same position can appear in multiple puzzles)
+        unique_fens = list(dict.fromkeys(all_fens))
+        del all_fens
+        print(f"\r  {len(lines)} puzzles → {len(unique_fens)} unique FENs")
+
+        fens_cache.write_text("\n".join(unique_fens))
+        print(f"  Cached to {fens_cache}")
 
     # ── Step 2: Label with Stockfish ──────────────────────────────────────────
 
@@ -140,21 +153,35 @@ def main() -> None:
 
     print(f"[2/4] Labeling with Stockfish depth={args.depth} ({args.workers} workers)...")
     total_fens = len(unique_fens)
-    n_labeled = 0
+
+    # Resume: skip FENs already labeled in a previous (interrupted) run.
+    already_labeled: set[str] = set()
+    if tmp_jsonl.exists():
+        with open(tmp_jsonl) as f:
+            for line in f:
+                row = json.loads(line)
+                already_labeled.add(row["fen"])
+        print(f"  Resuming: {len(already_labeled)} already labeled, {total_fens - len(already_labeled)} remaining")
+
+    todo_fens = [f for f in unique_fens if f not in already_labeled]
+    del unique_fens
+
+    n_labeled = len(already_labeled)
+    del already_labeled
+
     # imap_unordered: workers pull items continuously — no batch-boundary stalls.
     # chunksize=128 keeps dispatch overhead low while maintaining fine load balance.
     with Pool(args.workers, initializer=_worker_init, initargs=(args.stockfish, args.depth)) as pool, \
-         open(tmp_jsonl, "w") as tmp_f:
-        for result in pool.imap_unordered(_label_fen, unique_fens, chunksize=128):
+         open(tmp_jsonl, "a") as tmp_f:
+        for result in pool.imap_unordered(_label_fen, todo_fens, chunksize=128):
             if result is not None:
                 tmp_f.write(json.dumps(result) + "\n")
                 n_labeled += 1
-            n_seen = n_labeled  # approximate (skipped not counted separately here)
             if n_labeled % 5000 == 0:
                 pct = n_labeled * 100 / total_fens
                 print(f"\r  {n_labeled}/{total_fens} labeled  ({pct:.1f}%)", end="", flush=True)
 
-    del unique_fens  # free ~3 GB before shuffle
+    del todo_fens
     print(f"\r  {n_labeled} positions labeled ({total_fens - n_labeled} skipped)    ")
 
     # ── Step 3: Shuffle + split ───────────────────────────────────────────────
