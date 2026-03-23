@@ -247,12 +247,24 @@ fn main() {
         };
     }
 
-    let file       = flag_str!("--file");
-    let count:  usize = arg!("--count",      1000usize);
-    let min_r:  u32   = arg!("--min-rating", 1200u32);
-    let max_r:  u32   = arg!("--max-rating", 2200u32);
-    let depth:  i32   = arg!("--depth",      7i32);
-    let seed:   u64   = arg!("--seed",       42u64);
+    let file             = flag_str!("--file");
+    let count:  usize   = arg!("--count",      1000usize);
+    // Default rating range is unrestricted for export use cases;
+    // benchmark runs typically pass --min-rating / --max-rating explicitly.
+    let min_r:  u32     = arg!("--min-rating", 0u32);
+    let max_r:  u32     = arg!("--max-rating", u32::MAX);
+    let depth:  i32     = arg!("--depth",      7i32);
+    let seed:   u64     = arg!("--seed",       42u64);
+    // When set, write one line per failed puzzle: "<FEN>\t<move0> <move1> ..."
+    // A downstream Python script expands these into labeled training positions.
+    let export_failures = flag_str!("--export-failures");
+    // Like --export-failures but writes ALL puzzles (failed + solved).
+    // Preferred for generating finetune data: more positions, same tactical richness.
+    let export_all      = flag_str!("--export-all");
+    // When set, skip the engine search entirely: just read, filter, and export.
+    // Useful for dumping the entire puzzle database as finetune input without
+    // waiting for a search run.  --count 0 means no limit (export everything).
+    let export_only     = args.iter().any(|a| a == "--export-only");
 
     if file.is_empty() {
         eprintln!("puzzle_bench: solve Lichess puzzles and report engine accuracy");
@@ -260,11 +272,13 @@ fn main() {
         eprintln!("USAGE:");
         eprintln!("  cargo run -p chess_evaluation --bin puzzle_bench --release --");
         eprintln!("    --file lichess_db_puzzle.csv.zst");
-        eprintln!("    [--count N]       puzzles to sample (default: 1000)");
-        eprintln!("    [--min-rating N]  lower rating filter (default: 1200)");
-        eprintln!("    [--max-rating N]  upper rating filter (default: 2200)");
-        eprintln!("    [--depth N]       search depth (default: 7)");
-        eprintln!("    [--seed N]        RNG seed for sampling (default: 42)");
+        eprintln!("    [--count N]              puzzles to sample (default: 1000)");
+        eprintln!("    [--min-rating N]         lower rating filter (default: 1200)");
+        eprintln!("    [--max-rating N]         upper rating filter (default: 2200)");
+        eprintln!("    [--depth N]              search depth (default: 7)");
+        eprintln!("    [--seed N]               RNG seed for sampling (default: 42)");
+        eprintln!("    [--export-failures FILE] write failed puzzle lines for finetune");
+        eprintln!("    [--export-all FILE]      write ALL puzzle lines for finetune (recommended)");
         eprintln!();
         eprintln!("Download: https://database.lichess.org/#puzzles");
         eprintln!("  (lichess_db_puzzle.csv.zst, ~280 MB compressed)");
@@ -274,9 +288,12 @@ fn main() {
     println!("Lichess Puzzle Benchmark");
     println!("========================");
     println!("File:         {file}");
-    println!("Sample:       {count}  (rating {min_r}–{max_r})");
+    let max_r_display = if max_r == u32::MAX { "∞".to_string() } else { max_r.to_string() };
+    println!("Sample:       {count}  (rating {min_r}–{max_r_display})");
     println!("Depth:        {depth}");
     println!("Seed:         {seed}");
+    if !export_failures.is_empty() { println!("Export (failures): {export_failures}"); }
+    if !export_all.is_empty()      { println!("Export (all):      {export_all}"); }
     println!();
 
     // ── Load & sample ─────────────────────────────────────────────────────────
@@ -300,7 +317,12 @@ fn main() {
         .filter_map(|l| parse_puzzle(&l))
         .filter(|p| p.rating >= min_r && p.rating <= max_r);
 
-    let puzzles = reservoir_sample(filtered, count, seed);
+    // count == 0 means "all" — collect without sampling.
+    let puzzles = if count == 0 {
+        filtered.collect::<Vec<_>>()
+    } else {
+        reservoir_sample(filtered, count, seed)
+    };
     println!("{} puzzles  ({:.1}s)", puzzles.len(), t0.elapsed().as_secs_f32());
 
     if puzzles.is_empty() {
@@ -310,10 +332,46 @@ fn main() {
 
     // ── Solve ─────────────────────────────────────────────────────────────────
 
+    // ── Export-only fast path (no search) ────────────────────────────────────
+
+    if export_only {
+        let out = if !export_all.is_empty() { export_all } else { export_failures };
+        if out.is_empty() {
+            eprintln!("--export-only requires --export-all <file> or --export-failures <file>");
+            std::process::exit(1);
+        }
+        let f = std::fs::File::create(out)
+            .unwrap_or_else(|e| { eprintln!("Cannot create {out}: {e}"); std::process::exit(1); });
+        let mut w = std::io::BufWriter::new(f);
+        let mut n = 0usize;
+        for puzzle in &puzzles {
+            writeln!(w, "{}\t{}", puzzle.fen, puzzle.moves.join(" ")).ok();
+            n += 1;
+        }
+        println!("Exported {n} puzzle lines to {out}");
+        println!("Next: python3 nn_training/scripts/gen_puzzle_finetune_data.py --input {out} --output <dir> --stockfish <path>");
+        return;
+    }
+
     let conductor = PieceConductor::new();
     // Small TT: large enough to help move ordering within a single puzzle;
     // small enough to keep memory low and avoid heavy cross-puzzle pollution.
     let tt = TranspositionTable::new(1 << 18); // 256K entries ≈ 6 MB
+
+    // Optional export writers — each line: "<FEN>\t<move0> <move1> ..."
+    // The Python finetune script walks the move list with python-chess to
+    // generate intermediate positions, then labels them with Stockfish.
+    let mut fail_writer: Option<std::io::BufWriter<std::fs::File>> = if !export_failures.is_empty() {
+        let f = std::fs::File::create(export_failures)
+            .unwrap_or_else(|e| { eprintln!("Cannot create {export_failures}: {e}"); std::process::exit(1); });
+        Some(std::io::BufWriter::new(f))
+    } else { None };
+
+    let mut all_writer: Option<std::io::BufWriter<std::fs::File>> = if !export_all.is_empty() {
+        let f = std::fs::File::create(export_all)
+            .unwrap_or_else(|e| { eprintln!("Cannot create {export_all}: {e}"); std::process::exit(1); });
+        Some(std::io::BufWriter::new(f))
+    } else { None };
 
     let total = puzzles.len();
     let mut solved = 0usize;
@@ -331,11 +389,20 @@ fn main() {
 
     for (i, puzzle) in puzzles.iter().enumerate() {
         let ok = solve(puzzle, &conductor, &tt, depth);
-
-        // Check for illegal setup move (solve returns false + board never changed)
-        // We detect skips by re-trying the setup; simpler: just count them separately.
-        // For now treat every false as "failed to solve" (conservative).
         if ok { solved += 1; }
+
+        // Export line format: "<FEN>\t<move0> <move1> ..."
+        let export_line = || -> String {
+            format!("{}\t{}", puzzle.fen, puzzle.moves.join(" "))
+        };
+        if let Some(ref mut w) = all_writer {
+            writeln!(w, "{}", export_line()).ok();
+        }
+        if !ok {
+            if let Some(ref mut w) = fail_writer {
+                writeln!(w, "{}", export_line()).ok();
+            }
+        }
 
         let band = band_index(puzzle.rating);
         band_total[band]  += 1;
