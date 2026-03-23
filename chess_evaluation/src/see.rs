@@ -67,19 +67,30 @@ pub fn attackers_of(
     // Knight and king (pre-computed LUTs, occupancy-independent).
     atk |= conductor.knight_lut[sq] & board.get_knights() & occ;
     atk |= conductor.king_lut[sq]   & board.get_kings()   & occ;
-
     // Sliding pieces — use current `occ` so removed pieces reveal X-rays.
-    let diag = conductor.get_bishop_attacks(sq, occ, occ);
-    let orth = conductor.get_rook_attacks(sq, occ, occ);
+    // Pass Bitboard(0) as relevant_blockers so the first blocking piece in each
+    // ray direction is NOT masked out; `& occ` below then selects it.
+    let diag = conductor.get_bishop_attacks(sq, Bitboard(0), occ);
+    let orth = conductor.get_rook_attacks(sq, Bitboard(0), occ);
     atk |= diag & (board.get_bishops() | board.get_queens()) & occ;
     atk |= orth & (board.get_rooks()   | board.get_queens()) & occ;
 
     atk
 }
 
-/// Find the least-valuable piece in `candidates` (must be non-empty).
-/// Returns (square, SEE value).
-fn lva(board: &ChessBoard, candidates: Bitboard) -> (usize, i32) {
+/// Find the least-valuable attacker in `candidates` that is NOT absolutely
+/// pinned to its own king.  Returns `None` if every candidate is pinned.
+///
+/// A piece is considered pinned if removing it from `occ` would expose `king_sq`
+/// to a diagonal or orthogonal slider attack from `enemy`.
+fn lva_skipping_pinned(
+    board: &ChessBoard,
+    conductor: &PieceConductor,
+    candidates: Bitboard,
+    occ: Bitboard,
+    king_sq: usize,
+    enemy: Bitboard,
+) -> Option<(usize, i32)> {
     let order: [(Bitboard, i32); 6] = [
         (board.get_pawns(),   SEE_PAWN),
         (board.get_knights(), SEE_KNIGHT),
@@ -89,12 +100,29 @@ fn lva(board: &ChessBoard, candidates: Bitboard) -> (usize, i32) {
         (board.get_kings(),   SEE_KING),
     ];
     for (pieces, value) in order {
-        let overlap = candidates & pieces;
-        if !overlap.is_empty() {
-            return (overlap.0.trailing_zeros() as usize, value);
+        let mut overlap = candidates & pieces;
+        while !overlap.is_empty() {
+            let sq = overlap.0.trailing_zeros() as usize;
+            overlap.0 &= overlap.0 - 1;
+            // Kings cannot be pinned to themselves; always allow.
+            if value == SEE_KING {
+                return Some((sq, value));
+            }
+            // If removing this piece would expose the king to a slider, it's pinned.
+            let test_occ = Bitboard(occ.0 & !(1u64 << sq));
+            let diag = conductor.get_bishop_attacks(king_sq, Bitboard(0), test_occ);
+            let orth = conductor.get_rook_attacks(king_sq, Bitboard(0), test_occ);
+            let exposed = ((diag & (board.get_bishops() | board.get_queens()))
+                | (orth & (board.get_rooks() | board.get_queens())))
+                & enemy
+                & test_occ;
+            if exposed.is_empty() {
+                return Some((sq, value));
+            }
+            // Pinned — try the next candidate.
         }
     }
-    unreachable!("lva called on empty candidates")
+    None
 }
 
 // ── SEE entry point ───────────────────────────────────────────────────────────
@@ -144,7 +172,15 @@ pub fn see(
 
         if candidates.is_empty() { break; }
 
-        let (lva_sq, lva_val) = lva(board, candidates);
+        // Find LVA, skipping pieces that are absolutely pinned to their king.
+        let king_bb = board.get_king(side_white);
+        if king_bb.is_empty() { break; }
+        let king_sq = king_bb.0.trailing_zeros() as usize;
+        let enemy_bb = if side_white { board.get_black() } else { board.get_white() };
+        let (lva_sq, lva_val) = match lva_skipping_pinned(board, conductor, candidates, occ, king_sq, enemy_bb) {
+            Some(r) => r,
+            None => break,
+        };
 
         // Record what the LVA captures (the sitting piece).
         gain[d] = sitting;
@@ -193,12 +229,12 @@ mod tests {
     /// Pawn captures queen defended by another queen: still winning (gain queen, lose pawn).
     #[test]
     fn pawn_captures_queen_defended_by_queen() {
-        // d5=35, e6=44. Black queen d7 defends e6.
+        // d5=35, e6=44. Black queen d7 defends e6 diagonally.
         // Sequence: Pxe6(+900), Qxd5(-100). Net for white = +800.
         let b = board("4k3/3q4/4q3/3P4/8/8/8/4K3 w - - 0 1");
         let score = see(&b, &cond(), 35, 44, true);
-        assert!(score > 700 && score <= 900,
-            "pawn x queen defended by queen ≈ +800, got {score}");
+        assert_eq!(score, 800,
+            "pawn x queen defended by queen = +800, got {score}");
     }
 
     /// Queen captures pawn defended by rook: losing exchange (-800).
@@ -306,5 +342,39 @@ mod tests {
         // White Ra1(0) x black Ra8(56): black Rb8(57) recaptures; white Ra2(8) recaptures.
         let score = see(&b, &cond(), 0, 56, true);
         assert!(score > 400, "rook x rook with x-ray backup ≈ +500, got {score}");
+    }
+
+    /// Diagonal attacker detection: bishop defends via diagonal.
+    /// White pawn takes black pawn on d5; black bishop on b3 defends d5 diagonally.
+    /// Without the attackers_of diagonal fix this defense was invisible.
+    #[test]
+    fn diagonal_defender_detected() {
+        // White pawn e4=28 captures black pawn d5=35.
+        // Black bishop b3=17 defends d5 diagonally (b3-c4-d5).
+        // Sequence: exd5(+100), Bxe4(-100). Net = 0 (even pawn trade).
+        // FEN: 4k3/8/8/3p4/4P3/1b6/8/4K3 w - - 0 1
+        let b = board("4k3/8/8/3p4/4P3/1b6/8/4K3 w - - 0 1");
+        // e4=28 captures d5=35
+        let score = see(&b, &cond(), 28, 35, true);
+        assert_eq!(score, 0, "even pawn trade (Bb3 defends d5); SEE should be 0, got {score}");
+    }
+
+    /// Pinned defender is excluded from SEE.
+    /// Black bishop captures a white pawn whose only defender (a white rook) is
+    /// pinned to its own king by a black rook.  SEE must return +pawn, not negative.
+    ///
+    /// Position: White Ka1=0, Ra4=24, Pb4=25.  Black ra8=56 pins the white rook to
+    /// the king on the a-file.  Black Be7=52 attacks b4 diagonally.
+    /// Without pin detection: SEE = 100 - 325 = -225 (black bishop "loses").
+    /// With pin detection: white rook is skipped (pinned), SEE = +100 (free pawn).
+    #[test]
+    fn pinned_defender_excluded_from_see() {
+        // r5k1/4b3/8/8/RP6/8/8/K7 b - - 0 1
+        // White: Ka1=0, Ra4=24, Pb4=25.  Black: ra8=56, kg8=62, Be7=52.
+        let b = board("r5k1/4b3/8/8/RP6/8/8/K7 b - - 0 1");
+        // Black bishop e7=52 captures white pawn b4=25.
+        let score = see(&b, &cond(), 52, 25, false);
+        assert_eq!(score, SEE_PAWN,
+            "pinned rook cannot recapture; black gets free pawn (SEE={score})");
     }
 }

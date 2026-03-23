@@ -75,8 +75,7 @@ pub fn get_all_legal_captures_for_color(
         get_pseudo_legal_move_list_from_square(square, chess_board, conductor, is_white, pseudo_buf);
         for mut chess_move in pseudo_buf.drain(..) {
             let is_capture = enemy.contains_square(chess_move.target_square() as i32)
-                || chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG)
-                || chess_move.has_flag(ChessMove::PROMOTE_TO_QUEEN_FLAG);
+                || chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG);
             if !is_capture { continue; }
             chess_board.make_move(&mut chess_move);
             if !conductor.is_king_in_check(chess_board, is_white) {
