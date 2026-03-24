@@ -243,11 +243,7 @@ pub struct SearchContext {
     /// Scratch buffer for pseudo-legal move generation per piece.
     pub pseudo_buf: Vec<ChessMove>,
     /// Scratch buffers for move ordering — reused each call.
-    good_captures_buf: Vec<(i32, ChessMove)>,
-    bad_captures_buf: Vec<(i32, ChessMove)>,
-    quiets_buf: Vec<ChessMove>,
-    /// Reusable buffer for killer entries inside order_moves.
-    killer_entries_buf: Vec<ChessMove>,
+    ordering_scratch: OrderingScratchBuffers,
     /// Reusable buffer for quiet moves tried before a beta-cutoff.
     tried_quiets_buf: Vec<ChessMove>,
 }
@@ -270,10 +266,12 @@ impl SearchContext {
             acc_valid: false,
             move_lists: (0..MAX_PLY + 16).map(|_| Vec::with_capacity(64)).collect(),
             pseudo_buf: Vec::with_capacity(64),
-            good_captures_buf: Vec::with_capacity(32),
-            bad_captures_buf: Vec::with_capacity(16),
-            quiets_buf: Vec::with_capacity(64),
-            killer_entries_buf: Vec::with_capacity(4),
+            ordering_scratch: OrderingScratchBuffers {
+                good_captures:  Vec::with_capacity(32),
+                bad_captures:   Vec::with_capacity(16),
+                quiets:         Vec::with_capacity(64),
+                killer_entries: Vec::with_capacity(4),
+            },
             tried_quiets_buf: Vec::with_capacity(16),
         }
     }
@@ -716,6 +714,32 @@ fn quiescence(
     }
 }
 
+// ── Move ordering helpers ─────────────────────────────────────────────────────
+
+/// Read-only heuristic inputs bundled for `order_moves`.
+/// Groups the six parameters that come from the search context's history tables,
+/// reducing `order_moves` from 17 parameters to 9.
+struct MoveOrderingHeuristics<'a> {
+    history:         &'a [[i32; 64]; 64],
+    capture_history: &'a [[i32; 64]; 64],
+    cont_hist_1:     &'a ContHistTable,
+    cont_hist_2:     &'a ContHistTable,
+    /// (piece_type_idx, to_sq) of the opponent's last move (1 ply back).
+    prev1: Option<(usize, usize)>,
+    /// (piece_type_idx, to_sq) of our own last move (2 plies back).
+    prev2: Option<(usize, usize)>,
+}
+
+/// Heap-allocated scratch buffers for `order_moves` — reused each call to
+/// avoid per-call allocations in the hot search path.
+#[derive(Default)]
+struct OrderingScratchBuffers {
+    good_captures:  Vec<(i32, ChessMove)>,
+    bad_captures:   Vec<(i32, ChessMove)>,
+    quiets:         Vec<ChessMove>,
+    killer_entries: Vec<ChessMove>,
+}
+
 // ── Move ordering ─────────────────────────────────────────────────────────────
 
 /// Order moves for best-first search:
@@ -733,19 +757,11 @@ fn order_moves(
     tt_move: Option<ChessMove>,
     killers: &[Option<ChessMove>; 2],
     countermove: Option<ChessMove>,
-    history: &[[i32; 64]; 64],
-    capture_history: &[[i32; 64]; 64],
-    ch1: &ContHistTable,
-    ch2: &ContHistTable,
-    prev1: Option<(usize, usize)>,
-    prev2: Option<(usize, usize)>,
+    h: &MoveOrderingHeuristics<'_>,
     board: &ChessBoard,
     conductor: &PieceConductor,
     is_white: bool,
-    good_captures_buf: &mut Vec<(i32, ChessMove)>,
-    bad_captures_buf: &mut Vec<(i32, ChessMove)>,
-    quiets_buf: &mut Vec<ChessMove>,
-    killer_entries_buf: &mut Vec<ChessMove>,
+    scratch: &mut OrderingScratchBuffers,
 ) {
     // Pull out the TT move first.
     let tt_entry = tt_move.and_then(|tt_m| {
@@ -757,12 +773,9 @@ fn order_moves(
             .map(|i| moves.swap_remove(i))
     });
 
-    good_captures_buf.clear();
-    bad_captures_buf.clear();
-    quiets_buf.clear();
-    let good_captures = good_captures_buf;
-    let bad_captures = bad_captures_buf;
-    let quiets = quiets_buf;
+    scratch.good_captures.clear();
+    scratch.bad_captures.clear();
+    scratch.quiets.clear();
 
     for m in moves.drain(..) {
         if m.capture.is_some() || m.is_promotion() {
@@ -774,79 +787,79 @@ fn order_moves(
                 is_white,
             );
             if score >= 0 {
-                good_captures.push((score, m));
+                scratch.good_captures.push((score, m));
             } else {
-                bad_captures.push((score, m));
+                scratch.bad_captures.push((score, m));
             }
         } else {
-            quiets.push(m);
+            scratch.quiets.push(m);
         }
     }
 
     // Sort by SEE descending; use capture_history as tiebreaker.
-    good_captures.sort_unstable_by(|a, b| {
+    scratch.good_captures.sort_unstable_by(|a, b| {
         b.0.cmp(&a.0).then_with(|| {
-            let ha = capture_history[a.1.start_square() as usize][a.1.target_square() as usize];
-            let hb = capture_history[b.1.start_square() as usize][b.1.target_square() as usize];
+            let ha = h.capture_history[a.1.start_square() as usize][a.1.target_square() as usize];
+            let hb = h.capture_history[b.1.start_square() as usize][b.1.target_square() as usize];
             hb.cmp(&ha)
         })
     });
-    bad_captures.sort_unstable_by(|a, b| {
+    scratch.bad_captures.sort_unstable_by(|a, b| {
         b.0.cmp(&a.0).then_with(|| {
-            let ha = capture_history[a.1.start_square() as usize][a.1.target_square() as usize];
-            let hb = capture_history[b.1.start_square() as usize][b.1.target_square() as usize];
+            let ha = h.capture_history[a.1.start_square() as usize][a.1.target_square() as usize];
+            let hb = h.capture_history[b.1.start_square() as usize][b.1.target_square() as usize];
             hb.cmp(&ha)
         })
     });
 
     // Extract killer moves from quiets, preserving killer priority order.
-    let killer_entries = killer_entries_buf;
-    killer_entries.clear();
+    scratch.killer_entries.clear();
     for killer in killers.iter().flatten() {
-        if let Some(pos) = quiets.iter().position(|m| {
+        if let Some(pos) = scratch.quiets.iter().position(|m| {
             m.start_square() == killer.start_square() && m.target_square() == killer.target_square()
         }) {
-            killer_entries.push(quiets.swap_remove(pos));
+            let item = scratch.quiets.swap_remove(pos);
+            scratch.killer_entries.push(item);
         }
     }
 
     // Extract countermove (if not already pulled out as TT move or killer).
     let countermove_entry: Option<ChessMove> = countermove.and_then(|cm| {
-        quiets
-            .iter()
-            .position(|m| {
-                m.start_square() == cm.start_square() && m.target_square() == cm.target_square()
-            })
-            .map(|pos| quiets.swap_remove(pos))
+        let pos = scratch.quiets.iter().position(|m| {
+            m.start_square() == cm.start_square() && m.target_square() == cm.target_square()
+        })?;
+        Some(scratch.quiets.swap_remove(pos))
     });
 
     // Sort remaining quiets by combined history + continuation history score, highest first.
-    let quiet_score = |m: &ChessMove| -> i32 {
-        let from = m.start_square() as usize;
-        let to = m.target_square() as usize;
-        let piece = piece_idx(*m);
-        let mut h = history[from][to];
-        if let Some((pp, pt)) = prev1 {
-            h += ch1.get(pp, pt, piece, to);
-        }
-        if let Some((pp, pt)) = prev2 {
-            h += ch2.get(pp, pt, piece, to);
-        }
-        h
-    };
-    quiets.sort_by(|a, b| quiet_score(b).cmp(&quiet_score(a)));
+    scratch.quiets.sort_by(|a, b| {
+        let quiet_score = |m: &ChessMove| -> i32 {
+            let from = m.start_square() as usize;
+            let to = m.target_square() as usize;
+            let piece = piece_idx(*m);
+            let mut score = h.history[from][to];
+            if let Some((pp, pt)) = h.prev1 {
+                score += h.cont_hist_1.get(pp, pt, piece, to);
+            }
+            if let Some((pp, pt)) = h.prev2 {
+                score += h.cont_hist_2.get(pp, pt, piece, to);
+            }
+            score
+        };
+        quiet_score(b).cmp(&quiet_score(a))
+    });
 
     // Reassemble: TT → good captures → killers → countermove → history quiets → bad captures.
     if let Some(tt_m) = tt_entry {
         moves.push(tt_m);
     }
-    moves.extend(good_captures.iter().map(|(_, m)| *m));
-    moves.extend(killer_entries.iter().copied());
+    moves.extend(scratch.good_captures.iter().map(|(_, m)| *m));
+    moves.extend(scratch.killer_entries.iter().copied());
     if let Some(cm) = countermove_entry {
         moves.push(cm);
     }
-    moves.extend(quiets.drain(..));
-    moves.extend(bad_captures.iter().map(|(_, m)| *m));
+    moves.extend(scratch.quiets.drain(..));
+    moves.extend(scratch.bad_captures.iter().map(|(_, m)| *m));
 }
 
 // ── Zugzwang guard ────────────────────────────────────────────────────────────
@@ -1332,34 +1345,28 @@ pub fn alpha_beta(
     let countermove: Option<ChessMove> = ctx.prev_moves[p]
         .and_then(|pm| ctx.countermoves[pm.start_square() as usize][pm.target_square() as usize]);
 
-    // Take ordering scratch buffers out of ctx to avoid conflicting borrows.
-    let mut good_captures_buf = std::mem::take(&mut ctx.good_captures_buf);
-    let mut bad_captures_buf = std::mem::take(&mut ctx.bad_captures_buf);
-    let mut quiets_buf = std::mem::take(&mut ctx.quiets_buf);
-    let mut killer_entries_buf = std::mem::take(&mut ctx.killer_entries_buf);
+    // Take ordering scratch out of ctx so we can also hold the history borrows.
+    let heuristics = MoveOrderingHeuristics {
+        history,
+        capture_history,
+        cont_hist_1: ch1,
+        cont_hist_2: ch2,
+        prev1,
+        prev2,
+    };
+    let mut scratch = std::mem::take(&mut ctx.ordering_scratch);
     order_moves(
         &mut legal_moves,
         tt_move,
         killers,
         countermove,
-        history,
-        capture_history,
-        ch1,
-        ch2,
-        prev1,
-        prev2,
+        &heuristics,
         chess_board,
         conductor,
         is_white,
-        &mut good_captures_buf,
-        &mut bad_captures_buf,
-        &mut quiets_buf,
-        &mut killer_entries_buf,
+        &mut scratch,
     );
-    ctx.good_captures_buf = good_captures_buf;
-    ctx.bad_captures_buf = bad_captures_buf;
-    ctx.quiets_buf = quiets_buf;
-    ctx.killer_entries_buf = killer_entries_buf;
+    ctx.ordering_scratch = scratch;
     // `killers` raw-pointer borrow of ctx ends here.
 
     let mut best_move: Option<ChessMove> = None;
@@ -1843,38 +1850,39 @@ pub fn search_root(
     if legal_moves.is_empty() {
         return (evaluate_board(chess_board, conductor), None);
     }
-    // Use raw pointers for cont_hist borrows so we can also take the ordering buffers.
+    // Use raw pointers for history/cont_hist borrows so we can also take ordering_scratch.
+    let history_ptr:     *const [[i32; 64]; 64] = &ctx.history;
+    let cap_history_ptr: *const [[i32; 64]; 64] = &ctx.capture_history;
     let ch1_ptr: *const ContHistTable = &ctx.cont_hist_1;
     let ch2_ptr: *const ContHistTable = &ctx.cont_hist_2;
-    let ch1_root: &ContHistTable = unsafe { &*ch1_ptr };
-    let ch2_root: &ContHistTable = unsafe { &*ch2_ptr };
-    let mut good_captures_buf = std::mem::take(&mut ctx.good_captures_buf);
-    let mut bad_captures_buf = std::mem::take(&mut ctx.bad_captures_buf);
-    let mut quiets_buf = std::mem::take(&mut ctx.quiets_buf);
-    let mut killer_entries_buf = std::mem::take(&mut ctx.killer_entries_buf);
+    let killers_ptr: *const [Option<ChessMove>; 2] = &ctx.killers[0];
+    // SAFETY: none of these tables are mutated between this point and the end of order_moves.
+    let history_root:     &[[i32; 64]; 64]      = unsafe { &*history_ptr };
+    let cap_history_root: &[[i32; 64]; 64]      = unsafe { &*cap_history_ptr };
+    let ch1_root: &ContHistTable                 = unsafe { &*ch1_ptr };
+    let ch2_root: &ContHistTable                 = unsafe { &*ch2_ptr };
+    let killers_root: &[Option<ChessMove>; 2]   = unsafe { &*killers_ptr };
+    let heuristics = MoveOrderingHeuristics {
+        history:         history_root,
+        capture_history: cap_history_root,
+        cont_hist_1:     ch1_root,
+        cont_hist_2:     ch2_root,
+        prev1:           None,
+        prev2:           None,
+    };
+    let mut scratch = std::mem::take(&mut ctx.ordering_scratch);
     order_moves(
         &mut legal_moves,
         prev_best,
-        &ctx.killers[0],
+        killers_root,
         None,
-        &ctx.history,
-        &ctx.capture_history,
-        ch1_root,
-        ch2_root,
-        None,
-        None,
+        &heuristics,
         chess_board,
         conductor,
         is_white,
-        &mut good_captures_buf,
-        &mut bad_captures_buf,
-        &mut quiets_buf,
-        &mut killer_entries_buf,
+        &mut scratch,
     );
-    ctx.good_captures_buf = good_captures_buf;
-    ctx.bad_captures_buf = bad_captures_buf;
-    ctx.quiets_buf = quiets_buf;
-    ctx.killer_entries_buf = killer_entries_buf;
+    ctx.ordering_scratch = scratch;
 
     let mut best_move: Option<ChessMove> = legal_moves.first().copied();
 
