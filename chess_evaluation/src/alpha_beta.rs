@@ -135,8 +135,22 @@ pub const TT_SIZE_DEFAULT: usize = 1 << 22; // 4M entries × 24 B = 96 MB
 /// Kept for crates that call `iterative_deepening_root` directly (Bevy UI).
 pub const TT_SIZE: usize = TT_SIZE_DEFAULT;
 
+/// Base magnitude used for all checkmate scores.
+/// A mate score for the side giving checkmate at `ply` is `MATE_BASE - ply`.
+const MATE_BASE: i32 = 1_000_000;
+
 /// Scores with absolute value above this are treated as mate scores.
-const MATE_SCORE_THRESHOLD: i32 = 999_000;
+const MATE_SCORE_THRESHOLD: i32 = MATE_BASE - 1_000; // 999_000
+
+/// Score when the side to move is **giving** checkmate at `ply` from the root.
+/// Larger (more positive) for shorter mates so the engine prefers faster wins.
+#[inline(always)]
+fn mate_score(ply: usize) -> i32 { MATE_BASE - ply as i32 }
+
+/// Score when the side to move is **receiving** checkmate at `ply` from the root.
+/// Less negative for shorter mates, so the opponent prefers faster wins.
+#[inline(always)]
+fn mated_score(ply: usize) -> i32 { -MATE_BASE + ply as i32 }
 
 /// Normalise a mate score before storing in the TT.
 /// Converts from "mate at ply P from the search root" to "mate in N moves
@@ -165,7 +179,7 @@ fn score_from_tt(score: i32, ply: usize, halfmove_clock: u32) -> i32 {
     if score > MATE_SCORE_THRESHOLD {
         let retrieved = score - p;
         // plies_to_mate: how many plies from the current node until checkmate.
-        let plies_to_mate = 1_000_000 - retrieved;
+        let plies_to_mate = MATE_BASE - retrieved;
         let plies_remaining = 100_i32 - halfmove_clock.min(100) as i32;
         if plies_to_mate > plies_remaining {
             // Mate is unreachable before the 50-move clock expires — downgrade.
@@ -174,7 +188,7 @@ fn score_from_tt(score: i32, ply: usize, halfmove_clock: u32) -> i32 {
         retrieved
     } else if score < -MATE_SCORE_THRESHOLD {
         let retrieved = score + p;
-        let plies_to_mate = 1_000_000 + retrieved;
+        let plies_to_mate = MATE_BASE + retrieved;
         let plies_remaining = 100_i32 - halfmove_clock.min(100) as i32;
         if plies_to_mate > plies_remaining {
             return -(MATE_SCORE_THRESHOLD - 1);
@@ -942,8 +956,8 @@ pub fn alpha_beta(
     // no point continuing — we can't do better than our current best mate.
     // Symmetrically, if the best we can do is already beaten by alpha, prune.
     if ply > 0 {
-        let mated_score = -1_000_000 + ply as i32; // score if mated at this ply
-        let mating_score = 1_000_000 - ply as i32 - 1; // score if we give mate next ply
+        let mated_score = mated_score(ply);    // score if mated at this ply
+        let mating_score = mate_score(ply + 1); // score if we give mate next ply
         alpha = alpha.max(mated_score);
         beta = beta.min(mating_score);
         if alpha >= beta {
@@ -1306,11 +1320,10 @@ pub fn alpha_beta(
             // Subtract ply so the engine prefers shorter mates (mate-in-1
             // scores higher than mate-in-10).  The ply offset is small
             // enough that any checkmate still dominates non-mate scores.
-            let ply_i32 = ply as i32;
             return if is_white {
-                (-1_000_000 + ply_i32, None)
+                (mated_score(ply), None)
             } else {
-                (1_000_000 - ply_i32, None)
+                (mate_score(ply), None)
             };
         } else {
             // Stalemate: draw.
@@ -4099,7 +4112,7 @@ mod tests {
         // Store a "mate in 5 plies" score in the TT.
         // Retrieved with halfmove_clock = 96 (only 4 half-moves remaining).
         // The mate requires 5 plies but only 4 are available → downgrade.
-        let mate_in_5_stored = 1_000_000 - 5 + 0; // score_to_tt at ply=0: +0 → stored = 999_995
+        let mate_in_5_stored = MATE_BASE - 5; // score_to_tt at ply=0: +0 → stored = 999_995
                                                   // At retrieval ply=0, halfmove_clock=96 (4 plies remaining):
         let retrieved = score_from_tt(mate_in_5_stored + 0, 0, 96);
         // 5 plies needed, 4 remaining → should be downgraded
