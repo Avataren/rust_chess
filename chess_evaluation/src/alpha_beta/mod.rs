@@ -105,7 +105,7 @@ pub const TT_SIZE: usize = TT_SIZE_DEFAULT;
 
 /// Base magnitude used for all checkmate scores.
 /// A mate score for the side giving checkmate at `ply` is `MATE_BASE - ply`.
-const MATE_BASE: i32 = 1_000_000;
+pub(in crate::alpha_beta) const MATE_BASE: i32 = 1_000_000;
 
 /// Scores with absolute value above this are treated as mate scores.
 const MATE_SCORE_THRESHOLD: i32 = MATE_BASE - 1_000; // 999_000
@@ -3079,12 +3079,16 @@ mod tests {
         // Bc8=sq 58, g4=sq 30
         board.set_from_fen("r1b1r1k1/ppq2ppp/n1pb1p2/8/3P4/2PB1N2/PPQ2PPP/R1B2RK1 b - - 3 11");
 
+        // Depth bumped from 6→7: check evasions in qsearch make the evaluation
+        // more accurate (engine sees Kh8 as a defense after Bxh7+), so one
+        // extra ply is needed to confirm the sacrifice is still decisive.
+        let tt7 = TranspositionTable::new(1 << 20);
         let (_, mv) = alpha_beta(
             &mut board,
             &c,
-            &tt,
+            &tt7,
             &mut ctx,
-            6,
+            7,
             0,
             i32::MIN + 1,
             i32::MAX,
