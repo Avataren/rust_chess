@@ -369,14 +369,8 @@ impl SearchContext {
         let orig_pt = moving_piece.piece_type();
         let slot_w = halfkp_piece_slot(orig_pt, piece_is_white);
         let slot_b = halfkp_piece_slot(orig_pt, !piece_is_white);
-        crate::neural_eval::acc_sub_feature(
-            acc_w,
-            slot_w * 64 * KING_BUCKETS + w_sq(from_sq) * KING_BUCKETS + wk_bucket,
-        );
-        crate::neural_eval::acc_sub_feature(
-            acc_b,
-            slot_b * 64 * KING_BUCKETS + b_sq(from_sq) * KING_BUCKETS + bk_bucket,
-        );
+        crate::neural_eval::acc_sub_feature(acc_w, halfkp_feature_idx(slot_w, w_sq(from_sq), wk_bucket));
+        crate::neural_eval::acc_sub_feature(acc_b, halfkp_feature_idx(slot_b, b_sq(from_sq), bk_bucket));
 
         // Add moving piece to its destination square (promotion may change type)
         let to_pt = if mv.is_promotion() {
@@ -386,14 +380,8 @@ impl SearchContext {
         };
         let to_slot_w = halfkp_piece_slot(to_pt, piece_is_white);
         let to_slot_b = halfkp_piece_slot(to_pt, !piece_is_white);
-        crate::neural_eval::acc_add_feature(
-            acc_w,
-            to_slot_w * 64 * KING_BUCKETS + w_sq(to_sq) * KING_BUCKETS + wk_bucket,
-        );
-        crate::neural_eval::acc_add_feature(
-            acc_b,
-            to_slot_b * 64 * KING_BUCKETS + b_sq(to_sq) * KING_BUCKETS + bk_bucket,
-        );
+        crate::neural_eval::acc_add_feature(acc_w, halfkp_feature_idx(to_slot_w, w_sq(to_sq), wk_bucket));
+        crate::neural_eval::acc_add_feature(acc_b, halfkp_feature_idx(to_slot_b, b_sq(to_sq), bk_bucket));
 
         // Remove captured piece (en passant: captured pawn is not at to_sq)
         if mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
@@ -404,27 +392,15 @@ impl SearchContext {
             };
             let cap_slot_w = halfkp_piece_slot(PieceType::Pawn, !piece_is_white);
             let cap_slot_b = halfkp_piece_slot(PieceType::Pawn, piece_is_white);
-            crate::neural_eval::acc_sub_feature(
-                acc_w,
-                cap_slot_w * 64 * KING_BUCKETS + w_sq(cap_sq) * KING_BUCKETS + wk_bucket,
-            );
-            crate::neural_eval::acc_sub_feature(
-                acc_b,
-                cap_slot_b * 64 * KING_BUCKETS + b_sq(cap_sq) * KING_BUCKETS + bk_bucket,
-            );
+            crate::neural_eval::acc_sub_feature(acc_w, halfkp_feature_idx(cap_slot_w, w_sq(cap_sq), wk_bucket));
+            crate::neural_eval::acc_sub_feature(acc_b, halfkp_feature_idx(cap_slot_b, b_sq(cap_sq), bk_bucket));
         } else if let Some(cap) = mv.capture {
             let cap_pt = cap.piece_type();
             let cap_is_white = cap.is_white();
             let cap_slot_w = halfkp_piece_slot(cap_pt, cap_is_white);
             let cap_slot_b = halfkp_piece_slot(cap_pt, !cap_is_white);
-            crate::neural_eval::acc_sub_feature(
-                acc_w,
-                cap_slot_w * 64 * KING_BUCKETS + w_sq(to_sq) * KING_BUCKETS + wk_bucket,
-            );
-            crate::neural_eval::acc_sub_feature(
-                acc_b,
-                cap_slot_b * 64 * KING_BUCKETS + b_sq(to_sq) * KING_BUCKETS + bk_bucket,
-            );
+            crate::neural_eval::acc_sub_feature(acc_w, halfkp_feature_idx(cap_slot_w, w_sq(to_sq), wk_bucket));
+            crate::neural_eval::acc_sub_feature(acc_b, halfkp_feature_idx(cap_slot_b, b_sq(to_sq), bk_bucket));
         }
 
         false // no full recompute needed
@@ -578,6 +554,16 @@ fn halfkp_piece_slot(pt: PieceType, is_ours: bool) -> usize {
     } else {
         base + 6
     }
+}
+
+/// Compute the HalfKP accumulator feature index for a piece on `square` with
+/// king bucket `bucket`, belonging to piece-type group `slot`.
+///
+/// Layout: `slot * 64 * KING_BUCKETS + square * KING_BUCKETS + bucket`.
+/// Centralised here so a single typo can't silently corrupt incremental updates.
+#[inline(always)]
+fn halfkp_feature_idx(slot: usize, square: usize, bucket: usize) -> usize {
+    slot * 64 * KING_BUCKETS + square * KING_BUCKETS + bucket
 }
 
 /// Evaluate the current position using accumulators when available,
