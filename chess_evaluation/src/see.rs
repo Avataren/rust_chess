@@ -50,19 +50,14 @@ pub fn attackers_of(
     occ: Bitboard,
 ) -> Bitboard {
     let mut atk = Bitboard(0);
-    let file = sq % 8;
 
-    // Pawn attacks: find which pawns attack `sq`.
-    // White pawn at (sq-7) attacks sq if sq not on h-file; at (sq-9) if not on a-file.
-    // Black pawn at (sq+7) attacks sq if sq not on a-file; at (sq+9) if not on h-file.
+    // Pawn attacks: use precomputed LUTs for which squares hold pawns that attack `sq`.
     // IMPORTANT: intersect with `occ` so that pawns removed from the exchange
     // (i.e., no longer in `occ`) are not counted as attackers in subsequent rounds.
     let wp = board.get_white() & board.get_pawns();
     let bp = board.get_black() & board.get_pawns();
-    if sq >= 7 && file != 7 { atk |= Bitboard(1 << (sq - 7)) & wp & occ; }
-    if sq >= 9 && file != 0 { atk |= Bitboard(1 << (sq - 9)) & wp & occ; }
-    if sq + 7 < 64 && file != 0 { atk |= Bitboard(1 << (sq + 7)) & bp & occ; }
-    if sq + 9 < 64 && file != 7 { atk |= Bitboard(1 << (sq + 9)) & bp & occ; }
+    atk |= conductor.pawn_attackers_of(sq, true)  & wp & occ;
+    atk |= conductor.pawn_attackers_of(sq, false) & bp & occ;
 
     // Knight and king (pre-computed LUTs, occupancy-independent).
     atk |= conductor.knight_lut[sq] & board.get_knights() & occ;

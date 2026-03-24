@@ -165,6 +165,18 @@ impl PieceConductor {
         bishop_table
     }
 
+    /// Bitboard of squares that hold pawns of `attacker_is_white` colour
+    /// which geometrically attack `sq`.  Equivalent to the inverse pawn-attack
+    /// mask: "which squares must a pawn occupy to threaten `sq`?"
+    #[inline]
+    pub fn pawn_attackers_of(&self, sq: usize, attacker_is_white: bool) -> Bitboard {
+        if attacker_is_white {
+            self.white_pawn_attack_masks[sq]
+        } else {
+            self.black_pawn_attack_masks[sq]
+        }
+    }
+
     #[inline]
     pub fn get_rook_moves(&self, square: u16, relevant_blockers: Bitboard, chess_board: &ChessBoard, move_list: &mut Vec<ChessMove>) {
         let magic_index = Self::rook_magic_index(square as usize, chess_board.get_all_pieces());
