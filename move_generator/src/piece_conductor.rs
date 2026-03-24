@@ -2,18 +2,28 @@ use chess_board::chessboard::CastlingRights;
 use chess_board::ChessBoard;
 use chess_foundation::bitboard::Bitboard;
 use chess_foundation::{ChessMove, Coord};
+use std::sync::OnceLock;
 
 use crate::magic_constants::{BISHOP_MAGICS, ROOK_MAGICS};
 use crate::masks::{BISHOP_MASKS, ROOK_MASKS};
 use crate::{get_king_move_patterns, get_knight_move_patterns};
 
-#[derive (Clone)]
+/// Rook and bishop magic attack tables — computed once, shared across all instances.
+struct MagicTables {
+    rook: Vec<Vec<Bitboard>>,
+    bishop: Vec<Vec<Bitboard>>,
+}
+
+// SAFETY: Vec<Vec<Bitboard>> is Send+Sync because Bitboard is u64.
+unsafe impl Send for MagicTables {}
+unsafe impl Sync for MagicTables {}
+
+static MAGIC_TABLES: OnceLock<MagicTables> = OnceLock::new();
+
+#[derive(Clone)]
 pub struct PieceConductor {
-    //pub pawn_lut: Vec<Bitboard>,
     pub knight_lut: Vec<Bitboard>,
     pub king_lut: Vec<Bitboard>,
-    rook_table: Vec<Vec<Bitboard>>,
-    bishop_table: Vec<Vec<Bitboard>>,
     white_pawn_attack_masks: [Bitboard; 64],
     black_pawn_attack_masks: [Bitboard; 64],
 }
@@ -32,11 +42,11 @@ impl PieceConductor {
     ];
 
     pub fn new() -> Self {
+        // Ensure the shared magic tables are initialized (no-op after the first call).
+        Self::tables();
+
         let king_lut = get_king_move_patterns();
         let knight_lut = get_knight_move_patterns();
-
-        let rook_table = Self::init_rook_table();
-        let bishop_table = Self::init_bishop_table();
 
         let mut white_pawn_attack_masks = [Bitboard::default(); 64];
         for square in 0..64 {
@@ -51,11 +61,17 @@ impl PieceConductor {
         PieceConductor {
             knight_lut,
             king_lut,
-            rook_table,
-            bishop_table,
             white_pawn_attack_masks,
             black_pawn_attack_masks,
         }
+    }
+
+    #[inline]
+    fn tables() -> &'static MagicTables {
+        MAGIC_TABLES.get_or_init(|| MagicTables {
+            rook: Self::init_rook_table(),
+            bishop: Self::init_bishop_table(),
+        })
     }
 
     // for precalculating masks and magics
@@ -152,7 +168,7 @@ impl PieceConductor {
     #[inline]
     pub fn get_rook_moves(&self, square: u16, relevant_blockers: Bitboard, chess_board: &ChessBoard, move_list: &mut Vec<ChessMove>) {
         let magic_index = Self::rook_magic_index(square as usize, chess_board.get_all_pieces());
-        let mut moves_bitboard = self.rook_table[square as usize][magic_index] & !relevant_blockers;
+        let mut moves_bitboard = Self::tables().rook[square as usize][magic_index] & !relevant_blockers;
         while !moves_bitboard.is_empty() {
             let target_square = moves_bitboard.pop_lsb();
             move_list.push(ChessMove::new(square, target_square as u16));
@@ -316,7 +332,7 @@ impl PieceConductor {
         all_pieces: Bitboard,
     ) -> Bitboard {
         let magic_index = Self::rook_magic_index(square, all_pieces);
-        self.rook_table[square][magic_index]
+        Self::tables().rook[square][magic_index]
     }
 
     #[inline]
@@ -327,7 +343,7 @@ impl PieceConductor {
         all_pieces: Bitboard,
     ) -> Bitboard {
         let magic_index = Self::bishop_magic_index(square, all_pieces);
-        self.bishop_table[square][magic_index] & !relevant_blockers
+        Self::tables().bishop[square][magic_index] & !relevant_blockers
     }
 
     fn get_pawn_attacks(square: usize, is_white: bool) -> Bitboard {
@@ -364,7 +380,7 @@ impl PieceConductor {
     #[inline]
     pub fn get_bishop_moves(&self, square: u16, relevant_blockers: Bitboard, chess_board: &ChessBoard, move_list: &mut Vec<ChessMove>) {
         let magic_index = Self::bishop_magic_index(square as usize, chess_board.get_all_pieces());
-        let mut moves_bitboard = self.bishop_table[square as usize][magic_index] & !relevant_blockers;
+        let mut moves_bitboard = Self::tables().bishop[square as usize][magic_index] & !relevant_blockers;
         while !moves_bitboard.is_empty() {
             let target_square = moves_bitboard.pop_lsb();
             move_list.push(ChessMove::new(square, target_square as u16));
