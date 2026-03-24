@@ -1,87 +1,18 @@
 //! Classical hand-crafted evaluation (HCE).
 //! Only compiled when the `classical-eval` feature is enabled.
 
+mod pawn_eval;
+mod king_safety;
+
 use chess_board::ChessBoard;
 use chess_foundation::Bitboard;
 use move_generator::piece_conductor::PieceConductor;
-use std::cell::UnsafeCell;
 
 use crate::piece_tables::{
     eg_bishop_table, eg_king_table, eg_knight_table, eg_pawn_table, eg_queen_table,
     eg_rook_table, is_passed_pawn, mg_bishop_table, mg_king_table, mg_knight_table,
     mg_pawn_table, mg_queen_table, mg_rook_table, passed_pawn_bonus_eg, passed_pawn_bonus_mg,
 };
-
-// ── Pawn hash table ──────────────────────────────────────────────────────────
-//
-// Pawn structure evaluation is expensive (PSTs + doubled/isolated + passed
-// pawn detection) but depends only on the two pawn bitboards, which change
-// infrequently during a search.  Caching behind a small per-thread table
-// avoids recomputing the same pawn eval at every node.
-
-const PAWN_TABLE_SIZE: usize = 1 << 14; // 16k entries (~1 MB per thread)
-
-/// A single pawn hash entry.  Stores all pawn-only MG/EG contributions
-/// (PSTs, structure penalties, passed pawn base bonuses) plus the passed-pawn
-/// bitboards needed to compute king-proximity bonuses at lookup time.
-#[derive(Clone, Copy)]
-struct PawnHashEntry {
-    key:          u64,
-    pawn_mg:      i32,  // white pawn PSTs MG − black pawn PSTs MG
-    pawn_eg:      i32,  // white pawn PSTs EG − black pawn PSTs EG
-    struct_score: i32,  // black structure penalty − white structure penalty (white's POV)
-    pass_w_mg:    i32,  // Σ passed_pawn_bonus_mg for white passers
-    pass_w_eg:    i32,
-    pass_b_mg:    i32,  // Σ passed_pawn_bonus_mg for black passers
-    pass_b_eg:    i32,
-    white_passers: u64,
-    black_passers: u64,
-}
-
-impl PawnHashEntry {
-    const EMPTY: Self = Self {
-        key: 0, pawn_mg: 0, pawn_eg: 0, struct_score: 0,
-        pass_w_mg: 0, pass_w_eg: 0, pass_b_mg: 0, pass_b_eg: 0,
-        white_passers: 0, black_passers: 0,
-    };
-}
-
-struct PawnHashTable {
-    entries: Box<[PawnHashEntry; PAWN_TABLE_SIZE]>,
-}
-
-impl PawnHashTable {
-    fn new() -> Self {
-        Self { entries: Box::new([PawnHashEntry::EMPTY; PAWN_TABLE_SIZE]) }
-    }
-
-    #[inline(always)]
-    fn probe(&self, key: u64) -> Option<&PawnHashEntry> {
-        let e = &self.entries[key as usize & (PAWN_TABLE_SIZE - 1)];
-        if e.key == key { Some(e) } else { None }
-    }
-
-    #[inline(always)]
-    fn store(&mut self, entry: PawnHashEntry) {
-        self.entries[entry.key as usize & (PAWN_TABLE_SIZE - 1)] = entry;
-    }
-}
-
-// UnsafeCell allows mutation via a shared reference inside thread_local!
-// This is sound because thread_local storage is never shared across threads.
-struct UnsafePawnTable(UnsafeCell<PawnHashTable>);
-unsafe impl Sync for UnsafePawnTable {}
-
-thread_local! {
-    static PAWN_TABLE: UnsafePawnTable = UnsafePawnTable(UnsafeCell::new(PawnHashTable::new()));
-}
-
-/// Compute a pawn-only Zobrist hash from the two pawn bitboards.
-#[inline(always)]
-fn pawn_key(white_pawns: u64, black_pawns: u64) -> u64 {
-    white_pawns.wrapping_mul(0x9E3779B97F4A7C15)
-        ^ black_pawns.wrapping_mul(0x517CC1B727220A95)
-}
 
 // PeSTO tapered piece values
 const MG_PAWN_VALUE:   i32 =  82;
@@ -360,162 +291,6 @@ fn mop_up(
     (corner_push + proximity) * eg_weight / 256 * urgency / 256
 }
 
-/// Pawn structure penalty (doubled + isolated).
-fn pawn_structure_penalty(pawns_bb: u64) -> i32 {
-    let mut penalty = 0i32;
-    for file in 0..8usize {
-        let on_file = (pawns_bb & FILE_MASKS[file]).count_ones() as i32;
-        if on_file == 0 {
-            continue;
-        }
-        if on_file > 1 {
-            penalty += (on_file - 1) * DOUBLED_PAWN_PENALTY;
-        }
-        let mut adjacent = 0u64;
-        if file > 0 { adjacent |= FILE_MASKS[file - 1]; }
-        if file < 7 { adjacent |= FILE_MASKS[file + 1]; }
-        if pawns_bb & adjacent == 0 {
-            penalty += on_file * ISOLATED_PAWN_PENALTY;
-        }
-    }
-    penalty
-}
-
-/// Pawn shield penalty for one side (always positive = penalty amount).
-///
-/// Only applied when the king is on a wing (files a–c or f–h), indicating
-/// it has castled or moved to safety. A king in the centre gets no shield
-/// penalty — central pawns being advanced is normal opening play.
-fn king_shield_penalty(king_sq: usize, friendly_pawns: u64, is_white: bool) -> i32 {
-    let king_file = king_sq % 8;
-
-    // Only check pawn shield when king is on a wing (likely castled).
-    if king_file >= 3 && king_file <= 4 {
-        return 0;
-    }
-
-    let center = king_file.max(1).min(6);
-
-    // Ranks where a pawn still forms a tight shield.
-    let shield_ranks: u64 = if is_white {
-        0x0000_0000_00FF_FF00 // ranks 2–3 (squares 8–23)
-    } else {
-        0x00FF_FF00_0000_0000 // ranks 6–7 (squares 40–55)
-    };
-
-    let mut penalty = 0i32;
-    for file in (center - 1)..=(center + 1) {
-        let pawn_on_file = friendly_pawns & FILE_MASKS[file];
-        if pawn_on_file == 0 {
-            penalty += KING_SHIELD_MISSING;
-        } else if pawn_on_file & shield_ranks == 0 {
-            penalty += KING_SHIELD_ADVANCED;
-        }
-    }
-    penalty
-}
-
-/// Attack-counting king safety.
-///
-/// Counts how many enemy pieces (knight, bishop, rook, queen) attack the
-/// king zone (the 8 squares around the king + the king square itself).
-/// Each piece type contributes a weight; the total indexes a non-linear
-/// safety table.
-///
-/// Additional weight is added for open/semi-open files adjacent to the king:
-/// an open file acts as a highway for rooks and queens and dramatically
-/// amplifies existing piece attacks.
-///
-/// The total is scaled down by ~50% when the enemy has no queen, since
-/// mating attacks without a queen are much rarer.
-fn king_attack_penalty(
-    conductor: &PieceConductor,
-    king_sq: usize,
-    enemy_knights: Bitboard,
-    enemy_bishops: Bitboard,
-    enemy_rooks: Bitboard,
-    enemy_queens: Bitboard,
-    occupied: Bitboard,
-    friendly_pawns: u64,
-    enemy_pawns: u64,
-) -> i32 {
-    // King zone = king square + 8 surrounding squares.
-    let zone = conductor.king_lut[king_sq] | Bitboard(1u64 << king_sq);
-    let king_file = king_sq % 8;
-
-    let mut attack_weight = 0i32;
-    let mut attacker_count = 0i32;
-
-    // Knights
-    for_each_sq(enemy_knights, |sq| {
-        if (conductor.knight_lut[sq] & zone).0 != 0 {
-            attack_weight += KNIGHT_ATTACK_WEIGHT;
-            attacker_count += 1;
-        }
-    });
-
-    // Bishops
-    for_each_sq(enemy_bishops, |sq| {
-        let attacks = conductor.get_bishop_attacks(sq, Bitboard(0), occupied);
-        if (attacks & zone).0 != 0 {
-            attack_weight += BISHOP_ATTACK_WEIGHT;
-            attacker_count += 1;
-
-            // Greek Gift bonus: bishop has a clear diagonal to the h-file pawn
-            // of a kingside-castled king (king on g-file = file 6).
-            // Applies to both White attacking Black's h7 and Black attacking h2.
-            // Raises attack_weight by 5 → SAFETY_TABLE lookup jumps from ~4 cp
-            // to ~155 cp, making the engine correctly fear/value the pattern.
-            if king_file == 6 && (attacks.0 & zone.0 & H_FILE) != 0 {
-                attack_weight += GREEK_GIFT_BONUS;
-            }
-        }
-    });
-
-    // Rooks
-    for_each_sq(enemy_rooks, |sq| {
-        let attacks = conductor.get_rook_attacks(sq, Bitboard(0), occupied);
-        if (attacks & zone).0 != 0 {
-            attack_weight += ROOK_ATTACK_WEIGHT;
-            attacker_count += 1;
-        }
-    });
-
-    // Queens
-    for_each_sq(enemy_queens, |sq| {
-        let rook_part   = conductor.get_rook_attacks(sq, Bitboard(0), occupied);
-        let bishop_part = conductor.get_bishop_attacks(sq, Bitboard(0), occupied);
-        if ((rook_part | bishop_part) & zone).0 != 0 {
-            attack_weight += QUEEN_ATTACK_WEIGHT;
-            attacker_count += 1;
-        }
-    });
-
-    if attacker_count == 0 {
-        return 0;
-    }
-
-    // Open / semi-open files near king amplify attack danger.
-    // Check the king file and adjacent files (clamped to board).
-    let king_file = king_sq % 8;
-    let all_pawns = friendly_pawns | enemy_pawns;
-    for f in king_file.saturating_sub(1)..=(king_file + 1).min(7) {
-        let fmask = FILE_MASKS[f];
-        if all_pawns & fmask == 0 {
-            attack_weight += OPEN_FILE_ATTACK_BONUS;
-        } else if friendly_pawns & fmask == 0 {
-            attack_weight += SEMI_OPEN_FILE_ATTACK_BONUS;
-        }
-    }
-
-    // Scale down heavily when the enemy has no queen: mating attacks without
-    // a queen are rare and the danger table is calibrated for queen presence.
-    let has_enemy_queen = enemy_queens.0 != 0;
-    let weight = if has_enemy_queen { attack_weight } else { attack_weight / 2 };
-
-    SAFETY_TABLE[weight.min(SAFETY_TABLE.len() as i32 - 1) as usize]
-}
-
 /// Evaluates the chess board and returns an absolute score:
 
 pub fn evaluate(chess_board: &ChessBoard, conductor: &PieceConductor) -> i32 {
@@ -580,55 +355,39 @@ pub fn evaluate(chess_board: &ChessBoard, conductor: &PieceConductor) -> i32 {
     // Probe the per-thread pawn hash table.  On a miss, compute everything
     // from scratch and store the result.  Hit rate is very high because pawn
     // structure rarely changes in a single search tree.
-    let pkey = pawn_key(white_pawns_bb, black_pawns_bb);
-    let ph = PAWN_TABLE.with(|t| {
-        // SAFETY: thread_local, never aliased.
-        let table = unsafe { &mut *t.0.get() };
-        if let Some(e) = table.probe(pkey) {
-            return *e;
-        }
-        // Cache miss — compute all pawn-only terms.
-        let mut pmg = 0i32;
-        let mut peg = 0i32;
-        for_each_sq(white & pawns, |sq| { pmg += mg_pawn_table(sq, true);  peg += eg_pawn_table(sq, true); });
-        for_each_sq(black & pawns, |sq| { pmg -= mg_pawn_table(sq, false); peg -= eg_pawn_table(sq, false); });
-
-        let w_struct = pawn_structure_penalty(white_pawns_bb);
-        let b_struct = pawn_structure_penalty(black_pawns_bb);
-
-        let mut pw_mg = 0i32; let mut pw_eg = 0i32;
-        let mut pb_mg = 0i32; let mut pb_eg = 0i32;
-        let mut wpass = 0u64; let mut bpass = 0u64;
-        for_each_sq(white & pawns, |sq| {
-            if is_passed_pawn(sq, black_pawns_bb, true) {
-                wpass |= 1u64 << sq;
-                pw_mg += passed_pawn_bonus_mg(sq, true);
-                pw_eg += passed_pawn_bonus_eg(sq, true);
-            }
-        });
-        for_each_sq(black & pawns, |sq| {
-            if is_passed_pawn(sq, white_pawns_bb, false) {
-                bpass |= 1u64 << sq;
-                pb_mg += passed_pawn_bonus_mg(sq, false);
-                pb_eg += passed_pawn_bonus_eg(sq, false);
-            }
-        });
-
-        let entry = PawnHashEntry {
-            key:          pkey,
-            pawn_mg:      pmg,
-            pawn_eg:      peg,
-            struct_score: b_struct as i32 - w_struct as i32,
-            pass_w_mg:    pw_mg,
-            pass_w_eg:    pw_eg,
-            pass_b_mg:    pb_mg,
-            pass_b_eg:    pb_eg,
-            white_passers: wpass,
-            black_passers: bpass,
-        };
-        table.store(entry);
-        entry
-    });
+    let ph = pawn_eval::probe_or_fill(
+        white_pawns_bb,
+        black_pawns_bb,
+        &|| {
+            let mut pmg = 0i32;
+            let mut peg = 0i32;
+            for_each_sq(white & pawns, |sq| { pmg += mg_pawn_table(sq, true);  peg += eg_pawn_table(sq, true); });
+            for_each_sq(black & pawns, |sq| { pmg -= mg_pawn_table(sq, false); peg -= eg_pawn_table(sq, false); });
+            (pmg, peg)
+        },
+        &|| {
+            let mut pw_mg = 0i32; let mut pw_eg = 0i32; let mut wpass = 0u64;
+            for_each_sq(white & pawns, |sq| {
+                if is_passed_pawn(sq, black_pawns_bb, true) {
+                    wpass |= 1u64 << sq;
+                    pw_mg += passed_pawn_bonus_mg(sq, true);
+                    pw_eg += passed_pawn_bonus_eg(sq, true);
+                }
+            });
+            (pw_mg, pw_eg, wpass)
+        },
+        &|| {
+            let mut pb_mg = 0i32; let mut pb_eg = 0i32; let mut bpass = 0u64;
+            for_each_sq(black & pawns, |sq| {
+                if is_passed_pawn(sq, white_pawns_bb, false) {
+                    bpass |= 1u64 << sq;
+                    pb_mg += passed_pawn_bonus_mg(sq, false);
+                    pb_eg += passed_pawn_bonus_eg(sq, false);
+                }
+            });
+            (pb_mg, pb_eg, bpass)
+        },
+    );
 
     mg += ph.pawn_mg;
     eg += ph.pawn_eg;
@@ -636,19 +395,19 @@ pub fn evaluate(chess_board: &ChessBoard, conductor: &PieceConductor) -> i32 {
     // --- King safety (MG only — fades naturally in endgame blend) ---
     //
     // Pawn shield: penalise missing/advanced shield pawns when king is on a wing.
-    mg -= king_shield_penalty(white_king_sq, white_pawns_bb, true);
-    mg += king_shield_penalty(black_king_sq, black_pawns_bb, false);
+    mg -= king_safety::king_shield_penalty(white_king_sq, white_pawns_bb, true);
+    mg += king_safety::king_shield_penalty(black_king_sq, black_pawns_bb, false);
 
     // Attack counting: penalise when multiple enemy pieces aim at the king zone.
     // Open files near the king and enemy queen presence amplify the danger.
     let occupied = chess_board.get_all_pieces();
-    mg -= king_attack_penalty(
+    mg -= king_safety::king_attack_penalty(
         conductor, white_king_sq,
         black & knights, black & bishops, black & rooks, black & queens,
         occupied,
         white_pawns_bb, black_pawns_bb,
     );
-    mg += king_attack_penalty(
+    mg += king_safety::king_attack_penalty(
         conductor, black_king_sq,
         white & knights, white & bishops, white & rooks, white & queens,
         occupied,
