@@ -419,19 +419,27 @@ fn sub_col(acc: &mut [i16; HIDDEN1], col: &[i16]) {
 unsafe fn screlu_deq_avx2(acc: &[i16], scale: f32, out: &mut [f32]) {
     use std::arch::x86_64::*;
     debug_assert_eq!(acc.len(), out.len());
-    let zero     = _mm256_setzero_ps();
-    let vscale   = _mm256_set1_ps(scale);
-    let inv_sc   = _mm256_set1_ps(1.0 / scale);
-    let chunks   = acc.len() / 8;
+    let zero   = _mm256_setzero_ps();
+    let vscale = _mm256_set1_ps(scale);
+    let inv_sc = _mm256_set1_ps(1.0 / scale);
+    // Process 16 i16 per iteration (two 128-bit loads → two 256-bit f32 blocks)
+    // HIDDEN1=1024 → 64 iterations, scalar tail never runs.
+    let chunks = acc.len() / 16;
     for k in 0..chunks {
-        let vi16 = _mm_loadu_si128(acc.as_ptr().add(k * 8) as *const __m128i);
-        let vi32 = _mm256_cvtepi16_epi32(vi16);
-        let vf   = _mm256_cvtepi32_ps(vi32);
-        let clp  = _mm256_min_ps(_mm256_max_ps(vf, zero), vscale);
-        let norm = _mm256_mul_ps(clp, inv_sc);
-        _mm256_storeu_ps(out.as_mut_ptr().add(k * 8), _mm256_mul_ps(norm, norm));
+        let vi16_lo = _mm_loadu_si128(acc.as_ptr().add(k * 16    ) as *const __m128i);
+        let vi16_hi = _mm_loadu_si128(acc.as_ptr().add(k * 16 + 8) as *const __m128i);
+        let vi32_lo = _mm256_cvtepi16_epi32(vi16_lo);
+        let vi32_hi = _mm256_cvtepi16_epi32(vi16_hi);
+        let vf_lo   = _mm256_cvtepi32_ps(vi32_lo);
+        let vf_hi   = _mm256_cvtepi32_ps(vi32_hi);
+        let clp_lo  = _mm256_min_ps(_mm256_max_ps(vf_lo, zero), vscale);
+        let clp_hi  = _mm256_min_ps(_mm256_max_ps(vf_hi, zero), vscale);
+        let norm_lo = _mm256_mul_ps(clp_lo, inv_sc);
+        let norm_hi = _mm256_mul_ps(clp_hi, inv_sc);
+        _mm256_storeu_ps(out.as_mut_ptr().add(k * 16    ), _mm256_mul_ps(norm_lo, norm_lo));
+        _mm256_storeu_ps(out.as_mut_ptr().add(k * 16 + 8), _mm256_mul_ps(norm_hi, norm_hi));
     }
-    for k in chunks * 8..acc.len() {
+    for k in chunks * 16..acc.len() {
         out[k] = screlu_i16(acc[k], scale);
     }
 }
