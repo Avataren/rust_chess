@@ -261,18 +261,31 @@ pub fn acc_sub_feature(acc: &mut [i16; HIDDEN1], feature_idx: usize) {
     }
 }
 
-/// Apply a batch of feature subtractions then additions to an accumulator.
+/// Apply accumulator deltas in the order: `subs_pre`, `adds`, `subs_post`.
+///
+/// The three-phase ordering preserves the original operation sequence:
+///   sub moving-piece-from-source → add moving-piece-to-dest → sub captured-piece
+/// which matters for saturating i16 arithmetic (reordering can change intermediate
+/// saturation and thus produce different results).
 ///
 /// Does a single `EVALUATOR.get()` instead of one per feature, reducing
 /// atomic loads from 4–8 to 2 per search node in `acc_push`.
 #[inline]
-pub fn acc_apply_deltas(acc: &mut [i16; HIDDEN1], subs: &[usize], adds: &[usize]) {
+pub fn acc_apply_deltas(
+    acc: &mut [i16; HIDDEN1],
+    subs_pre: &[usize],
+    adds: &[usize],
+    subs_post: &[usize],
+) {
     if let Some(e) = EVALUATOR.get() {
-        for &idx in subs {
+        for &idx in subs_pre {
             sub_col(acc, &e.w1_t_i16[idx * HIDDEN1..(idx + 1) * HIDDEN1]);
         }
         for &idx in adds {
             add_col(acc, &e.w1_t_i16[idx * HIDDEN1..(idx + 1) * HIDDEN1]);
+        }
+        for &idx in subs_post {
+            sub_col(acc, &e.w1_t_i16[idx * HIDDEN1..(idx + 1) * HIDDEN1]);
         }
     }
 }

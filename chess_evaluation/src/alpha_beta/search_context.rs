@@ -241,7 +241,10 @@ impl SearchContext {
         let acc_w = &mut self.acc_white[dst];
         let acc_b = &mut self.acc_black[dst];
 
-        // Build delta lists (max 2 subs, 1 add per accumulator)
+        // Build delta lists preserving original operation order:
+        //   sub from_src  →  add to_dst  →  sub capture
+        // This matches the original per-call sequence exactly, which matters
+        // for saturating i16 arithmetic (intermediate saturation is order-sensitive).
         let orig_pt = moving_piece.piece_type();
 
         // Determine destination piece type (promotion may change it)
@@ -251,51 +254,45 @@ impl SearchContext {
             orig_pt
         };
 
-        let mut w_subs = [0usize; 2];
-        let mut b_subs = [0usize; 2];
-        let mut w_subs_n = 0usize;
-        let mut b_subs_n = 0usize;
-
-        // Remove moving piece from source square
+        // subs_pre: remove moving piece from source square
         let slot_w = halfkp_piece_slot(orig_pt, piece_is_white);
         let slot_b = halfkp_piece_slot(orig_pt, !piece_is_white);
-        w_subs[w_subs_n] = halfkp_feature_idx(slot_w, w_sq(from_sq), wk_bucket);
-        w_subs_n += 1;
-        b_subs[b_subs_n] = halfkp_feature_idx(slot_b, b_sq(from_sq), bk_bucket);
-        b_subs_n += 1;
+        let w_sub_pre = halfkp_feature_idx(slot_w, w_sq(from_sq), wk_bucket);
+        let b_sub_pre = halfkp_feature_idx(slot_b, b_sq(from_sq), bk_bucket);
 
-        // Remove captured piece (en passant: captured pawn is not at to_sq)
-        if mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
-            let cap_sq = if piece_is_white {
-                to_sq.wrapping_sub(8)
-            } else {
-                to_sq + 8
-            };
-            let cap_slot_w = halfkp_piece_slot(PieceType::Pawn, !piece_is_white);
-            let cap_slot_b = halfkp_piece_slot(PieceType::Pawn, piece_is_white);
-            w_subs[w_subs_n] = halfkp_feature_idx(cap_slot_w, w_sq(cap_sq), wk_bucket);
-            w_subs_n += 1;
-            b_subs[b_subs_n] = halfkp_feature_idx(cap_slot_b, b_sq(cap_sq), bk_bucket);
-            b_subs_n += 1;
-        } else if let Some(cap) = mv.capture {
-            let cap_pt = cap.piece_type();
-            let cap_is_white = cap.is_white();
-            let cap_slot_w = halfkp_piece_slot(cap_pt, cap_is_white);
-            let cap_slot_b = halfkp_piece_slot(cap_pt, !cap_is_white);
-            w_subs[w_subs_n] = halfkp_feature_idx(cap_slot_w, w_sq(to_sq), wk_bucket);
-            w_subs_n += 1;
-            b_subs[b_subs_n] = halfkp_feature_idx(cap_slot_b, b_sq(to_sq), bk_bucket);
-            b_subs_n += 1;
-        }
-
-        // Add moving piece to destination square (one EVALUATOR.get() per accumulator)
+        // adds: moving piece at destination
         let to_slot_w = halfkp_piece_slot(to_pt, piece_is_white);
         let to_slot_b = halfkp_piece_slot(to_pt, !piece_is_white);
         let w_add = halfkp_feature_idx(to_slot_w, w_sq(to_sq), wk_bucket);
         let b_add = halfkp_feature_idx(to_slot_b, b_sq(to_sq), bk_bucket);
 
-        crate::neural_eval::acc_apply_deltas(acc_w, &w_subs[..w_subs_n], &[w_add]);
-        crate::neural_eval::acc_apply_deltas(acc_b, &b_subs[..b_subs_n], &[b_add]);
+        // subs_post: remove captured piece (applied after the add, matching original order)
+        let mut w_cap = [0usize; 1];
+        let mut b_cap = [0usize; 1];
+        let cap_n;
+
+        if mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
+            let cap_sq = if piece_is_white { to_sq.wrapping_sub(8) } else { to_sq + 8 };
+            let cap_slot_w = halfkp_piece_slot(PieceType::Pawn, !piece_is_white);
+            let cap_slot_b = halfkp_piece_slot(PieceType::Pawn, piece_is_white);
+            w_cap[0] = halfkp_feature_idx(cap_slot_w, w_sq(cap_sq), wk_bucket);
+            b_cap[0] = halfkp_feature_idx(cap_slot_b, b_sq(cap_sq), bk_bucket);
+            cap_n = 1;
+        } else if let Some(cap) = mv.capture {
+            let cap_pt = cap.piece_type();
+            let cap_is_white = cap.is_white();
+            let cap_slot_w = halfkp_piece_slot(cap_pt, cap_is_white);
+            let cap_slot_b = halfkp_piece_slot(cap_pt, !cap_is_white);
+            w_cap[0] = halfkp_feature_idx(cap_slot_w, w_sq(to_sq), wk_bucket);
+            b_cap[0] = halfkp_feature_idx(cap_slot_b, b_sq(to_sq), bk_bucket);
+            cap_n = 1;
+        } else {
+            cap_n = 0;
+        }
+
+        // One EVALUATOR.get() per accumulator; order: sub_pre → add → sub_post
+        crate::neural_eval::acc_apply_deltas(acc_w, &[w_sub_pre], &[w_add], &w_cap[..cap_n]);
+        crate::neural_eval::acc_apply_deltas(acc_b, &[b_sub_pre], &[b_add], &b_cap[..cap_n]);
 
         false // no full recompute needed
     }
