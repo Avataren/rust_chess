@@ -125,7 +125,7 @@ pub type SearchTaskOutput = (i32, Option<ChessMove>, Option<ChessMove>, bool, u6
 
 async fn alpha_beta_task(
     chess_board: &mut ChessBoard,
-    conductor: &PieceConductor,
+    conductor: Arc<PieceConductor>,
     book: &OpeningBook,
     max_depth: i32,
     is_white: bool,
@@ -135,7 +135,7 @@ async fn alpha_beta_task(
     #[cfg(not(target_arch = "wasm32"))]
     {
         let result = iterative_deepening_root(
-            chess_board, conductor, Some(book), max_depth, is_white, deadline, None, noise_cp,
+            chess_board, &conductor, Some(book), max_depth, is_white, deadline, None, noise_cp,
         );
         return (result.score, result.best_move, result.ponder_move, false, 0);
     }
@@ -161,11 +161,11 @@ async fn alpha_beta_task(
             let stop_w = Arc::clone(&stop);
             let res_w = Arc::clone(&result);
             let mut board_w = chess_board.clone();
-            let conductor_w = conductor.clone();
+            let conductor_w = Arc::clone(&conductor);
             let book_w = book.clone();
             rayon::spawn(move || {
                 let r = iterative_deepening_root(
-                    &mut board_w, &conductor_w, Some(&book_w),
+                    &mut board_w, &*conductor_w, Some(&book_w),
                     max_depth, is_white, None, Some(stop_w), noise_cp,
                 );
                 *res_w.lock().unwrap() = Some((r.score, r.best_move, r.ponder_move));
@@ -189,7 +189,7 @@ async fn alpha_beta_task(
 
 async fn ponder_search_task(
     mut board: ChessBoard,
-    conductor: PieceConductor,
+    conductor: Arc<PieceConductor>,
     book: OpeningBook,
     depth: i32,
     is_white: bool,
@@ -203,6 +203,7 @@ async fn ponder_search_task(
             depth, is_white, None, Some(stop), 0,
         );
         return (result.score, result.best_move, result.ponder_move, true, board_hash);
+
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -212,11 +213,11 @@ async fn ponder_search_task(
         {
             let stop_w = Arc::clone(&stop);
             let res_w = Arc::clone(&result);
-            let conductor_w = conductor.clone();
+            let conductor_w = Arc::clone(&conductor);
             let book_w = book.clone();
             rayon::spawn(move || {
                 let r = iterative_deepening_root(
-                    &mut board, &conductor_w, Some(&book_w),
+                    &mut board, &*conductor_w, Some(&book_w),
                     depth, is_white, None, Some(stop_w), 0,
                 );
                 *res_w.lock().unwrap() = Some((r.score, r.best_move, r.ponder_move));
@@ -237,7 +238,7 @@ fn launch_multi_ponder(
     task_pool: &mut TaskPool<SearchTaskOutput>,
     ponder_state: &mut PonderState,
     board: &ChessBoard,
-    conductor: &PieceConductor,
+    conductor: &Arc<PieceConductor>,
     book: &OpeningBook,
     depth: i32,
     ai_is_white: bool,
@@ -281,7 +282,7 @@ fn launch_multi_ponder(
         let stop = Arc::new(AtomicBool::new(false));
         ponder_state.stops.push(Arc::clone(&stop));
 
-        let conductor_c = conductor.clone();
+        let conductor_c = Arc::clone(conductor);
         let book_c = book.clone();
         task_pool.spawn(async move {
             ponder_search_task(
@@ -394,7 +395,7 @@ pub fn handle_async_moves(
                             return (0, Some(m), None, false, 0);
                         }
                         alpha_beta_task(
-                            &mut board_c, &conductor_c, &book_c,
+                            &mut board_c, conductor_c, &book_c,
                             depth, ai_is_white, deadline, noise_cp,
                         )
                         .await

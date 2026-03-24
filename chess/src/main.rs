@@ -34,6 +34,7 @@ use game_resources::{
 };
 use input_plugin::ChessInputPlugin;
 use move_generator::piece_conductor::PieceConductor;
+use std::sync::Arc;
 use preload_assets_plugin::PreloadAssetsPlugin;
 
 
@@ -44,7 +45,7 @@ struct ChessBoardRes {
 
 #[derive(Resource)]
 struct PieceConductorRes {
-    magic: move_generator::piece_conductor::PieceConductor,
+    magic: Arc<PieceConductor>,
 }
 
 
@@ -178,7 +179,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         chess_board: chessboard,
     });
 
-    let magic = PieceConductor::new();
+    let magic = Arc::new(PieceConductor::new());
     let book = chess_evaluation::OpeningBook::build(&magic);
     commands.insert_resource(OpeningBookRes { book });
     commands.insert_resource(PieceConductorRes { magic });
