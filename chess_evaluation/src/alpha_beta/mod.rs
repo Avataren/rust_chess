@@ -91,6 +91,7 @@ pub(in crate::alpha_beta) fn capture_value(board: &ChessBoard, mv: &ChessMove) -
 /// ProbCut margin: if a capture SEE exceeds beta by this much, do a shallow verify.
 const PROBCUT_MARGIN: i32 = 200;
 
+
 /// Delta pruning margin in quiescence: skip captures that can't raise alpha even
 /// with an extra DELTA_MARGIN bonus on top of the captured-piece value.
 pub(in crate::alpha_beta) const DELTA_MARGIN: i32 = 250;
@@ -808,6 +809,23 @@ pub fn alpha_beta(
         }
         if is_quiet {
             quiet_count += 1;
+        }
+
+        // --- History pruning ---
+        // At depth ≤ 3, skip quiet moves whose history score is sufficiently
+        // negative.  A large negative history score means this move has
+        // repeatedly failed to improve the position — it's a known bad quiet
+        // move and not worth a full search at low depths.
+        // Threshold scales with depth so deeper nodes are pruned less eagerly.
+        // Guards: not in check (forced moves must always be searched), and
+        // move_index > 0 (always search the first/TT move fully).
+        if is_quiet && !in_check && move_index > 0 && ply > 0 && depth <= 3 {
+            let from = chess_move.start_square() as usize;
+            let to   = chess_move.target_square() as usize;
+            let hist = ctx.history[from][to];
+            if hist < -256 * depth {
+                continue;
+            }
         }
 
         // Singular / double extension for the TT move (move_index == 0).
