@@ -439,6 +439,24 @@ impl SearchContext {
         }
     }
 
+    /// Apply `make_move` while maintaining the incremental accumulator.
+    ///
+    /// Combines `acc_push → make_move → (acc_recompute if king moved)` into one
+    /// call, eliminating the copy-pasted pattern across all search entry points.
+    #[inline]
+    pub fn make_move_with_acc(
+        &mut self,
+        ply: usize,
+        mv: &mut ChessMove,
+        board: &mut ChessBoard,
+    ) {
+        let king_moved = self.acc_push(ply, mv, board);
+        board.make_move(mv);
+        if king_moved {
+            self.acc_recompute(ply + 1, board);
+        }
+    }
+
     /// Halve all history scores between ID iterations so that shallower
     /// searches don't drown out discoveries from the current depth.
     pub fn age_history(&mut self) {
@@ -643,11 +661,7 @@ fn quiescence_inner<const IS_WHITE: bool>(
             continue;
         }
 
-        let king_moved = ctx.acc_push(ply, &chess_move, chess_board);
-        chess_board.make_move(&mut chess_move);
-        if king_moved {
-            ctx.acc_recompute(ply + 1, chess_board);
-        }
+        ctx.make_move_with_acc(ply, &mut chess_move, chess_board);
         let eval = quiescence(
             chess_board,
             conductor,
@@ -1132,11 +1146,7 @@ pub fn alpha_beta(
                     break;
                 }
 
-                let pc_king_moved = ctx.acc_push(ply, &pc_mv, chess_board);
-                chess_board.make_move(&mut pc_mv);
-                if pc_king_moved {
-                    ctx.acc_recompute(ply + 1, chess_board);
-                }
+                ctx.make_move_with_acc(ply, &mut pc_mv, chess_board);
                 let (pc_alpha, pc_beta) = if is_white {
                     (pc_threshold - 1, pc_threshold)
                 } else {
@@ -1425,11 +1435,7 @@ pub fn alpha_beta(
             // Record this move as the "previous move" for the child ply so the
             // child can look up the countermove that refutes it.
             ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
-            let king_moved_ab = ctx.acc_push(ply, &chess_move, chess_board);
-            chess_board.make_move(&mut chess_move);
-            if king_moved_ab {
-                ctx.acc_recompute(ply + 1, chess_board);
-            }
+            ctx.make_move_with_acc(ply, &mut chess_move, chess_board);
 
             // LMR reduction: R grows with depth and move index.
             // Reduce less for moves with high continuation history score (they're "interesting").
@@ -1644,11 +1650,7 @@ pub fn alpha_beta(
 
             // Record this move as the "previous move" for the child ply.
             ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
-            let king_moved_ab = ctx.acc_push(ply, &chess_move, chess_board);
-            chess_board.make_move(&mut chess_move);
-            if king_moved_ab {
-                ctx.acc_recompute(ply + 1, chess_board);
-            }
+            ctx.make_move_with_acc(ply, &mut chess_move, chess_board);
 
             let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
                 let r = lmr_reduction(depth, move_index).max(1);
@@ -1895,11 +1897,7 @@ pub fn search_root(
             if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
                 break;
             }
-            let root_king_moved = ctx.acc_push(0, &chess_move, chess_board);
-            chess_board.make_move(&mut chess_move);
-            if root_king_moved {
-                ctx.acc_recompute(1, chess_board);
-            }
+            ctx.make_move_with_acc(0, &mut chess_move, chess_board);
 
             let eval = if chess_board.is_repetition(2) {
                 0
@@ -1989,11 +1987,7 @@ pub fn search_root(
             if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
                 break;
             }
-            let root_king_moved = ctx.acc_push(0, &chess_move, chess_board);
-            chess_board.make_move(&mut chess_move);
-            if root_king_moved {
-                ctx.acc_recompute(1, chess_board);
-            }
+            ctx.make_move_with_acc(0, &mut chess_move, chess_board);
 
             let eval = if chess_board.is_repetition(2) {
                 0
