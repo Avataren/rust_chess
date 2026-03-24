@@ -883,6 +883,57 @@ fn is_zugzwang_prone(chess_board: &ChessBoard, is_white: bool) -> bool {
     minor_and_major.count_ones() < 2
 }
 
+// ── PVS helpers ───────────────────────────────────────────────────────────────
+
+/// PVS null-window probe for a **maximising** child (white to move).
+///
+/// Tries the narrow window `(alpha, alpha+1)` first; if the score falls
+/// strictly inside `(alpha, beta)` (i.e. it raised alpha but didn't hit beta),
+/// re-searches with the full window to get an exact score.
+#[inline]
+fn pvs_child_maximizer(
+    board:     &mut ChessBoard,
+    conductor: &PieceConductor,
+    tt:        &TranspositionTable,
+    ctx:       &mut SearchContext,
+    depth:     i32,
+    child_ply: usize,
+    alpha:     i32,
+    beta:      i32,
+    stop:      Option<&AtomicBool>,
+) -> i32 {
+    let score = alpha_beta(board, conductor, tt, ctx, depth, child_ply, alpha, alpha + 1, false, true, stop).0;
+    if score > alpha && score < beta {
+        alpha_beta(board, conductor, tt, ctx, depth, child_ply, alpha, beta, false, true, stop).0
+    } else {
+        score
+    }
+}
+
+/// PVS null-window probe for a **minimising** child (black to move).
+///
+/// Tries the narrow window `(beta-1, beta)` first; if the score falls
+/// strictly inside `(alpha, beta)`, re-searches with the full window.
+#[inline]
+fn pvs_child_minimizer(
+    board:     &mut ChessBoard,
+    conductor: &PieceConductor,
+    tt:        &TranspositionTable,
+    ctx:       &mut SearchContext,
+    depth:     i32,
+    child_ply: usize,
+    alpha:     i32,
+    beta:      i32,
+    stop:      Option<&AtomicBool>,
+) -> i32 {
+    let score = alpha_beta(board, conductor, tt, ctx, depth, child_ply, beta - 1, beta, true, true, stop).0;
+    if score < beta && score > alpha {
+        alpha_beta(board, conductor, tt, ctx, depth, child_ply, alpha, beta, true, true, stop).0
+    } else {
+        score
+    }
+}
+
 // ── Alpha-beta ────────────────────────────────────────────────────────────────
 
 /// Internal recursive alpha-beta search with transposition table,
@@ -1522,39 +1573,7 @@ pub fn alpha_beta(
                 }
             } else {
                 // PVS: null-window search for non-PV moves.
-                let score = alpha_beta(
-                    chess_board,
-                    conductor,
-                    tt,
-                    ctx,
-                    depth - 1,
-                    ply + 1,
-                    alpha,
-                    alpha + 1,
-                    false,
-                    true,
-                    stop,
-                )
-                .0;
-                if score > alpha && score < beta {
-                    // Fail high — re-search with full window.
-                    alpha_beta(
-                        chess_board,
-                        conductor,
-                        tt,
-                        ctx,
-                        depth - 1,
-                        ply + 1,
-                        alpha,
-                        beta,
-                        false,
-                        true,
-                        stop,
-                    )
-                    .0
-                } else {
-                    score
-                }
+                pvs_child_maximizer(chess_board, conductor, tt, ctx, depth - 1, ply + 1, alpha, beta, stop)
             };
 
             chess_board.undo_move();
@@ -1734,39 +1753,7 @@ pub fn alpha_beta(
                 }
             } else {
                 // PVS: null-window search for non-PV moves.
-                let score = alpha_beta(
-                    chess_board,
-                    conductor,
-                    tt,
-                    ctx,
-                    depth - 1,
-                    ply + 1,
-                    beta - 1,
-                    beta,
-                    true,
-                    true,
-                    stop,
-                )
-                .0;
-                if score < beta && score > alpha {
-                    // Fail low — re-search with full window.
-                    alpha_beta(
-                        chess_board,
-                        conductor,
-                        tt,
-                        ctx,
-                        depth - 1,
-                        ply + 1,
-                        alpha,
-                        beta,
-                        true,
-                        true,
-                        stop,
-                    )
-                    .0
-                } else {
-                    score
-                }
+                pvs_child_minimizer(chess_board, conductor, tt, ctx, depth - 1, ply + 1, alpha, beta, stop)
             };
 
             chess_board.undo_move();
@@ -1924,38 +1911,7 @@ pub fn search_root(
                 )
                 .0
             } else {
-                let score = alpha_beta(
-                    chess_board,
-                    conductor,
-                    tt,
-                    ctx,
-                    depth - 1,
-                    1,
-                    alpha,
-                    alpha + 1,
-                    false,
-                    true,
-                    stop,
-                )
-                .0;
-                if score > alpha && score < beta {
-                    alpha_beta(
-                        chess_board,
-                        conductor,
-                        tt,
-                        ctx,
-                        depth - 1,
-                        1,
-                        alpha,
-                        beta,
-                        false,
-                        true,
-                        stop,
-                    )
-                    .0
-                } else {
-                    score
-                }
+                pvs_child_maximizer(chess_board, conductor, tt, ctx, depth - 1, 1, alpha, beta, stop)
             };
 
             chess_board.undo_move();
@@ -2014,38 +1970,7 @@ pub fn search_root(
                 )
                 .0
             } else {
-                let score = alpha_beta(
-                    chess_board,
-                    conductor,
-                    tt,
-                    ctx,
-                    depth - 1,
-                    1,
-                    beta - 1,
-                    beta,
-                    true,
-                    true,
-                    stop,
-                )
-                .0;
-                if score < beta && score > alpha {
-                    alpha_beta(
-                        chess_board,
-                        conductor,
-                        tt,
-                        ctx,
-                        depth - 1,
-                        1,
-                        alpha,
-                        beta,
-                        true,
-                        true,
-                        stop,
-                    )
-                    .0
-                } else {
-                    score
-                }
+                pvs_child_minimizer(chess_board, conductor, tt, ctx, depth - 1, 1, alpha, beta, stop)
             };
 
             chess_board.undo_move();
