@@ -261,6 +261,22 @@ pub fn acc_sub_feature(acc: &mut [i16; HIDDEN1], feature_idx: usize) {
     }
 }
 
+/// Apply a batch of feature subtractions then additions to an accumulator.
+///
+/// Does a single `EVALUATOR.get()` instead of one per feature, reducing
+/// atomic loads from 4–8 to 2 per search node in `acc_push`.
+#[inline]
+pub fn acc_apply_deltas(acc: &mut [i16; HIDDEN1], subs: &[usize], adds: &[usize]) {
+    if let Some(e) = EVALUATOR.get() {
+        for &idx in subs {
+            sub_col(acc, &e.w1_t_i16[idx * HIDDEN1..(idx + 1) * HIDDEN1]);
+        }
+        for &idx in adds {
+            add_col(acc, &e.w1_t_i16[idx * HIDDEN1..(idx + 1) * HIDDEN1]);
+        }
+    }
+}
+
 // ── SIMD column accumulator operations ───────────────────────────────────
 //
 // Three compile-time paths selected by cfg:
