@@ -476,6 +476,7 @@ fn gemv_col32_scalar(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
 fn gemv_col32(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     unsafe { return gemv_col32_avx2(w, x, acc); }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
     gemv_col32_scalar(w, x, acc)
 }
 
