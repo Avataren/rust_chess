@@ -756,384 +756,213 @@ pub fn alpha_beta(
     // `killers` raw-pointer borrow of ctx ends here.
 
     let mut best_move: Option<ChessMove> = None;
+    let mut best_eval: i32 = if is_white { i32::MIN } else { i32::MAX };
+    // Track quiet moves tried so we can apply history malus to the ones
+    // that did NOT cause a cutoff (they turned out to be bad moves).
+    let mut tried_quiets = std::mem::take(&mut ctx.tried_quiets_buf);
+    tried_quiets.clear();
 
-    if is_white {
-        let mut max_eval = i32::MIN;
-        // Track quiet moves tried so we can apply history malus to the ones
-        // that did NOT cause a cutoff (they turned out to be bad moves).
-        let mut tried_quiets = std::mem::take(&mut ctx.tried_quiets_buf);
-        tried_quiets.clear();
+    let mut quiet_count = 0usize;
+    for move_index in 0..legal_moves.len() {
+        let mut chess_move = legal_moves[move_index];
+        // Skip the excluded move (used during singular extension searches).
+        if ctx.excluded_move[p].map_or(false, |em| em == chess_move) {
+            continue;
+        }
 
-        let mut quiet_count = 0usize;
-        for move_index in 0..legal_moves.len() {
-            let mut chess_move = legal_moves[move_index];
-            // Skip the excluded move (used during singular extension searches).
-            if ctx.excluded_move[p].map_or(false, |em| em == chess_move) {
+        let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
+
+        // --- Futility pruning ---
+        // At depth 1–3, skip quiet moves whose static eval + a margin cannot
+        // possibly raise alpha (white) or lower beta (black).
+        // Margin scales with depth: d1=200, d2=400, d3=600.
+        if move_index > 0 && is_quiet && !in_check {
+            if let Some(se) = static_eval {
+                let margin = if depth <= 3 { 200 * depth } else { 0 };
+                if margin > 0 {
+                    if is_white && se + margin <= alpha { continue; }
+                    if !is_white && se - margin >= beta  { continue; }
+                }
+            }
+        }
+
+        // --- Late Move Pruning (LMP) ---
+        // At low depths, once we've tried enough quiet moves, skip the rest.
+        // When improving, allow ~50% more moves before pruning.
+        //
+        // Guard: depth <= 8 is required.  Without it, `depth.min(4)` would
+        // silently cap the index at 4 for ALL depths, applying threshold 20
+        // even at depth 20.  That caused important quiet moves (e.g. king
+        // marches in K+P endgames) that happened to rank 21st-or-later in
+        // history ordering to be permanently skipped at deep nodes.
+        if is_quiet && !in_check && ply > 0 && depth <= 8 {
+            let thresh_depth = depth.min(4) as usize;
+            let lmp_thresh = if improving {
+                LMP_THRESHOLD[thresh_depth] + LMP_THRESHOLD[thresh_depth] / 2
+            } else {
+                LMP_THRESHOLD[thresh_depth]
+            };
+            if quiet_count >= lmp_thresh {
                 continue;
             }
+        }
+        if is_quiet {
+            quiet_count += 1;
+        }
 
-            let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
-
-            // --- Futility pruning ---
-            // At depth 1–3, skip quiet moves whose static eval + a margin
-            // cannot possibly raise alpha.  Never prune the first move (PV).
-            // Margin scales with depth (Stockfish uses ~120*lmrDepth; we use
-            // 200*depth): d1=200, d2=400, d3=600.
-            if move_index > 0 && is_quiet && !in_check {
-                if let Some(se) = static_eval {
-                    let margin = if depth <= 3 { 200 * depth } else { 0 };
-                    if margin > 0 && se + margin <= alpha {
-                        continue;
-                    }
-                }
-            }
-
-            // --- Late Move Pruning (LMP) ---
-            // At low depths, once we've tried enough quiet moves, skip the rest.
-            // When improving, allow ~50% more moves before pruning; when not
-            // improving (falling behind) prune at the standard threshold.
-            //
-            // Guard: depth <= 8 is required.  Without it, `depth.min(4)` would
-            // silently cap the index at 4 for ALL depths, applying threshold 20
-            // even at depth 20.  That caused important quiet moves (e.g. king
-            // marches in K+P endgames) that happened to rank 21st-or-later in
-            // history ordering to be permanently skipped at deep nodes.
-            if is_quiet && !in_check && ply > 0 && depth <= 8 {
-                let thresh_depth = depth.min(4) as usize;
-                let lmp_thresh = if improving {
-                    LMP_THRESHOLD[thresh_depth] + LMP_THRESHOLD[thresh_depth] / 2
-                } else {
-                    LMP_THRESHOLD[thresh_depth]
-                };
-                if quiet_count >= lmp_thresh {
-                    continue;
-                }
-            }
-            if is_quiet {
-                quiet_count += 1;
-            }
-
-            // Singular / double extension for the TT move (move_index == 0).
-            // Double-extend when the position is extremely singular (score well below se_beta).
-            let move_ext = if singular_extension && move_index == 0 {
-                if se_singular_score < se_singular_beta - depth {
-                    2i32
-                } else {
-                    1i32
-                }
+        // Singular / double extension for the TT move (move_index == 0).
+        // Double-extend when the position is extremely singular (score well below se_beta).
+        let move_ext = if singular_extension && move_index == 0 {
+            if se_singular_score < se_singular_beta - depth {
+                2i32
             } else {
-                0i32
+                1i32
+            }
+        } else {
+            0i32
+        };
+
+        // Record this move as the "previous move" for the child ply so the
+        // child can look up the countermove that refutes it.
+        ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
+        ctx.make_move_with_acc(ply, &mut chess_move, chess_board);
+
+        // LMR reduction: R grows with depth and move index.
+        // Reduce less for moves with high continuation history score (they're "interesting").
+        let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
+            let r = lmr_reduction(depth, move_index).max(1);
+            let r = if improving { r } else { r + 1 };
+            // Scale back reduction for moves that cont_hist considers good.
+            let ch_score = {
+                let mv_piece = piece_idx(chess_move);
+                let mv_to = chess_move.target_square() as usize;
+                let mut s = 0i32;
+                if let Some((pp, pt)) = prev1 {
+                    s += ch1.get(pp, pt, mv_piece, mv_to);
+                }
+                if let Some((pp, pt)) = prev2 {
+                    s += ch2.get(pp, pt, mv_piece, mv_to);
+                }
+                s
             };
+            let r = if ch_score > 8_000 { (r - 1).max(0) } else { r };
+            r.min(depth - 1)
+        } else {
+            0
+        };
 
-            // Record this move as the "previous move" for the child ply so the
-            // child can look up the countermove that refutes it.
-            ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
-            ctx.make_move_with_acc(ply, &mut chess_move, chess_board);
-
-            // LMR reduction: R grows with depth and move index.
-            // Reduce less for moves with high continuation history score (they're "interesting").
-            let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
-                let r = lmr_reduction(depth, move_index).max(1);
-                let r = if improving { r } else { r + 1 };
-                // Scale back reduction for moves that cont_hist considers good.
-                let ch_score = {
-                    let mv_piece = piece_idx(chess_move);
-                    let mv_to = chess_move.target_square() as usize;
-                    let mut s = 0i32;
-                    if let Some((pp, pt)) = prev1 {
-                        s += ch1.get(pp, pt, mv_piece, mv_to);
-                    }
-                    if let Some((pp, pt)) = prev2 {
-                        s += ch2.get(pp, pt, mv_piece, mv_to);
-                    }
-                    s
-                };
-                let r = if ch_score > 8_000 { (r - 1).max(0) } else { r };
-                r.min(depth - 1)
-            } else {
-                0
-            };
-
-            let eval = if chess_board.is_repetition(2) {
-                0 // draw by repetition
-            } else if move_index == 0 {
-                // PV node: full window search for first move (with possible SE).
+        let eval = if chess_board.is_repetition(2) {
+            0 // draw by repetition
+        } else if move_index == 0 {
+            // PV node: full window search for first move (with possible SE).
+            alpha_beta(
+                chess_board,
+                conductor,
+                tt,
+                ctx,
+                depth - 1 + move_ext,
+                ply + 1,
+                alpha,
+                beta,
+                !is_white,
+                true,
+                stop,
+            )
+            .0
+        } else if lmr_r > 0 {
+            // LMR: reduced null-window search.
+            // White maximiser probes [alpha, alpha+1]; black minimiser probes [beta-1, beta].
+            let (nw_lo, nw_hi) = if is_white { (alpha, alpha + 1) } else { (beta - 1, beta) };
+            let reduced = alpha_beta(
+                chess_board,
+                conductor,
+                tt,
+                ctx,
+                depth - 1 - lmr_r,
+                ply + 1,
+                nw_lo,
+                nw_hi,
+                !is_white,
+                true,
+                stop,
+            )
+            .0;
+            let needs_research = if is_white { reduced > alpha } else { reduced < beta };
+            if needs_research {
+                // Reduced search beat the null window — re-search at full depth, full window.
                 alpha_beta(
                     chess_board,
                     conductor,
                     tt,
                     ctx,
-                    depth - 1 + move_ext,
+                    depth - 1,
                     ply + 1,
                     alpha,
                     beta,
-                    false,
+                    !is_white,
                     true,
                     stop,
                 )
                 .0
-            } else if lmr_r > 0 {
-                // LMR: reduced null-window search.
-                let reduced = alpha_beta(
-                    chess_board,
-                    conductor,
-                    tt,
-                    ctx,
-                    depth - 1 - lmr_r,
-                    ply + 1,
-                    alpha,
-                    alpha + 1,
-                    false,
-                    true,
-                    stop,
-                )
-                .0;
-                if reduced > alpha {
-                    // Reduced search beat alpha — re-search at full depth, full window.
-                    alpha_beta(
-                        chess_board,
-                        conductor,
-                        tt,
-                        ctx,
-                        depth - 1,
-                        ply + 1,
-                        alpha,
-                        beta,
-                        false,
-                        true,
-                        stop,
-                    )
-                    .0
-                } else {
-                    reduced
-                }
             } else {
-                // PVS: null-window search for non-PV moves.
-                pvs_child_maximizer(chess_board, conductor, tt, ctx, depth - 1, ply + 1, alpha, beta, stop)
-            };
-
-            chess_board.undo_move();
-
-            if is_quiet {
-                tried_quiets.push(chess_move);
+                reduced
             }
-
-            if eval > max_eval {
-                max_eval = eval;
-                best_move = Some(chess_move);
-            }
-            if eval > alpha {
-                alpha = eval;
-            }
-            if beta <= alpha {
-                if is_quiet {
-                    // Reward the cutoff move; penalise all quiets tried before it.
-                    ctx.record_cutoff(ply, depth, chess_move);
-                    let n = tried_quiets.len();
-                    for &tried in tried_quiets[..n.saturating_sub(1)].iter() {
-                        ctx.apply_history_malus(ply, depth, tried);
-                    }
-                } else {
-                    // Capture cutoff: reward in capture_history.
-                    let v = &mut ctx.capture_history[chess_move.start_square() as usize]
-                        [chess_move.target_square() as usize];
-                    *v = (*v + depth * depth).min(16_384);
-                }
-                break;
-            }
-        }
-        legal_moves.clear();
-        ctx.move_lists[ply.min(MAX_PLY - 1)] = legal_moves;
-        ctx.tried_quiets_buf = tried_quiets;
-
-        let flag = if max_eval >= original_beta {
-            TtFlag::LowerBound
-        } else if max_eval <= original_alpha {
-            TtFlag::UpperBound
+        } else if is_white {
+            // PVS: null-window search for non-PV moves.
+            pvs_child_maximizer(chess_board, conductor, tt, ctx, depth - 1, ply + 1, alpha, beta, stop)
         } else {
-            TtFlag::Exact
+            pvs_child_minimizer(chess_board, conductor, tt, ctx, depth - 1, ply + 1, alpha, beta, stop)
         };
-        tt.store(hash, depth, score_to_tt(max_eval, ply), flag, best_move);
-        (max_eval, best_move)
-    } else {
-        let mut min_eval = i32::MAX;
-        let mut tried_quiets = std::mem::take(&mut ctx.tried_quiets_buf);
-        tried_quiets.clear();
 
-        let mut quiet_count = 0usize;
-        for move_index in 0..legal_moves.len() {
-            let mut chess_move = legal_moves[move_index];
-            // Skip the excluded move (used during singular extension searches).
-            if ctx.excluded_move[p].map_or(false, |em| em == chess_move) {
-                continue;
-            }
+        chess_board.undo_move();
 
-            let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
-
-            // --- Futility pruning ---
-            // Symmetric to white branch: d1=200, d2=400, d3=600.
-            if move_index > 0 && is_quiet && !in_check {
-                if let Some(se) = static_eval {
-                    let margin = if depth <= 3 { 200 * depth } else { 0 };
-                    if margin > 0 && se - margin >= beta {
-                        continue;
-                    }
-                }
-            }
-
-            // --- Late Move Pruning (LMP) ---
-            // Same depth <= 8 guard as the white branch — see comment there.
-            if is_quiet && !in_check && ply > 0 && depth <= 8 {
-                let thresh_depth = depth.min(4) as usize;
-                let lmp_thresh = if improving {
-                    LMP_THRESHOLD[thresh_depth] + LMP_THRESHOLD[thresh_depth] / 2
-                } else {
-                    LMP_THRESHOLD[thresh_depth]
-                };
-                if quiet_count >= lmp_thresh {
-                    continue;
-                }
-            }
-            if is_quiet {
-                quiet_count += 1;
-            }
-
-            // Singular / double extension (mirrored from white branch).
-            let move_ext = if singular_extension && move_index == 0 {
-                if se_singular_score < se_singular_beta - depth {
-                    2i32
-                } else {
-                    1i32
-                }
-            } else {
-                0i32
-            };
-
-            // Record this move as the "previous move" for the child ply.
-            ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
-            ctx.make_move_with_acc(ply, &mut chess_move, chess_board);
-
-            let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
-                let r = lmr_reduction(depth, move_index).max(1);
-                let r = if improving { r } else { r + 1 };
-                let ch_score = {
-                    let mv_piece = piece_idx(chess_move);
-                    let mv_to = chess_move.target_square() as usize;
-                    let mut s = 0i32;
-                    if let Some((pp, pt)) = prev1 {
-                        s += ch1.get(pp, pt, mv_piece, mv_to);
-                    }
-                    if let Some((pp, pt)) = prev2 {
-                        s += ch2.get(pp, pt, mv_piece, mv_to);
-                    }
-                    s
-                };
-                let r = if ch_score > 8_000 { (r - 1).max(0) } else { r };
-                r.min(depth - 1)
-            } else {
-                0
-            };
-
-            let eval = if chess_board.is_repetition(2) {
-                0 // draw by repetition
-            } else if move_index == 0 {
-                // PV node: full window search for first move (with possible SE).
-                alpha_beta(
-                    chess_board,
-                    conductor,
-                    tt,
-                    ctx,
-                    depth - 1 + move_ext,
-                    ply + 1,
-                    alpha,
-                    beta,
-                    true,
-                    true,
-                    stop,
-                )
-                .0
-            } else if lmr_r > 0 {
-                // LMR: reduced null-window search.
-                let reduced = alpha_beta(
-                    chess_board,
-                    conductor,
-                    tt,
-                    ctx,
-                    depth - 1 - lmr_r,
-                    ply + 1,
-                    beta - 1,
-                    beta,
-                    true,
-                    true,
-                    stop,
-                )
-                .0;
-                if reduced < beta {
-                    // Reduced search beat beta — re-search at full depth, full window.
-                    alpha_beta(
-                        chess_board,
-                        conductor,
-                        tt,
-                        ctx,
-                        depth - 1,
-                        ply + 1,
-                        alpha,
-                        beta,
-                        true,
-                        true,
-                        stop,
-                    )
-                    .0
-                } else {
-                    reduced
-                }
-            } else {
-                // PVS: null-window search for non-PV moves.
-                pvs_child_minimizer(chess_board, conductor, tt, ctx, depth - 1, ply + 1, alpha, beta, stop)
-            };
-
-            chess_board.undo_move();
-
-            if is_quiet {
-                tried_quiets.push(chess_move);
-            }
-
-            if eval < min_eval {
-                min_eval = eval;
-                best_move = Some(chess_move);
-            }
-            if eval < beta {
-                beta = eval;
-            }
-            if beta <= alpha {
-                if is_quiet {
-                    ctx.record_cutoff(ply, depth, chess_move);
-                    let n = tried_quiets.len();
-                    for &tried in tried_quiets[..n.saturating_sub(1)].iter() {
-                        ctx.apply_history_malus(ply, depth, tried);
-                    }
-                } else {
-                    let v = &mut ctx.capture_history[chess_move.start_square() as usize]
-                        [chess_move.target_square() as usize];
-                    *v = (*v + depth * depth).min(16_384);
-                }
-                break;
-            }
+        if is_quiet {
+            tried_quiets.push(chess_move);
         }
-        legal_moves.clear();
-        ctx.move_lists[ply.min(MAX_PLY - 1)] = legal_moves;
-        ctx.tried_quiets_buf = tried_quiets;
 
-        let flag = if min_eval <= original_alpha {
-            TtFlag::UpperBound
-        } else if min_eval >= original_beta {
-            TtFlag::LowerBound
+        let is_better = if is_white { eval > best_eval } else { eval < best_eval };
+        if is_better {
+            best_eval = eval;
+            best_move = Some(chess_move);
+        }
+        if is_white {
+            if eval > alpha { alpha = eval; }
         } else {
-            TtFlag::Exact
-        };
-        tt.store(hash, depth, score_to_tt(min_eval, ply), flag, best_move);
-        (min_eval, best_move)
+            if eval < beta { beta = eval; }
+        }
+        if beta <= alpha {
+            if is_quiet {
+                // Reward the cutoff move; penalise all quiets tried before it.
+                ctx.record_cutoff(ply, depth, chess_move);
+                let n = tried_quiets.len();
+                for &tried in tried_quiets[..n.saturating_sub(1)].iter() {
+                    ctx.apply_history_malus(ply, depth, tried);
+                }
+            } else {
+                // Capture cutoff: reward in capture_history.
+                let v = &mut ctx.capture_history[chess_move.start_square() as usize]
+                    [chess_move.target_square() as usize];
+                *v = (*v + depth * depth).min(16_384);
+            }
+            break;
+        }
     }
+    legal_moves.clear();
+    ctx.move_lists[ply.min(MAX_PLY - 1)] = legal_moves;
+    ctx.tried_quiets_buf = tried_quiets;
+
+    // TT flag: LowerBound if we exceeded beta (fail-high), UpperBound if we
+    // never beat alpha (fail-low), Exact if the score is within the window.
+    // These semantics are symmetric for both the maximiser and the minimiser.
+    let flag = if best_eval >= original_beta {
+        TtFlag::LowerBound
+    } else if best_eval <= original_alpha {
+        TtFlag::UpperBound
+    } else {
+        TtFlag::Exact
+    };
+    tt.store(hash, depth, score_to_tt(best_eval, ply), flag, best_move);
+    (best_eval, best_move)
 }
 
 // ── Root search ───────────────────────────────────────────────────────────────
@@ -1219,125 +1048,71 @@ pub fn search_root(
         None
     };
 
-    if is_white {
-        let mut best_score = i32::MIN + 1;
-        let mut alpha = alpha;
+    let mut alpha = alpha;
+    let mut beta = beta;
+    let mut best_score: i32 = if is_white { i32::MIN + 1 } else { i32::MAX };
 
-        for (i, mut chess_move) in legal_moves.into_iter().enumerate() {
-            if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
-                break;
-            }
-            ctx.make_move_with_acc(0, &mut chess_move, chess_board);
+    for (i, mut chess_move) in legal_moves.into_iter().enumerate() {
+        if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
+            break;
+        }
+        ctx.make_move_with_acc(0, &mut chess_move, chess_board);
 
-            let eval = if chess_board.is_repetition(2) {
-                0
-            } else if i == 0 {
-                alpha_beta(
-                    chess_board,
-                    conductor,
-                    tt,
-                    ctx,
-                    depth - 1,
-                    1,
-                    alpha,
-                    beta,
-                    false,
-                    true,
-                    stop,
-                )
-                .0
-            } else {
-                pvs_child_maximizer(chess_board, conductor, tt, ctx, depth - 1, 1, alpha, beta, stop)
-            };
+        let eval = if chess_board.is_repetition(2) {
+            0
+        } else if i == 0 {
+            alpha_beta(
+                chess_board,
+                conductor,
+                tt,
+                ctx,
+                depth - 1,
+                1,
+                alpha,
+                beta,
+                !is_white,
+                true,
+                stop,
+            )
+            .0
+        } else if is_white {
+            pvs_child_maximizer(chess_board, conductor, tt, ctx, depth - 1, 1, alpha, beta, stop)
+        } else {
+            pvs_child_minimizer(chess_board, conductor, tt, ctx, depth - 1, 1, alpha, beta, stop)
+        };
 
-            chess_board.undo_move();
+        chess_board.undo_move();
 
-            if let Some(ref mut r) = rng {
-                let noisy = eval + r.gen_range(-noise_cp..=noise_cp);
-                if noisy > noisy_best_score {
-                    noisy_best_score = noisy;
-                    noisy_best_move = Some(chess_move);
-                }
-            }
-            if eval > best_score {
-                best_score = eval;
-                best_move = Some(chess_move);
-            }
-            if eval > alpha {
-                alpha = eval;
-            }
-            if alpha >= beta {
-                break;
+        if let Some(ref mut r) = rng {
+            let noisy = eval + r.gen_range(-noise_cp..=noise_cp);
+            let noisy_better = if is_white { noisy > noisy_best_score } else { noisy < noisy_best_score };
+            if noisy_better {
+                noisy_best_score = noisy;
+                noisy_best_move = Some(chess_move);
             }
         }
-        (
-            best_score,
-            if noise_cp > 0 {
-                noisy_best_move
-            } else {
-                best_move
-            },
-        )
-    } else {
-        let mut best_score = i32::MAX;
-        let mut beta = beta;
-
-        for (i, mut chess_move) in legal_moves.into_iter().enumerate() {
-            if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
-                break;
-            }
-            ctx.make_move_with_acc(0, &mut chess_move, chess_board);
-
-            let eval = if chess_board.is_repetition(2) {
-                0
-            } else if i == 0 {
-                alpha_beta(
-                    chess_board,
-                    conductor,
-                    tt,
-                    ctx,
-                    depth - 1,
-                    1,
-                    alpha,
-                    beta,
-                    true,
-                    true,
-                    stop,
-                )
-                .0
-            } else {
-                pvs_child_minimizer(chess_board, conductor, tt, ctx, depth - 1, 1, alpha, beta, stop)
-            };
-
-            chess_board.undo_move();
-
-            if let Some(ref mut r) = rng {
-                let noisy = eval + r.gen_range(-noise_cp..=noise_cp);
-                if noisy < noisy_best_score {
-                    noisy_best_score = noisy;
-                    noisy_best_move = Some(chess_move);
-                }
-            }
-            if eval < best_score {
-                best_score = eval;
-                best_move = Some(chess_move);
-            }
-            if eval < beta {
-                beta = eval;
-            }
-            if beta <= alpha {
-                break;
-            }
+        let is_better = if is_white { eval > best_score } else { eval < best_score };
+        if is_better {
+            best_score = eval;
+            best_move = Some(chess_move);
         }
-        (
-            best_score,
-            if noise_cp > 0 {
-                noisy_best_move
-            } else {
-                best_move
-            },
-        )
+        if is_white {
+            if eval > alpha { alpha = eval; }
+        } else {
+            if eval < beta { beta = eval; }
+        }
+        if beta <= alpha {
+            break;
+        }
     }
+    (
+        best_score,
+        if noise_cp > 0 {
+            noisy_best_move
+        } else {
+            best_move
+        },
+    )
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
