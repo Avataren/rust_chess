@@ -280,7 +280,7 @@ pub fn acc_apply_deltas(acc: &mut [i16; HIDDEN1], subs: &[usize], adds: &[usize]
 // ── SIMD column accumulator operations ───────────────────────────────────
 //
 // Three compile-time paths selected by cfg:
-//   x86_64 + avx2    → _mm256_adds_epi16  (16 i16/reg, 32 instr/col)
+//   x86_64 + avx2    → _mm256_adds_epi16  (16 i16/reg, 4× unrolled, 16 iters/col)
 //   wasm32 + simd128 → i16x8_add_sat       (8 i16/reg, 64 instr/col)
 //   fallback         → scalar saturating_add (1 i16/iter, 512 instr/col)
 //
@@ -290,10 +290,20 @@ pub fn acc_apply_deltas(acc: &mut [i16; HIDDEN1], subs: &[usize], adds: &[usize]
 #[target_feature(enable = "avx2")]
 unsafe fn add_col_avx2(acc: &mut [i16; HIDDEN1], col: &[i16]) {
     use std::arch::x86_64::*;
-    for i in (0..HIDDEN1).step_by(16) {
-        let a = _mm256_loadu_si256(acc[i..].as_ptr() as *const __m256i);
-        let b = _mm256_loadu_si256(col[i..].as_ptr() as *const __m256i);
-        _mm256_storeu_si256(acc[i..].as_mut_ptr() as *mut __m256i, _mm256_adds_epi16(a, b));
+    // 4× unrolled: 16 iterations of 4 registers = 64 total, ILP-friendly
+    for i in (0..HIDDEN1).step_by(64) {
+        let a0 = _mm256_loadu_si256(acc[i     ..].as_ptr() as *const __m256i);
+        let a1 = _mm256_loadu_si256(acc[i + 16..].as_ptr() as *const __m256i);
+        let a2 = _mm256_loadu_si256(acc[i + 32..].as_ptr() as *const __m256i);
+        let a3 = _mm256_loadu_si256(acc[i + 48..].as_ptr() as *const __m256i);
+        let b0 = _mm256_loadu_si256(col[i     ..].as_ptr() as *const __m256i);
+        let b1 = _mm256_loadu_si256(col[i + 16..].as_ptr() as *const __m256i);
+        let b2 = _mm256_loadu_si256(col[i + 32..].as_ptr() as *const __m256i);
+        let b3 = _mm256_loadu_si256(col[i + 48..].as_ptr() as *const __m256i);
+        _mm256_storeu_si256(acc[i     ..].as_mut_ptr() as *mut __m256i, _mm256_adds_epi16(a0, b0));
+        _mm256_storeu_si256(acc[i + 16..].as_mut_ptr() as *mut __m256i, _mm256_adds_epi16(a1, b1));
+        _mm256_storeu_si256(acc[i + 32..].as_mut_ptr() as *mut __m256i, _mm256_adds_epi16(a2, b2));
+        _mm256_storeu_si256(acc[i + 48..].as_mut_ptr() as *mut __m256i, _mm256_adds_epi16(a3, b3));
     }
 }
 
@@ -301,10 +311,20 @@ unsafe fn add_col_avx2(acc: &mut [i16; HIDDEN1], col: &[i16]) {
 #[target_feature(enable = "avx2")]
 unsafe fn sub_col_avx2(acc: &mut [i16; HIDDEN1], col: &[i16]) {
     use std::arch::x86_64::*;
-    for i in (0..HIDDEN1).step_by(16) {
-        let a = _mm256_loadu_si256(acc[i..].as_ptr() as *const __m256i);
-        let b = _mm256_loadu_si256(col[i..].as_ptr() as *const __m256i);
-        _mm256_storeu_si256(acc[i..].as_mut_ptr() as *mut __m256i, _mm256_subs_epi16(a, b));
+    // 4× unrolled: 16 iterations of 4 registers = 64 total, ILP-friendly
+    for i in (0..HIDDEN1).step_by(64) {
+        let a0 = _mm256_loadu_si256(acc[i     ..].as_ptr() as *const __m256i);
+        let a1 = _mm256_loadu_si256(acc[i + 16..].as_ptr() as *const __m256i);
+        let a2 = _mm256_loadu_si256(acc[i + 32..].as_ptr() as *const __m256i);
+        let a3 = _mm256_loadu_si256(acc[i + 48..].as_ptr() as *const __m256i);
+        let b0 = _mm256_loadu_si256(col[i     ..].as_ptr() as *const __m256i);
+        let b1 = _mm256_loadu_si256(col[i + 16..].as_ptr() as *const __m256i);
+        let b2 = _mm256_loadu_si256(col[i + 32..].as_ptr() as *const __m256i);
+        let b3 = _mm256_loadu_si256(col[i + 48..].as_ptr() as *const __m256i);
+        _mm256_storeu_si256(acc[i     ..].as_mut_ptr() as *mut __m256i, _mm256_subs_epi16(a0, b0));
+        _mm256_storeu_si256(acc[i + 16..].as_mut_ptr() as *mut __m256i, _mm256_subs_epi16(a1, b1));
+        _mm256_storeu_si256(acc[i + 32..].as_mut_ptr() as *mut __m256i, _mm256_subs_epi16(a2, b2));
+        _mm256_storeu_si256(acc[i + 48..].as_mut_ptr() as *mut __m256i, _mm256_subs_epi16(a3, b3));
     }
 }
 
