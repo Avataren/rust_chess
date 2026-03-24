@@ -118,14 +118,6 @@ impl TranspositionTable {
     ///
     /// This means old entries (from previous moves) are evicted even when
     /// they are deep, preventing stale analysis from poisoning new searches.
-    ///
-    /// Store an entry using a generation-aware replacement policy.
-    ///
-    /// Replacement priority (lower effective depth = replaced first):
-    ///   effective_depth = stored_depth - age * AGE_COST
-    ///
-    /// This means old entries (from previous moves) are evicted even when
-    /// they are deep, preventing stale analysis from poisoning new searches.
     pub fn store(
         &self,
         hash: u64,
