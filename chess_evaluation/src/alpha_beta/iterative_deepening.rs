@@ -51,6 +51,7 @@ pub fn extract_ponder_move(
     // Fall back to a quick depth-2 search if TT miss
     let ponder = if ponder.is_none() {
         let mut ctx = SearchContext::new();
+        ctx.init_accumulators(chess_board);
         let (_, fallback_move) = alpha_beta(
             chess_board,
             conductor,
@@ -405,6 +406,7 @@ fn smp_helper(
 
     'outer: loop {
         let mut ctx = SearchContext::new();
+        ctx.init_accumulators(chess_board);
         let mut prev_score: i32 = if is_white { i32::MIN + 1 } else { i32::MAX };
         let mut prev_move: Option<ChessMove> = None;
         let mut stopped = false;
