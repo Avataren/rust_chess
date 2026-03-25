@@ -203,10 +203,16 @@ impl SearchContext {
         let tmp_b = self.acc_black[src];
         self.acc_black[dst] = tmp_b;
 
-        // Identify the moving piece
+        // Identify the moving piece.
+        // The move generator does not populate chess_piece, so fall back to
+        // a board lookup.  This avoids triggering a full acc_recompute for
+        // every non-king move.
         let moving_piece = match mv.chess_piece {
             Some(p) => p,
-            None => return true, // unknown piece → full recompute
+            None => match board.get_piece_at_square(mv.start_square()) {
+                Some(p) => p,
+                None => return true, // no piece at source — shouldn't happen; full recompute
+            },
         };
 
         // King moves require full recompute (king bucket changes)
