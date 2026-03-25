@@ -481,6 +481,10 @@ pub fn alpha_beta(
             let tmp_b = ctx.acc_black[src];
             ctx.acc_black[dst] = tmp_b;
         }
+        // Null move: no piece moved, so clear prev_moves for the child ply to
+        // avoid cont_hist / countermove lookups using stale data from a prior
+        // iteration's move.
+        ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = None;
         chess_board.make_null_move();
         let null_score = alpha_beta(
             chess_board,
@@ -569,6 +573,9 @@ pub fn alpha_beta(
                 }
 
                 ctx.make_move_with_acc(ply, &mut pc_mv, chess_board);
+                // Record the ProbCut move so the child's cont_hist/countermove
+                // lookups use this move's piece type (set by make_move above).
+                ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(pc_mv);
                 let (pc_alpha, pc_beta) = if is_white {
                     (pc_threshold - 1, pc_threshold)
                 } else {
@@ -781,10 +788,12 @@ pub fn alpha_beta(
 
     let mut best_move: Option<ChessMove> = None;
     let mut best_eval: i32 = if is_white { i32::MIN } else { i32::MAX };
-    // Track quiet moves tried so we can apply history malus to the ones
-    // that did NOT cause a cutoff (they turned out to be bad moves).
+    // Track moves tried so we can apply history malus to the ones that did
+    // NOT cause a cutoff (they turned out to be bad moves).
     let mut tried_quiets = std::mem::take(&mut ctx.tried_quiets_buf);
     tried_quiets.clear();
+    let mut tried_captures = std::mem::take(&mut ctx.tried_captures_buf);
+    tried_captures.clear();
 
     let mut quiet_count = 0usize;
     for move_index in 0..legal_moves.len() {
@@ -871,8 +880,11 @@ pub fn alpha_beta(
 
         // Record this move as the "previous move" for the child ply so the
         // child can look up the countermove that refutes it.
-        ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
+        // IMPORTANT: set AFTER make_move_with_acc so chess_piece is populated
+        // by make_move (the move generator leaves it None; make_move sets it
+        // via set_piece).  piece_idx() relies on chess_piece for cont_hist keys.
         ctx.make_move_with_acc(ply, &mut chess_move, chess_board);
+        ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = Some(chess_move);
 
         // LMR reduction: R grows with depth and move index.
         // Reduce less for moves with high continuation history score (they're "interesting").
@@ -965,6 +977,8 @@ pub fn alpha_beta(
 
         if is_quiet {
             tried_quiets.push(chess_move);
+        } else {
+            tried_captures.push(chess_move);
         }
 
         let is_better = if is_white { eval > best_eval } else { eval < best_eval };
@@ -986,10 +1000,17 @@ pub fn alpha_beta(
                     ctx.apply_history_malus(ply, depth, tried);
                 }
             } else {
-                // Capture cutoff: reward in capture_history.
+                // Capture cutoff: reward in capture_history; penalise captures tried before it.
+                let bonus = depth * depth;
                 let v = &mut ctx.capture_history[chess_move.start_square() as usize]
                     [chess_move.target_square() as usize];
-                *v = (*v + depth * depth).min(16_384);
+                *v = (*v + bonus).min(16_384);
+                let n = tried_captures.len();
+                for &tried in tried_captures[..n.saturating_sub(1)].iter() {
+                    let v = &mut ctx.capture_history[tried.start_square() as usize]
+                        [tried.target_square() as usize];
+                    *v = (*v - bonus).max(-16_384);
+                }
             }
             break;
         }
@@ -997,6 +1018,7 @@ pub fn alpha_beta(
     legal_moves.clear();
     ctx.move_lists[ply.min(MAX_PLY - 1)] = legal_moves;
     ctx.tried_quiets_buf = tried_quiets;
+    ctx.tried_captures_buf = tried_captures;
 
     // TT flag: LowerBound if we exceeded beta (fail-high), UpperBound if we
     // never beat alpha (fail-low), Exact if the score is within the window.
@@ -1103,7 +1125,12 @@ pub fn search_root(
         if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
             break;
         }
+        // Record the root move as "previous move at ply 1" so that the
+        // continuation history and countermove table work correctly at ply 1.
+        // Set AFTER make_move_with_acc so chess_piece is populated (see comment
+        // in alpha_beta main loop above).
         ctx.make_move_with_acc(0, &mut chess_move, chess_board);
+        ctx.prev_moves[1] = Some(chess_move);
 
         let eval = if chess_board.is_repetition(2) {
             0
@@ -1193,6 +1220,7 @@ pub fn alpha_beta_root(
     }
     let tt = TranspositionTable::new(TT_SIZE);
     let mut ctx = SearchContext::new();
+    ctx.init_accumulators(chess_board);
     search_root(
         chess_board,
         conductor,

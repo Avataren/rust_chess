@@ -257,3 +257,41 @@ full recompute". Fix: when `chess_piece` is `None`, look up the moving piece via
 
 At equivalent time (~49s), depth 8 with proper ordering achieves **93.2%** vs 90.8% at depth 7 before.
 
+---
+
+## 2026-03-25 — Six correctness fixes (second review pass)
+
+**Changes:**
+1. **`search_root` missing `prev_moves[1]` (MODERATE):** Root loop never set `ctx.prev_moves[1]` to the root move; continuation history and countermove table were unused at ply 1. Fixed: set after `make_move_with_acc`.
+
+2. **Capture history missing malus (MODERATE):** Capture history rewarded the cutoff capture but never penalised captures tried before it. Added `tried_captures_buf` and negative bonus for failed captures.
+
+3. **`alpha_beta_root` missing `init_accumulators` (CRITICAL):** The direct entry point never called `init_accumulators`, leaving `acc_valid = false` and forcing full NN forward passes for every eval.
+
+4. **`prev_moves` stored before `make_move` sets `chess_piece` (MODERATE):** The move generator leaves `chess_piece = None`; `make_move` sets it. Since `prev_moves[(ply+1)]` was stored BEFORE `make_move_with_acc`, `piece_idx(prev_move)` always returned 0 (Pawn). All cont_hist entries were keyed on (0, prev_to, 0, curr_to) instead of actual piece types. Fixed by swapping the order: `make_move_with_acc` first, then store in `prev_moves`. Same fix in `search_root`.
+
+5. **Null move left stale `prev_moves[(ply+1)]` (MINOR):** Added `ctx.prev_moves[(ply+1)] = None` before `make_null_move` so the null search child doesn't see a stale move for cont_hist/countermove lookups.
+
+6. **ProbCut missing `prev_moves[(ply+1)]` (MINOR):** Added `ctx.prev_moves[(ply+1)] = Some(pc_mv)` after `make_move_with_acc` in the ProbCut loop so children get correct piece-type-aware cont_hist keys.
+
+| Setting | Value |
+|---------|-------|
+| Depth | 8 |
+| Puzzles | 2000 (seed 42) |
+| Rating range | 1000–2500 |
+| Eval | NNUE nn-incremental (eval.npz, 32KB model) |
+| Time | 48.7s |
+
+### Overall: 1867/2000 (93.3%) — 48.7s
+
+| Rating band | Solved | Total | % |
+|-------------|--------|-------|---|
+| 1000–1249 | 416 | 423 | 98.3% |
+| 1250–1499 | 412 | 428 | 96.3% |
+| 1500–1749 | 387 | 406 | 95.3% |
+| 1750–1999 | 310 | 338 | 91.7% |
+| 2000–2249 | 211 | 239 | 88.3% |
+| 2250–2499 | 131 | 166 | 78.9% |
+
+**Weak spots:** `veryLong` (85.2%), `defensiveMove` (84.8%), `sacrifice` (88.2%)
+

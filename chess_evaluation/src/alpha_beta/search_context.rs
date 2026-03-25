@@ -146,6 +146,9 @@ pub struct SearchContext {
     pub(in crate::alpha_beta) ordering_scratch: OrderingScratchBuffers,
     /// Reusable buffer for quiet moves tried before a beta-cutoff.
     pub(in crate::alpha_beta) tried_quiets_buf: Vec<ChessMove>,
+    /// Reusable buffer for capture moves tried before a beta-cutoff.
+    /// Parallel to `tried_quiets_buf`: captures that failed get a capture_history malus.
+    pub(in crate::alpha_beta) tried_captures_buf: Vec<ChessMove>,
     /// Lightweight eval cache: `eval_cache[hash & (EVAL_CACHE_SIZE-1)] = (hash, score)`.
     /// Avoids redundant NN forward passes for positions revisited within a search
     /// (especially qsearch transpositions).  Cleared in `init_accumulators`.
@@ -177,6 +180,7 @@ impl SearchContext {
                 killer_entries: Vec::with_capacity(4),
             },
             tried_quiets_buf: Vec::with_capacity(16),
+            tried_captures_buf: Vec::with_capacity(16),
             eval_cache: vec![(0u64, 0i32); EVAL_CACHE_SIZE],
         }
     }
