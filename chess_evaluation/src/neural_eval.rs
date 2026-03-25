@@ -210,6 +210,21 @@ pub fn eval_direct(board: &ChessBoard) -> i32 {
     }
 }
 
+/// Like `eval_direct` but returns `None` if the evaluator has not been
+/// initialized yet.  Used by `evaluate_board` so tests compiled with
+/// `nn-incremental` can fall back to classical eval without loading a model.
+#[cfg(any(feature = "nn-full-forward", feature = "nn-incremental"))]
+#[inline]
+pub fn try_eval_direct(board: &ChessBoard) -> Option<i32> {
+    let e = EVALUATOR.get()?;
+    let (score, _) = e.evaluate_with_confidence(board);
+    Some(if e.dual_perspective {
+        score
+    } else {
+        if board.is_white_active() { score } else { -score }
+    })
+}
+
 /// Direct accumulator-based evaluation — no runtime checks.
 /// Only valid for dual-perspective models (eval.npz).
 #[cfg(feature = "nn-incremental")]

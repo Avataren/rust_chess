@@ -17,7 +17,12 @@ pub fn evaluate_board(chess_board: &ChessBoard, conductor: &PieceConductor) -> i
     // across workspace members (e.g. `cargo build --workspace`).
 
     #[cfg(feature = "nn-incremental")]
-    return crate::neural_eval::eval_direct(chess_board);
+    {
+        if let Some(score) = crate::neural_eval::try_eval_direct(chess_board) {
+            return score;
+        }
+        return crate::classical_eval::evaluate(chess_board, conductor);
+    }
 
     #[cfg(all(feature = "nn-full-forward", not(feature = "nn-incremental")))]
     return crate::neural_eval::eval_direct(chess_board);

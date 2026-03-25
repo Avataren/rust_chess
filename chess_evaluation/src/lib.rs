@@ -5,7 +5,8 @@ pub mod opening_book;
 pub mod piece_tables;
 pub mod see;
 pub mod transposition_table;
-#[cfg(feature = "classical-eval")]
+// classical_eval is always compiled — it doubles as the fallback evaluator
+// when the neural model is not loaded (e.g. during testing).
 pub mod classical_eval;
 
 pub use board_evaluation::evaluate_board;

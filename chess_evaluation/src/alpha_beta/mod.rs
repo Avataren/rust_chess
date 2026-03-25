@@ -3568,4 +3568,45 @@ mod tests {
             "acc_push must never modify the parent ply"
         );
     }
+
+    // ── Board-lookup regression tests (chess_piece == None path) ────────────
+
+    /// When chess_piece is not populated (as the move generator leaves it),
+    /// acc_push must look up the piece from the board rather than falling back
+    /// to a full recompute.  A non-king piece must still return false.
+    #[test]
+    fn acc_push_board_lookup_non_king_returns_false() {
+        let mut ctx = SearchContext::new();
+        ctx.acc_valid = true;
+
+        let board = ChessBoard::new(); // starting position
+        // e2→e4: there is a white pawn at square 12 in the starting position.
+        // chess_piece intentionally left as None (simulates move-generator output).
+        let mv = ChessMove::new(12, 28);
+        assert!(mv.chess_piece.is_none(), "test precondition: chess_piece must be None");
+
+        assert!(
+            !ctx.acc_push(0, &mv, &board),
+            "acc_push must return false (incremental update) when board lookup finds a non-king"
+        );
+    }
+
+    /// When chess_piece is None and the board has a king at start_square,
+    /// acc_push must still return true (king move → recompute needed).
+    #[test]
+    fn acc_push_board_lookup_king_returns_true() {
+        let mut ctx = SearchContext::new();
+        ctx.acc_valid = true;
+
+        let board = ChessBoard::new(); // starting position
+        // e1→e2: there is a white king at square 4 in the starting position.
+        // chess_piece intentionally left as None.
+        let mv = ChessMove::new(4, 12);
+        assert!(mv.chess_piece.is_none(), "test precondition: chess_piece must be None");
+
+        assert!(
+            ctx.acc_push(0, &mv, &board),
+            "acc_push must return true (recompute) when board lookup finds a king"
+        );
+    }
 }
