@@ -236,3 +236,24 @@ full recompute". Fix: when `chess_piece` is `None`, look up the moving piece via
 
 **Notes:** Solve rate (90.6%) is within normal variance of the 90.8% baseline. The capture fix restores correct accumulator state — previously the engine was playing with systematically wrong evaluations for all positions involving captures.
 
+---
+
+## 2026-03-25 — Three more correctness fixes
+
+**Changes:**
+1. **`is_quiet` always true for captures (CRITICAL):** `chess_move.capture` is never set by the move generator (always `None`), so `is_quiet = capture.is_none() && !is_promotion()` was always `true` for all non-promotion moves including captures. Consequences: captures were futility-pruned, LMP-pruned, history-pruned, and their beta-cutoffs updated `history`/`killers` instead of `capture_history`. Fixed by using board lookup: `is_capture = has_flag(EN_PASSANT) || board.get_piece_at_square(target).is_some()`.
+
+2. **`order_moves` treated all non-promotions as quiets (CRITICAL):** `m.capture.is_some()` was always false, so `good_captures` and `bad_captures` were always empty and SEE ordering was completely dead. All captures were sorted among quiets by history score — equivalent to random ordering. Fixed by same board lookup approach.
+
+3. **King same-bucket + mirror change (MODERATE):** The same-bucket optimization didn't check if horizontal mirroring changed (e.g., e1→d1: same bucket 3, but e-file has mirror=true and d-file has mirror=false). When mirror changes, all piece feature indices are invalid. Added mirror change check alongside bucket change check.
+
+**Performance impact:** With SEE now called for every capture in `order_moves`, NPS dropped from 286K to 174K (−39%). However, the better pruning makes depth 8 nearly free after depth 7, so at constant time the engine is significantly stronger.
+
+| Depth | Time | Solve rate |
+|-------|------|-----------|
+| 7 (old baseline) | 30.0s | 90.8% |
+| 7 (after fixes) | 48.3s | 90.8% |
+| 8 (after fixes) | 49.0s | **93.2%** |
+
+At equivalent time (~49s), depth 8 with proper ordering achieves **93.2%** vs 90.8% at depth 7 before.
+

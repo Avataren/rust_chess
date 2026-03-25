@@ -794,7 +794,13 @@ pub fn alpha_beta(
             continue;
         }
 
-        let is_quiet = chess_move.capture.is_none() && !chess_move.is_promotion();
+        // `chess_move.capture` is never set by the move generator; detect
+        // captures via board lookup and EN_PASSANT_CAPTURE_FLAG instead.
+        // Must be computed before make_move_with_acc so the target square is
+        // still occupied.
+        let is_capture = chess_move.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG)
+            || chess_board.get_piece_at_square(chess_move.target_square()).is_some();
+        let is_quiet = !is_capture && !chess_move.is_promotion();
 
         // --- Futility pruning ---
         // At depth 1–3, skip quiet moves whose static eval + a margin cannot
@@ -3631,20 +3637,38 @@ mod tests {
         );
     }
 
-    /// King move that stays in the same bucket must use incremental update (return false).
-    /// e1 (sq 4) → e2 (sq 12): both bucket 3.
+    /// King move that stays in the same bucket AND same mirror must use incremental
+    /// update (return false).  e1 (sq 4) → e2 (sq 12): both bucket 3, both e-file (mirror=true).
     #[test]
-    fn acc_push_board_lookup_king_same_bucket_returns_false() {
+    fn acc_push_board_lookup_king_same_bucket_same_mirror_returns_false() {
         let mut ctx = SearchContext::new();
         ctx.acc_valid = true;
 
         let board = ChessBoard::new(); // starting position — white king on e1 (sq 4)
-        let mv = ChessMove::new(4, 12); // e1 → e2: same bucket
+        let mv = ChessMove::new(4, 12); // e1 → e2: same bucket, same mirror
         assert!(mv.chess_piece.is_none(), "test precondition: chess_piece must be None");
 
         assert!(
             !ctx.acc_push(0, &mv, &board),
-            "acc_push must return false (incremental) when king stays in the same bucket"
+            "acc_push must return false (incremental) when king stays in the same bucket and mirror"
+        );
+    }
+
+    /// King move that stays in the same bucket but changes mirror must trigger full
+    /// recompute (return true).  e1 (sq 4) → d1 (sq 3): both bucket 3, but e-file
+    /// has mirror=true and d-file has mirror=false — all piece feature indices change.
+    #[test]
+    fn acc_push_board_lookup_king_same_bucket_mirror_change_returns_true() {
+        let mut ctx = SearchContext::new();
+        ctx.acc_valid = true;
+
+        let board = ChessBoard::new(); // starting position — white king on e1 (sq 4)
+        let mv = ChessMove::new(4, 3); // e1 → d1: same bucket, mirror changes
+        assert!(mv.chess_piece.is_none(), "test precondition: chess_piece must be None");
+
+        assert!(
+            ctx.acc_push(0, &mv, &board),
+            "acc_push must return true (recompute) when king moves cross the mirror boundary"
         );
     }
 }

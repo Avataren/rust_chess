@@ -68,7 +68,11 @@ pub(super) fn order_moves(
     scratch.quiets.clear();
 
     for m in moves.drain(..) {
-        if m.capture.is_some() || m.is_promotion() {
+        // `m.capture` is never set by the move generator, so use board lookup.
+        // EN_PASSANT_CAPTURE_FLAG marks en-passant captures (target square is empty).
+        let mv_is_capture = m.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG)
+            || board.get_piece_at_square(m.target_square()).is_some();
+        if mv_is_capture || m.is_promotion() {
             let score = see(
                 board,
                 conductor,

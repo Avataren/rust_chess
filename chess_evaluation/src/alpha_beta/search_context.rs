@@ -243,10 +243,14 @@ impl SearchContext {
         let bk_flipped = bk_sq_raw ^ 56;
         let bk_bucket = crate::neural_eval::KING_BUCKET[bk_flipped.min(63)];
 
-        // King moves: only trigger full recompute when the king actually
-        // changes bucket.  Same-bucket moves (e.g. e1→d1) fall through to
-        // the normal incremental path — only the king's own feature changes,
-        // and all other feature indices (which embed the bucket) stay valid.
+        // King moves: trigger full recompute when the king changes bucket OR
+        // when the horizontal-mirror flag changes.  The mirror flag (king on
+        // files e-h) affects every piece's feature index, so a mirror change
+        // requires updating all features — equivalent to a full recompute.
+        //
+        // Example: e1→d1 keeps bucket 3 but flips mirror (e-file→d-file),
+        // invalidating all non-king feature indices.  Only same-bucket AND
+        // same-mirror moves (e.g. e1→e2, d1→d2) are safe for incremental update.
         if moving_piece.piece_type() == PieceType::King {
             let new_own_bucket = if piece_is_white {
                 crate::neural_eval::KING_BUCKET[to_sq.min(63)]
@@ -258,7 +262,21 @@ impl SearchContext {
             if new_own_bucket != current_own_bucket {
                 return true; // bucket changed — full recompute
             }
-            // Same bucket: fall through to incremental update below.
+            // Same bucket: also check whether mirroring changes.
+            let old_mirror = if piece_is_white {
+                (wk_sq.min(63) % 8) >= 4
+            } else {
+                (bk_flipped.min(63) % 8) >= 4
+            };
+            let new_mirror = if piece_is_white {
+                (to_sq.min(63) % 8) >= 4
+            } else {
+                ((to_sq ^ 56).min(63) % 8) >= 4
+            };
+            if old_mirror != new_mirror {
+                return true; // mirror changed — full recompute
+            }
+            // Same bucket AND same mirror: fall through to incremental update below.
         }
 
         // Horizontal mirroring: flip piece file bits when king is on files e-h.
