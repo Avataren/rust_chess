@@ -91,6 +91,7 @@ fn bench_sequential(fen: &str, is_white: bool, depth: i32) -> (u64, u128, i32) {
     let conductor = PieceConductor::new();
     let tt = TranspositionTable::new(TT_SIZE);
     let mut ctx = SearchContext::new();
+    ctx.init_accumulators(&board);
 
     let mut moves = Vec::new();
     get_all_legal_moves_for_color(&mut board, &conductor, is_white, &mut moves, &mut Vec::new());
@@ -105,7 +106,7 @@ fn bench_sequential(fen: &str, is_white: bool, depth: i32) -> (u64, u128, i32) {
     let beta  = i32::MAX;
 
     for mut mv in moves {
-        board.make_move(&mut mv);
+        ctx.make_move_with_acc(0, &mut mv, &mut board);
         let (score, _) = alpha_beta(
             &mut board,
             &conductor,
