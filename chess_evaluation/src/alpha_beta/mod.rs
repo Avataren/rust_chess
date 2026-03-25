@@ -181,21 +181,36 @@ const LMP_THRESHOLD: [usize; 5] = [0, 4, 8, 13, 20];
 pub const MAX_PLY: usize = 64;
 
 
-/// Evaluate the current position using accumulators when available,
-/// Evaluate the current position, using the compile-time-selected backend.
+/// Evaluate the current position using accumulators when available.
+/// Results are cached in `ctx.eval_cache` by board hash so repeated
+/// evaluations of the same position (common in qsearch) skip the NN forward
+/// pass entirely.
 #[inline(always)]
 pub(in crate::alpha_beta) fn eval_node(
     board: &ChessBoard,
     conductor: &PieceConductor,
-    ctx: &SearchContext,
+    ctx: &mut SearchContext,
     ply: usize,
 ) -> i32 {
-    #[cfg(feature = "nn-incremental")]
-    if ctx.acc_valid {
-        let p = ply.min(ACC_SIZE - 1);
-        return crate::neural_eval::eval_accum_direct(board, &ctx.acc_white[p], &ctx.acc_black[p]);
+    use search_context::EVAL_CACHE_SIZE;
+    let hash = board.current_hash();
+    let idx = (hash as usize) & (EVAL_CACHE_SIZE - 1);
+    let (cached_hash, cached_score) = ctx.eval_cache[idx];
+    if cached_hash == hash {
+        return cached_score;
     }
-    evaluate_board(board, conductor)
+    #[cfg(feature = "nn-incremental")]
+    let score = if ctx.acc_valid {
+        let p = ply.min(ACC_SIZE - 1);
+        // Borrows of acc fields end before the eval_cache write below.
+        crate::neural_eval::eval_accum_direct(board, &ctx.acc_white[p], &ctx.acc_black[p])
+    } else {
+        evaluate_board(board, conductor)
+    };
+    #[cfg(not(feature = "nn-incremental"))]
+    let score = evaluate_board(board, conductor);
+    ctx.eval_cache[idx] = (hash, score);
+    score
 }
 
 

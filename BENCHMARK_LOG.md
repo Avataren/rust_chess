@@ -191,3 +191,27 @@ full recompute". Fix: when `chess_piece` is `None`, look up the moving piece via
 | Time | 45.4s (vs 63.5s baseline) |
 
 ### Overall: 1816/2000 (90.8%) — 45.4s
+
+---
+
+## 2026-03-25 — eval cache + TT static eval + acc init fixes
+
+**Changes:**
+1. Fixed `bench_sequential` missing `ctx.init_accumulators()` (bench was measuring slow path).
+2. Fixed `smp_helper` and `extract_ponder_move` missing `ctx.init_accumulators()` — Lazy SMP helpers were using full forward pass.
+3. TT static eval caching: stored `static_eval: i32` in TtEntry (fills existing 4-byte padding, no size change). Alpha-beta reuses the cached value instead of calling `eval_node` at depth 1-9 nodes on TT hit. ~2% NPS gain in sequential bench.
+4. Per-context eval cache: 16K `(hash, score)` pairs in `SearchContext`. `eval_node` probes this before the NN forward pass. Qsearch transpositions (same position reached via different capture orders) hit the cache at high rates. **+24% NPS on sequential bench, 1.47× speedup on puzzle bench.**
+
+**Cumulative speedup from baseline (broken acc_push):** 63.5s → 30.9s = **2.06×**
+
+| Setting | Value |
+|---------|-------|
+| Depth | 7 |
+| Puzzles | 2000 (seed 42) |
+| Rating range | 1000–2500 |
+| Eval | NNUE nn-incremental (eval.npz, 32KB model) |
+| Bench NPS | 276 Knps (vs 218 Knps after acc_push fix, 162 Knps before) |
+| Puzzle time | 30.9s (vs 45.4s after acc_push fix, 63.5s baseline) |
+
+### Overall: 1816/2000 (90.8%) — 30.9s
+

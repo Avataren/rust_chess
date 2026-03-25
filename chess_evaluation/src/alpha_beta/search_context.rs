@@ -88,6 +88,13 @@ pub(in crate::alpha_beta) fn halfkp_feature_idx(slot: usize, square: usize, buck
     slot * 64 * KING_BUCKETS + square * KING_BUCKETS + bucket
 }
 
+// ── Per-context eval cache ────────────────────────────────────────────────────
+
+/// Number of (hash, score) slots in the per-context eval cache.
+/// 16 K entries × 12 bytes = 192 KB — hot in L2/L3 after a few accesses.
+/// Power of 2 so the index is a single bitwise AND.
+pub(super) const EVAL_CACHE_SIZE: usize = 1 << 14; // 16 384
+
 // ── Search context (killers + history) ───────────────────────────────────────
 
 /// Per-search state for move ordering heuristics.
@@ -136,6 +143,10 @@ pub struct SearchContext {
     pub(in crate::alpha_beta) ordering_scratch: OrderingScratchBuffers,
     /// Reusable buffer for quiet moves tried before a beta-cutoff.
     pub(in crate::alpha_beta) tried_quiets_buf: Vec<ChessMove>,
+    /// Lightweight eval cache: `eval_cache[hash & (EVAL_CACHE_SIZE-1)] = (hash, score)`.
+    /// Avoids redundant NN forward passes for positions revisited within a search
+    /// (especially qsearch transpositions).  Cleared in `init_accumulators`.
+    pub(in crate::alpha_beta) eval_cache: Vec<(u64, i32)>,
 }
 
 impl SearchContext {
@@ -163,11 +174,14 @@ impl SearchContext {
                 killer_entries: Vec::with_capacity(4),
             },
             tried_quiets_buf: Vec::with_capacity(16),
+            eval_cache: vec![(0u64, 0i32); EVAL_CACHE_SIZE],
         }
     }
 
     /// Initialize accumulators from the root board position.
+    /// Also clears the eval cache so stale entries don't survive a model reload.
     pub fn init_accumulators(&mut self, board: &ChessBoard) {
+        self.eval_cache.fill((0, 0));
         #[cfg(feature = "nn-incremental")]
         {
             self.acc_valid = crate::neural_eval::init_accumulators_direct(
