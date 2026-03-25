@@ -15,23 +15,29 @@ pub enum TtFlag {
 const AGE_COST: i32 = 4;
 
 
-/// A transposition table entry — 16 bytes.
+/// A transposition table entry — 24 bytes.
 ///
 /// The best move is stored as a raw `u16` (the `move_value` field of
 /// `ChessMove`) rather than `Option<ChessMove>`.  `Option<ChessMove>` costs
 /// 8 bytes because `ChessMove` has no niche; a bare `u16` costs 2 bytes and
 /// the sentinel value 0 (a1→a1, never a legal move) represents "no move".
+///
+/// `static_eval` caches the NN static evaluation of this position so that
+/// subsequent visits at any depth can skip the NN forward pass.
+/// `i32::MIN` is the sentinel meaning "not stored".
 #[derive(Clone, Copy)]
 pub struct TtEntry {
-    pub hash:       u64,
-    pub depth:      i32,
-    pub score:      i32,
-    pub flag:       TtFlag,
+    pub hash:        u64,
+    pub depth:       i32,
+    pub score:       i32,
+    /// Cached static (leaf) evaluation.  `i32::MIN` = not stored.
+    pub static_eval: i32,
+    pub flag:        TtFlag,
     /// Search generation that wrote this entry.
-    pub generation: u8,
+    pub generation:  u8,
     /// Packed move: bits[5:0]=start, bits[11:6]=target, bits[15:12]=flag.
     /// 0 means no best move recorded.
-    best_move_raw:  u16,
+    best_move_raw:   u16,
 }
 
 impl TtEntry {
@@ -61,6 +67,7 @@ impl Default for TtEntry {
             hash: 0,
             depth: 0,
             score: 0,
+            static_eval: i32::MIN,
             flag: TtFlag::Exact,
             generation: 0,
             best_move_raw: 0,
@@ -125,6 +132,7 @@ impl TranspositionTable {
         score: i32,
         flag: TtFlag,
         best_move: Option<ChessMove>,
+        static_eval: Option<i32>,
     ) {
         let idx = (hash as usize) % self.size;
         // Safety: concurrent reads/writes accepted (benign data race).
@@ -136,8 +144,13 @@ impl TranspositionTable {
         // Replace if: slot is empty, hash collision (different position), or
         // the new entry's depth beats the age-adjusted existing depth.
         if existing.hash == 0 || existing.hash != hash || depth >= existing_eff {
+            // Preserve a previously-cached static eval if we don't have one now.
+            let se = static_eval.unwrap_or_else(|| {
+                if existing.hash == hash { existing.static_eval } else { i32::MIN }
+            });
             table[idx] = TtEntry {
                 hash, depth, score, flag,
+                static_eval: se,
                 generation: self.generation.load(Ordering::Relaxed),
                 best_move_raw: best_move.map_or(0, |m| m.value()),
             };
@@ -158,7 +171,7 @@ mod tests {
     #[test]
     fn store_and_probe_exact_entry() {
         let tt = TranspositionTable::new(1024);
-        tt.store(42, 3, 100, TtFlag::Exact, None);
+        tt.store(42, 3, 100, TtFlag::Exact, None, None);
         let entry = tt.probe(42).expect("should find stored entry");
         assert_eq!(entry.depth, 3);
         assert_eq!(entry.score, 100);
@@ -169,7 +182,7 @@ mod tests {
     #[test]
     fn store_and_probe_lower_bound() {
         let tt = TranspositionTable::new(1024);
-        tt.store(99, 5, 200, TtFlag::LowerBound, None);
+        tt.store(99, 5, 200, TtFlag::LowerBound, None, None);
         let entry = tt.probe(99).expect("should find stored entry");
         assert_eq!(entry.flag, TtFlag::LowerBound);
         assert_eq!(entry.score, 200);
@@ -178,7 +191,7 @@ mod tests {
     #[test]
     fn store_and_probe_upper_bound() {
         let tt = TranspositionTable::new(1024);
-        tt.store(77, 2, -50, TtFlag::UpperBound, None);
+        tt.store(77, 2, -50, TtFlag::UpperBound, None, None);
         let entry = tt.probe(77).expect("should find stored entry");
         assert_eq!(entry.flag, TtFlag::UpperBound);
         assert_eq!(entry.score, -50);
@@ -188,15 +201,15 @@ mod tests {
     fn hash_collision_returns_none() {
         // With size=8, hashes 0 and 8 map to the same slot but are different keys.
         let tt = TranspositionTable::new(8);
-        tt.store(0, 3, 100, TtFlag::Exact, None);
+        tt.store(0, 3, 100, TtFlag::Exact, None, None);
         assert!(tt.probe(8).is_none(), "different hash in same slot must return None");
     }
 
     #[test]
     fn deeper_entry_replaces_shallower() {
         let tt = TranspositionTable::new(1024);
-        tt.store(42, 2, 100, TtFlag::Exact, None);
-        tt.store(42, 5, 200, TtFlag::Exact, None); // deeper
+        tt.store(42, 2, 100, TtFlag::Exact, None, None);
+        tt.store(42, 5, 200, TtFlag::Exact, None, None); // deeper
         let entry = tt.probe(42).expect("should find entry");
         assert_eq!(entry.depth, 5);
         assert_eq!(entry.score, 200);
@@ -205,8 +218,8 @@ mod tests {
     #[test]
     fn shallower_entry_does_not_replace_deeper() {
         let tt = TranspositionTable::new(1024);
-        tt.store(42, 5, 200, TtFlag::Exact, None);
-        tt.store(42, 2, 100, TtFlag::Exact, None); // shallower
+        tt.store(42, 5, 200, TtFlag::Exact, None, None);
+        tt.store(42, 2, 100, TtFlag::Exact, None, None); // shallower
         let entry = tt.probe(42).expect("should find entry");
         assert_eq!(entry.depth, 5, "deeper entry should survive");
         assert_eq!(entry.score, 200);
@@ -216,7 +229,7 @@ mod tests {
     fn stored_best_move_is_retrieved() {
         let tt = TranspositionTable::new(1024);
         let mv = ChessMove::new(0, 16); // a1 → a3
-        tt.store(55, 4, 150, TtFlag::Exact, Some(mv));
+        tt.store(55, 4, 150, TtFlag::Exact, Some(mv), None);
         let entry = tt.probe(55).expect("should find entry");
         let stored = entry.best_move().expect("best_move should be stored");
         assert_eq!(stored.start_square(), 0);
@@ -228,7 +241,7 @@ mod tests {
         // An initially empty slot (hash==0) should be filled by any store.
         let tt = TranspositionTable::new(1024);
         assert!(tt.probe(1).is_none());
-        tt.store(1, 1, 0, TtFlag::Exact, None);
+        tt.store(1, 1, 0, TtFlag::Exact, None, None);
         assert!(tt.probe(1).is_some());
     }
 
@@ -238,12 +251,12 @@ mod tests {
     fn new_search_increments_generation() {
         let tt = TranspositionTable::new(1024);
         // Store an entry at generation 0.
-        tt.store(1, 5, 100, TtFlag::Exact, None);
+        tt.store(1, 5, 100, TtFlag::Exact, None, None);
         assert_eq!(tt.probe(1).unwrap().generation, 0);
 
         tt.new_search();
         // Store another entry at generation 1.
-        tt.store(2, 5, 200, TtFlag::Exact, None);
+        tt.store(2, 5, 200, TtFlag::Exact, None, None);
         assert_eq!(tt.probe(2).unwrap().generation, 1);
 
         // Original entry still visible (different hash).
@@ -255,14 +268,14 @@ mod tests {
         // AGE_COST = 4, so after 3 new_search() calls the old entry at depth 10
         // has effective_depth = 10 - 3*4 = -2, which any new entry (depth >= -2) beats.
         let tt = TranspositionTable::new(1024);
-        tt.store(42, 10, 999, TtFlag::Exact, None); // deep, generation 0
+        tt.store(42, 10, 999, TtFlag::Exact, None, None); // deep, generation 0
 
         tt.new_search(); // generation 1
         tt.new_search(); // generation 2
         tt.new_search(); // generation 3  →  effective_depth = 10 - 12 = -2
 
         // A shallow depth-1 entry (>= -2) should now evict the old one.
-        tt.store(42, 1, 42, TtFlag::Exact, None);
+        tt.store(42, 1, 42, TtFlag::Exact, None, None);
         let entry = tt.probe(42).expect("should find entry");
         assert_eq!(entry.depth, 1, "fresh shallow entry should have evicted stale deep entry");
         assert_eq!(entry.score, 42);
@@ -274,11 +287,11 @@ mod tests {
         // After only 1 new_search(), a depth-10 entry has effective_depth = 10 - 4 = 6.
         // A depth-5 entry (< 6) must NOT evict it.
         let tt = TranspositionTable::new(1024);
-        tt.store(42, 10, 999, TtFlag::Exact, None); // deep, generation 0
+        tt.store(42, 10, 999, TtFlag::Exact, None, None); // deep, generation 0
 
         tt.new_search(); // generation 1  →  effective_depth = 10 - 4 = 6
 
-        tt.store(42, 5, 42, TtFlag::Exact, None); // depth 5 < 6, should not replace
+        tt.store(42, 5, 42, TtFlag::Exact, None, None); // depth 5 < 6, should not replace
         let entry = tt.probe(42).expect("should find entry");
         assert_eq!(entry.depth, 10, "recent deep entry should survive a shallower store");
         assert_eq!(entry.score, 999);
@@ -290,7 +303,7 @@ mod tests {
         // even after several new_search() calls — only store() applies the eviction logic.
         let tt = TranspositionTable::new(1024);
         let mv = ChessMove::new(4, 20); // e1 → e3 (arbitrary)
-        tt.store(77, 8, 300, TtFlag::Exact, Some(mv));
+        tt.store(77, 8, 300, TtFlag::Exact, Some(mv), None);
 
         tt.new_search();
         tt.new_search();
@@ -311,7 +324,7 @@ mod tests {
         }
         // Now at generation 255; one more wraps to 0.
         tt.new_search();
-        tt.store(1, 3, 50, TtFlag::Exact, None);
+        tt.store(1, 3, 50, TtFlag::Exact, None, None);
         let entry = tt.probe(1).expect("should find entry after wrap-around");
         assert_eq!(entry.generation, 0);
         assert_eq!(entry.score, 50);
@@ -322,8 +335,8 @@ mod tests {
         // Within the same generation, the old depth-beats-shallower rule holds.
         let tt = TranspositionTable::new(1024);
         tt.new_search(); // generation 1
-        tt.store(42, 8, 100, TtFlag::Exact, None);
-        tt.store(42, 3, 200, TtFlag::Exact, None); // shallower, same gen — must not replace
+        tt.store(42, 8, 100, TtFlag::Exact, None, None);
+        tt.store(42, 3, 200, TtFlag::Exact, None, None); // shallower, same gen — must not replace
         let entry = tt.probe(42).expect("should find entry");
         assert_eq!(entry.depth, 8, "deeper same-gen entry must not be overwritten by shallower");
         assert_eq!(entry.score, 100);

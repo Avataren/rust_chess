@@ -340,7 +340,12 @@ pub fn alpha_beta(
     }
 
     // --- Transposition table probe ---
+    let mut tt_static_eval: Option<i32> = None;
     let tt_move: Option<ChessMove> = if let Some(entry) = tt.probe(hash) {
+        // Cache the stored static eval so we can skip eval_node below.
+        if entry.static_eval != i32::MIN {
+            tt_static_eval = Some(entry.static_eval);
+        }
         // When doing a singular extension search (excluded_move is set), the
         // position is "virtual" (one move excluded), so TT scores may not be
         // valid for cutoffs.  Still use the TT move for ordering.
@@ -375,8 +380,9 @@ pub fn alpha_beta(
     // Computed once and reused by RFP, futility pruning, and the improving flag.
     // Skipped when in check (pruning is unsound under forced moves) or at
     // high depths where the cost is negligible vs. search time.
+    // Reuse the TT-cached eval if available to skip the NN forward pass.
     let static_eval: Option<i32> = if !in_check && depth <= 9 {
-        Some(eval_node(chess_board, conductor, ctx, ply))
+        Some(tt_static_eval.unwrap_or_else(|| eval_node(chess_board, conductor, ctx, ply)))
     } else {
         None
     };
@@ -577,6 +583,7 @@ pub fn alpha_beta(
                         score_to_tt(pc_score, ply),
                         TtFlag::LowerBound,
                         Some(pc_mv),
+                        None,
                     );
                     return (pc_score, Some(pc_mv));
                 }
@@ -589,6 +596,7 @@ pub fn alpha_beta(
                         score_to_tt(pc_score, ply),
                         TtFlag::UpperBound,
                         Some(pc_mv),
+                        None,
                     );
                     return (pc_score, Some(pc_mv));
                 }
@@ -979,7 +987,7 @@ pub fn alpha_beta(
     } else {
         TtFlag::Exact
     };
-    tt.store(hash, depth, score_to_tt(best_eval, ply), flag, best_move);
+    tt.store(hash, depth, score_to_tt(best_eval, ply), flag, best_move, static_eval);
     (best_eval, best_move)
 }
 
