@@ -93,7 +93,10 @@ pub(in crate::alpha_beta) fn halfkp_feature_idx(slot: usize, square: usize, buck
 /// Number of (hash, score) slots in the per-context eval cache.
 /// 16 K entries × 12 bytes = 192 KB — hot in L2/L3 after a few accesses.
 /// Power of 2 so the index is a single bitwise AND.
-pub(super) const EVAL_CACHE_SIZE: usize = 1 << 14; // 16 384
+/// Sweet spot measured empirically at depth 7: 64K > 128K > 16K > 256K.
+/// Larger caches spill out of L3 and their miss-latency penalty exceeds the
+/// hit-rate benefit.  768 KB fits comfortably in a typical L3 cache.
+pub(super) const EVAL_CACHE_SIZE: usize = 1 << 16; // 65 536 entries × 12 B = 768 KB
 
 // ── Search context (killers + history) ───────────────────────────────────────
 
