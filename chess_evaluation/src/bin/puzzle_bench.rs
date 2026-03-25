@@ -43,12 +43,24 @@ use move_generator::{
 static NNUE_WEIGHTS: &[u8] = include_bytes!("../eval.npz");
 
 #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
-fn init_nn() {
-    match chess_evaluation::init_neural_eval_from_bytes(NNUE_WEIGHTS) {
-        Ok(()) => {
+fn init_nn(eval_file: &str) {
+    let result = if eval_file.is_empty() {
+        chess_evaluation::init_neural_eval_from_bytes(NNUE_WEIGHTS)
+            .map(|_| NNUE_WEIGHTS.len())
+    } else {
+        std::fs::read(eval_file)
+            .map_err(|e| format!("cannot read {eval_file}: {e}"))
+            .and_then(|bytes| {
+                let n = bytes.len();
+                chess_evaluation::init_neural_eval_from_bytes(&bytes).map(|_| n)
+            })
+    };
+    match result {
+        Ok(n) => {
             #[cfg(feature = "runtime-switch")]
             chess_evaluation::set_neural_eval_enabled(true);
-            eprintln!("NNUE loaded ({} KB).", NNUE_WEIGHTS.len() / 1024);
+            let src = if eval_file.is_empty() { "embedded" } else { eval_file };
+            eprintln!("NNUE loaded from {src} ({} KB).", n / 1024);
         }
         Err(e) => eprintln!("warn: NNUE not loaded: {e}"),
     }
@@ -228,9 +240,6 @@ fn band_index(rating: u32) -> usize {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
-    #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
-    init_nn();
-
     let args: Vec<String> = std::env::args().collect();
 
     macro_rules! arg {
@@ -248,6 +257,11 @@ fn main() {
     }
 
     let file             = flag_str!("--file");
+    let eval_file        = flag_str!("--eval-file");
+
+    #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
+    init_nn(eval_file);
+
     let count:  usize   = arg!("--count",      1000usize);
     // Default rating range is unrestricted for export use cases;
     // benchmark runs typically pass --min-rating / --max-rating explicitly.
@@ -277,6 +291,7 @@ fn main() {
         eprintln!("    [--max-rating N]         upper rating filter (default: 2200)");
         eprintln!("    [--depth N]              search depth (default: 7)");
         eprintln!("    [--seed N]               RNG seed for sampling (default: 42)");
+        eprintln!("    [--eval-file FILE]       override embedded NNUE weights (any .npz)");
         eprintln!("    [--export-failures FILE] write failed puzzle lines for finetune");
         eprintln!("    [--export-all FILE]      write ALL puzzle lines for finetune (recommended)");
         eprintln!();

@@ -6,9 +6,11 @@ seed: 42
 #
 # Usage:
 #   python3 scripts/train.py --config configs/puzzle_finetune.yaml \
-#     --resume artifacts/checkpoint_all_54m_1024_h64_8b_32kb_cp07.pt
+#     --resume artifacts/<checkpoint>.pt
+#   (reset_best_val is set automatically by this config)
 
 training:
+  reset_best_val: true   # puzzle dataset has different loss scale than main training
   batch_size: 16384
   epochs: 30
   lr: 0.00005          # ~20x lower than main training — conservative finetune

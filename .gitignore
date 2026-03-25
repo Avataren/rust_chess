@@ -14,3 +14,5 @@ Cargo.lock
 *.pdb
 web/wasm/assets
 arguments_log.txt
+lichess-bot/
+lichess_db_puzzle.csv.zst

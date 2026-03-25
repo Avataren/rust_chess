@@ -398,20 +398,31 @@ def main():
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
     best_val = float("inf")
+    start_epoch = 1
     if args.resume:
         ck = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ck["model_state"])
+        reset = args.reset_best_val or cfg["training"].get("reset_best_val", False)
+        if reset:
+            # New fine-tune on a different dataset: only restore weights.
+            # Optimizer momentum, scheduler position, and epoch counter all restart fresh.
+            print(f"Resumed from {args.resume}  (best_val reset to inf, optimizer/scheduler reset)")
+        else:
+            # Continuing the same run: restore full training state.
+            if "optimizer_state" in ck:
+                optimizer.load_state_dict(ck["optimizer_state"])
+            if "scheduler_state" in ck:
+                scheduler.load_state_dict(ck["scheduler_state"])
+            if "scaler_state" in ck:
+                scaler.load_state_dict(ck["scaler_state"])
+            best_val = ck.get("val_loss", float("inf"))
+            start_epoch = ck.get("epoch", 0) + 1
+            print(f"Resumed from {args.resume}  (val_loss={best_val:.4f}, next epoch={start_epoch})")
 
     if cfg["training"].get("compile", False):
         print("Compiling model with torch.compile...")
         model = torch.compile(model, mode=cfg["training"].get("compile_mode", "default"))
         print("Compilation graph ready (first batch will trigger kernel build).")
-        if args.reset_best_val:
-            best_val = float("inf")
-            print(f"Resumed from {args.resume}  (best_val reset to inf)")
-        else:
-            best_val = ck.get("val_loss", float("inf"))
-            print(f"Resumed from {args.resume}  (val_loss={best_val:.4f})")
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -421,7 +432,7 @@ def main():
     print(f"TensorBoard logdir: {args.tb_logdir}")
 
     try:
-        for epoch in range(1, cfg["training"]["epochs"] + 1):
+        for epoch in range(start_epoch, cfg["training"]["epochs"] + 1):
             tr = train_epoch(model, train_loader, optimizer, scaler, device, cfg)
             va = eval_epoch(model, val_loader, device, cfg)
             scheduler.step()
@@ -470,6 +481,9 @@ def main():
                 torch.save(
                     {
                         "model_state": raw_model.state_dict(),
+                        "optimizer_state": optimizer.state_dict(),
+                        "scheduler_state": scheduler.state_dict(),
+                        "scaler_state": scaler.state_dict(),
                         "config": cfg,
                         "val_loss": va["loss"],
                         "val_cp_mae": va["cp_mae"],

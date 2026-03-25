@@ -1,0 +1,47 @@
+seed: 42
+
+# Re-calibration pass on general game data after puzzle fine-tuning.
+# Step 2 of curriculum: puzzle_finetune.yaml → this config.
+#
+# Goal: restore positional accuracy without overwriting tactical patterns
+# learned from puzzles. Very low LR + few epochs = nudge, not overwrite.
+#
+# Usage:
+#   python3 scripts/train.py --config configs/recalibrate.yaml \
+#     --resume artifacts/checkpoint_puzzle_ft.pt \
+#     --out artifacts/checkpoint_recal.pt \
+#     --tb-logdir runs/recal_01
+#   (reset_best_val is set automatically by this config)
+
+training:
+  reset_best_val: true   # different dataset loss scale from puzzle fine-tune
+  batch_size: 16384
+  epochs: 30             # low LR — overfitting risk is low, watch val loss curve
+  lr: 0.00005            # same as puzzle finetune — needed to recover from severe regression
+  warmup_epochs: 1
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  workers: 8
+  pin_memory: true
+  amp: true
+  persistent_workers: true
+  prefetch_factor: 4
+  compile: true
+  compile_mode: "default"
+
+model:
+  input_dim: 24576
+  hidden_dim: 1024
+  hidden2_dim: 64
+  dropout: 0.1
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  train_file: data/all_54m/train_all_54m.jsonl
+  val_file:   data/all_54m/val_all_54m.jsonl
+  max_cp_abs: 850
