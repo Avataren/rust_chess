@@ -215,3 +215,24 @@ full recompute". Fix: when `chess_piece` is `None`, look up the moving piece via
 
 ### Overall: 1816/2000 (90.8%) — 30.9s
 
+---
+
+## 2026-03-25 — capture ghost fix + king same-bucket optimization
+
+**Changes:**
+1. **Capture ghost fix**: `mv.capture` is never populated by the move generator (same as `mv.chess_piece`). The `else if let Some(cap) = mv.capture` branch in `acc_push` was dead code — every non-en-passant capture silently skipped removing the captured piece's feature, leaving ghost pieces in the accumulator and corrupting eval. Fixed by replacing with `board.get_piece_at_square(mv.target_square())` lookup (before `make_move`, piece still present). Root cause of bad play (giving up pieces, not following through with forced mates).
+2. **King same-bucket optimization**: `acc_push` previously returned `true` (full recompute) for all king moves. Many king moves stay in the same bucket (e.g., e1→e2, e1→d1 both bucket 3). Now checks new vs current bucket — only returns `true` if bucket changes. Same-bucket king moves use incremental update instead.
+
+| Setting | Value |
+|---------|-------|
+| Depth | 7 |
+| Puzzles | 2000 (seed 42) |
+| Rating range | 1000–2500 |
+| Eval | NNUE nn-incremental (eval.npz, 32KB model) |
+| Bench NPS | 286 Knps (vs 289 Knps — within noise) |
+| Puzzle time | 30.0s |
+
+### Overall: 1811/2000 (90.6%) — 30.0s
+
+**Notes:** Solve rate (90.6%) is within normal variance of the 90.8% baseline. The capture fix restores correct accumulator state — previously the engine was playing with systematically wrong evaluations for all positions involving captures.
+

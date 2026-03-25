@@ -232,21 +232,34 @@ impl SearchContext {
             },
         };
 
-        // King moves require full recompute (king bucket changes)
-        if moving_piece.piece_type() == PieceType::King {
-            return true;
-        }
-
         let from_sq = mv.start_square() as usize;
         let to_sq = mv.target_square() as usize;
         let piece_is_white = moving_piece.is_white();
 
-        // Current king buckets (unchanged for non-king moves)
+        // Current king buckets
         let wk_sq = (board.get_white() & board.get_kings()).0.trailing_zeros() as usize;
         let bk_sq_raw = (board.get_black() & board.get_kings()).0.trailing_zeros() as usize;
         let wk_bucket = crate::neural_eval::KING_BUCKET[wk_sq.min(63)];
         let bk_flipped = bk_sq_raw ^ 56;
         let bk_bucket = crate::neural_eval::KING_BUCKET[bk_flipped.min(63)];
+
+        // King moves: only trigger full recompute when the king actually
+        // changes bucket.  Same-bucket moves (e.g. e1→d1) fall through to
+        // the normal incremental path — only the king's own feature changes,
+        // and all other feature indices (which embed the bucket) stay valid.
+        if moving_piece.piece_type() == PieceType::King {
+            let new_own_bucket = if piece_is_white {
+                crate::neural_eval::KING_BUCKET[to_sq.min(63)]
+            } else {
+                let flipped = to_sq ^ 56;
+                crate::neural_eval::KING_BUCKET[flipped.min(63)]
+            };
+            let current_own_bucket = if piece_is_white { wk_bucket } else { bk_bucket };
+            if new_own_bucket != current_own_bucket {
+                return true; // bucket changed — full recompute
+            }
+            // Same bucket: fall through to incremental update below.
+        }
 
         // Horizontal mirroring: flip piece file bits when king is on files e-h.
         let mirror_w = (wk_sq.min(63) % 8) >= 4;
@@ -301,16 +314,23 @@ impl SearchContext {
             w_cap[0] = halfkp_feature_idx(cap_slot_w, w_sq(cap_sq), wk_bucket);
             b_cap[0] = halfkp_feature_idx(cap_slot_b, b_sq(cap_sq), bk_bucket);
             cap_n = 1;
-        } else if let Some(cap) = mv.capture {
-            let cap_pt = cap.piece_type();
-            let cap_is_white = cap.is_white();
-            let cap_slot_w = halfkp_piece_slot(cap_pt, cap_is_white);
-            let cap_slot_b = halfkp_piece_slot(cap_pt, !cap_is_white);
-            w_cap[0] = halfkp_feature_idx(cap_slot_w, w_sq(to_sq), wk_bucket);
-            b_cap[0] = halfkp_feature_idx(cap_slot_b, b_sq(to_sq), bk_bucket);
-            cap_n = 1;
         } else {
-            cap_n = 0;
+            // mv.capture is never populated by the move generator (same
+            // situation as chess_piece).  Fall back to a board lookup —
+            // acc_push is called before make_move, so the captured piece is
+            // still present at the target square.
+            match board.get_piece_at_square(mv.target_square()) {
+                Some(cap) => {
+                    let cap_pt = cap.piece_type();
+                    let cap_is_white = cap.is_white();
+                    let cap_slot_w = halfkp_piece_slot(cap_pt, cap_is_white);
+                    let cap_slot_b = halfkp_piece_slot(cap_pt, !cap_is_white);
+                    w_cap[0] = halfkp_feature_idx(cap_slot_w, w_sq(to_sq), wk_bucket);
+                    b_cap[0] = halfkp_feature_idx(cap_slot_b, b_sq(to_sq), bk_bucket);
+                    cap_n = 1;
+                }
+                None => cap_n = 0,
+            }
         }
 
         // One EVALUATOR.get() per accumulator; order: sub_pre → add → sub_post

@@ -3614,22 +3614,37 @@ mod tests {
         );
     }
 
-    /// When chess_piece is None and the board has a king at start_square,
-    /// acc_push must still return true (king move → recompute needed).
+    /// King move that crosses a bucket boundary must trigger full recompute (return true).
+    /// e1 (sq 4) → f1 (sq 5): bucket 3 → bucket 2.
     #[test]
-    fn acc_push_board_lookup_king_returns_true() {
+    fn acc_push_board_lookup_king_bucket_change_returns_true() {
         let mut ctx = SearchContext::new();
         ctx.acc_valid = true;
 
-        let board = ChessBoard::new(); // starting position
-        // e1→e2: there is a white king at square 4 in the starting position.
-        // chess_piece intentionally left as None.
-        let mv = ChessMove::new(4, 12);
+        let board = ChessBoard::new(); // starting position — white king on e1 (sq 4)
+        let mv = ChessMove::new(4, 5); // e1 → f1: different bucket
         assert!(mv.chess_piece.is_none(), "test precondition: chess_piece must be None");
 
         assert!(
             ctx.acc_push(0, &mv, &board),
-            "acc_push must return true (recompute) when board lookup finds a king"
+            "acc_push must return true (recompute) when king crosses a bucket boundary"
+        );
+    }
+
+    /// King move that stays in the same bucket must use incremental update (return false).
+    /// e1 (sq 4) → e2 (sq 12): both bucket 3.
+    #[test]
+    fn acc_push_board_lookup_king_same_bucket_returns_false() {
+        let mut ctx = SearchContext::new();
+        ctx.acc_valid = true;
+
+        let board = ChessBoard::new(); // starting position — white king on e1 (sq 4)
+        let mv = ChessMove::new(4, 12); // e1 → e2: same bucket
+        assert!(mv.chess_piece.is_none(), "test precondition: chess_piece must be None");
+
+        assert!(
+            !ctx.acc_push(0, &mv, &board),
+            "acc_push must return false (incremental) when king stays in the same bucket"
         );
     }
 }
