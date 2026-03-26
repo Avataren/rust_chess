@@ -3682,6 +3682,81 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Tactical regression suite: engine must find the correct move.
+    //
+    // These positions directly test the "not taking free pieces from a winning
+    // position" concern by exercising NMP, RFP, LMR, and aspiration at depth 7.
+    // Each position has a single correct capture that the engine must find.
+    // -----------------------------------------------------------------------
+
+    fn search(fen: &str, is_white: bool, depth: i32) -> (i32, ChessMove) {
+        let mut board = ChessBoard::new();
+        board.set_from_fen(fen);
+        let c = PieceConductor::new();
+        let r = iterative_deepening_root(&mut board, &c, None, depth, is_white, None, None, 0);
+        let m = r.best_move.expect(&format!("No move found for {fen}"));
+        (r.score, m)
+    }
+
+    /// White is up a knight, free rook on a8 directly capturable: Rxa8.
+    /// Exercises RFP-from-winning-position: even with se >> 0 at depth 7,
+    /// the engine must still take more material rather than prune early.
+    #[test]
+    fn takes_free_rook_from_winning_position() {
+        // White: Ra1(0) Nc3(18) Ke1(4) | Black: Ra8(56) Kh8(63)
+        let (score, m) = search("r6k/8/8/8/8/2N5/8/R3K3 w - - 0 1", true, 7);
+        assert_eq!(m.target_square(), 56,
+            "Must take free rook on a8 (sq 56), got target={}", m.target_square());
+        assert!(score > 600, "Score should reflect Nc3 + Ra8 advantage, got {score}");
+    }
+
+    /// Black is up a rook, free bishop on c3 directly capturable: Rxc3.
+    #[test]
+    fn black_takes_free_bishop_from_winning_position() {
+        // White: Bc3(18) Ke1(4) | Black: Rb3(17) Ke8(60)  — Rb3xc3 (Bc3 undefended)
+        // Wait: b3=17, c3=18. Black Rb3 can take Bc3 along rank 3.
+        let (score, m) = search("4k3/8/8/8/8/1rB5/8/4K3 b - - 0 1", false, 7);
+        assert_eq!(m.target_square(), 18,
+            "Must take free bishop on c3 (sq 18), got target={}", m.target_square());
+        assert!(score < -200, "Score should reflect rook + bishop advantage, got {score}");
+    }
+
+    /// Tactical suite: verify the engine finds the correct move for key positions.
+    /// Covers royal forks, direct free captures, and pawn×piece.
+    /// Format: (fen, is_white, depth, expected_from, expected_to, description)
+    #[test]
+    fn tactical_regression_suite() {
+        let cases: &[(&str, bool, i32, u16, u16, &str)] = &[
+            // Knight fork: Nc3(18)→d5(35) forks Qe7(52) and Rc7(50).
+            // d5 attacks e7 (+17) and c7 (+15); neither forked piece can take d5.
+            // Black saves the queen; white wins Rc7 at minimum (+500).
+            ("4k3/2r1q3/8/8/8/2N5/8/4K3 w - - 0 1", true, 6, 18, 35,
+             "Nc3-d5: forks Qe7 and Rc7"),
+            // White queen captures undefended rook from a winning position (up Nc3).
+            // Qa1(0) takes Ra8(56) along the a-file.
+            ("r3k3/8/8/8/8/2N5/8/Q3K3 w - - 0 1", true, 5, 0, 56,
+             "Qa1xa8: free rook, already up Nc3"),
+            // Pawn takes free knight: Pd5(35) × Nc6(42).
+            ("4k3/8/2n5/3P4/8/8/8/4K3 w - - 0 1", true, 4, 35, 42,
+             "d5xc6: pawn takes free knight"),
+        ];
+
+        let c = PieceConductor::new();
+        for &(fen, is_white, depth, exp_from, exp_to, desc) in cases {
+            let mut board = ChessBoard::new();
+            board.set_from_fen(fen);
+            let r = iterative_deepening_root(&mut board, &c, None, depth, is_white, None, None, 0);
+            let m = r.best_move.expect(&format!("No move found: {desc}"));
+            assert_eq!(
+                (m.start_square(), m.target_square()),
+                (exp_from, exp_to),
+                "Wrong move for '{desc}': expected ({exp_from}→{exp_to}), got ({}→{})",
+                m.start_square(), m.target_square()
+            );
+        }
+    }
+
     /// King move that stays in the same bucket but changes mirror must trigger full
     /// recompute (return true).  e1 (sq 4) → d1 (sq 3): both bucket 3, but e-file
     /// has mirror=true and d-file has mirror=false — all piece feature indices change.

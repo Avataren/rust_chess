@@ -161,6 +161,7 @@ fn solve(
     conductor: &PieceConductor,
     tt:        &TranspositionTable,
     depth:     i32,
+    fresh_tt:  bool,
 ) -> bool {
     let mut board = ChessBoard::new();
     board.set_from_fen(&puzzle.fen);
@@ -174,11 +175,18 @@ fn solve(
     let mut ctx = SearchContext::new();
     ctx.init_accumulators(&board);
 
+    let local_tt;
+    let tt_ref = if fresh_tt {
+        local_tt = TranspositionTable::new(1 << 18);
+        &local_tt
+    } else {
+        tt
+    };
     let result = iterative_deepening_root_with_tt(
         &mut board,
         conductor,
         None,
-        tt,
+        tt_ref,
         depth,
         is_white,
         None, // no time limit
@@ -279,6 +287,12 @@ fn main() {
     // Useful for dumping the entire puzzle database as finetune input without
     // waiting for a search run.  --count 0 means no limit (export everything).
     let export_only     = args.iter().any(|a| a == "--export-only");
+    // When set, create a fresh TranspositionTable per puzzle instead of sharing
+    // one across all puzzles.  Eliminates cross-puzzle TT pollution so that
+    // move-ordering and heuristic changes get an unbiased signal.
+    // Trade-off: slower (no cross-puzzle TT reuse) and non-deterministic between
+    // runs with the shared-TT baseline, but more reliable for A/B comparisons.
+    let fresh_tt        = args.iter().any(|a| a == "--fresh-tt");
 
     if file.is_empty() {
         eprintln!("puzzle_bench: solve Lichess puzzles and report engine accuracy");
@@ -294,6 +308,7 @@ fn main() {
         eprintln!("    [--eval-file FILE]       override embedded NNUE weights (any .npz)");
         eprintln!("    [--export-failures FILE] write failed puzzle lines for finetune");
         eprintln!("    [--export-all FILE]      write ALL puzzle lines for finetune (recommended)");
+        eprintln!("    [--fresh-tt]             fresh TT per puzzle (unbiased A/B; slower)");
         eprintln!();
         eprintln!("Download: https://database.lichess.org/#puzzles");
         eprintln!("  (lichess_db_puzzle.csv.zst, ~280 MB compressed)");
@@ -307,6 +322,7 @@ fn main() {
     println!("Sample:       {count}  (rating {min_r}–{max_r_display})");
     println!("Depth:        {depth}");
     println!("Seed:         {seed}");
+    println!("TT mode:      {}", if fresh_tt { "fresh per puzzle" } else { "shared" });
     if !export_failures.is_empty() { println!("Export (failures): {export_failures}"); }
     if !export_all.is_empty()      { println!("Export (all):      {export_all}"); }
     println!();
@@ -403,7 +419,7 @@ fn main() {
     let t_solve = Instant::now();
 
     for (i, puzzle) in puzzles.iter().enumerate() {
-        let ok = solve(puzzle, &conductor, &tt, depth);
+        let ok = solve(puzzle, &conductor, &tt, depth, fresh_tt);
         if ok { solved += 1; }
 
         // Export line format: "<FEN>\t<move0> <move1> ..."
