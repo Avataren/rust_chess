@@ -32,9 +32,9 @@ use chess_foundation::bitboard::Bitboard;
 
 // ── Architecture constants ────────────────────────────────────────────────
 
-pub(crate) const HIDDEN1: usize = 512;
-const HIDDEN2: usize = 32;
-const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 1024
+pub(crate) const HIDDEN1: usize = 1024;
+const HIDDEN2: usize = 64;
+const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 2048
 
 // ── SCReLU activation: clamp(x,0,1)² ──────────────────────────────────────
 
@@ -451,7 +451,7 @@ unsafe fn screlu_deq_avx2(acc: &[i16], scale: f32, out: &mut [f32]) {
     let vscale = _mm256_set1_ps(scale);
     let inv_sc = _mm256_set1_ps(1.0 / scale);
     // Process 16 i16 per iteration (two 128-bit loads → two 256-bit f32 blocks)
-    // HIDDEN1=512 → 32 iterations, scalar tail never runs.
+    // HIDDEN1=1024 → 64 iterations, scalar tail never runs.
     let chunks = acc.len() / 16;
     for k in 0..chunks {
         let vi16_lo = _mm_loadu_si128(acc.as_ptr().add(k * 16    ) as *const __m128i);
@@ -489,27 +489,31 @@ fn screlu_deq(acc: &[i16], scale: f32, out: &mut [f32]) {
     }
 }
 
-// ── Column-major GEMV for fc2 (input_dim × HIDDEN2 = 32) ─────────────────
+// ── Column-major GEMV for fc2 (input_dim × HIDDEN2 = 64) ─────────────────
 //
 // w is stored column-major: w[i * HIDDEN2 + j] = weight for output j, input i.
 // acc is pre-initialised with bias; x is the input vector.
 //
-// AVX2 + FMA path: holds all 32 outputs in 4 YMM registers, streams
-// through x once — each input element touches its 32-wide weight column
+// AVX2 + FMA path: holds all 64 outputs in 8 YMM registers, streams
+// through x once — each input element touches its 64-wide weight column
 // without evicting the accumulator registers.
 //
-// Note: hardcoded for HIDDEN2 == 32 (4 × 8-wide YMM registers).
+// Note: hardcoded for HIDDEN2 == 64 (8 × 8-wide YMM registers).
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2", enable = "fma")]
 unsafe fn gemv_col32_avx2(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
     use std::arch::x86_64::*;
-    debug_assert_eq!(HIDDEN2, 32);
+    debug_assert_eq!(HIDDEN2, 64);
     debug_assert_eq!(w.len(), x.len() * HIDDEN2);
     let mut a0 = _mm256_loadu_ps(acc.as_ptr());
     let mut a1 = _mm256_loadu_ps(acc.as_ptr().add(8));
     let mut a2 = _mm256_loadu_ps(acc.as_ptr().add(16));
     let mut a3 = _mm256_loadu_ps(acc.as_ptr().add(24));
+    let mut a4 = _mm256_loadu_ps(acc.as_ptr().add(32));
+    let mut a5 = _mm256_loadu_ps(acc.as_ptr().add(40));
+    let mut a6 = _mm256_loadu_ps(acc.as_ptr().add(48));
+    let mut a7 = _mm256_loadu_ps(acc.as_ptr().add(56));
     for i in 0..x.len() {
         let xi  = _mm256_set1_ps(*x.get_unchecked(i));
         let col = w.as_ptr().add(i * HIDDEN2);
@@ -517,11 +521,19 @@ unsafe fn gemv_col32_avx2(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
         a1 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(8)),  xi, a1);
         a2 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(16)), xi, a2);
         a3 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(24)), xi, a3);
+        a4 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(32)), xi, a4);
+        a5 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(40)), xi, a5);
+        a6 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(48)), xi, a6);
+        a7 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(56)), xi, a7);
     }
     _mm256_storeu_ps(acc.as_mut_ptr(),        a0);
     _mm256_storeu_ps(acc.as_mut_ptr().add(8),  a1);
     _mm256_storeu_ps(acc.as_mut_ptr().add(16), a2);
     _mm256_storeu_ps(acc.as_mut_ptr().add(24), a3);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(32), a4);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(40), a5);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(48), a6);
+    _mm256_storeu_ps(acc.as_mut_ptr().add(56), a7);
 }
 
 fn gemv_col32_scalar(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
