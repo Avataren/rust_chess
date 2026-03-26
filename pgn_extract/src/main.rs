@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -37,6 +37,11 @@ struct Args {
     /// Sample at most this many positions per game (chosen uniformly at random)
     #[arg(long, default_value_t = 1)]
     positions_per_game: usize,
+
+    /// Skip the first N games before collecting positions.
+    /// Use to produce non-overlapping batches from the same PGN.
+    #[arg(long, default_value_t = 0)]
+    skip_games: usize,
 }
 
 struct Extractor {
@@ -45,6 +50,7 @@ struct Extractor {
     min_ply: usize,
     positions_per_game: usize,
     max_positions: usize,
+    skip_games: usize,
 
     // per-game state
     white_elo: u32,
@@ -57,6 +63,7 @@ struct Extractor {
     // output
     out: BufWriter<Box<dyn Write>>,
     found: usize,
+    games_started: usize,
 
     rng: rand::rngs::ThreadRng,
 }
@@ -79,6 +86,7 @@ impl Extractor {
             min_ply: args.min_ply,
             positions_per_game: args.positions_per_game,
             max_positions: args.max_positions,
+            skip_games: args.skip_games,
             white_elo: 0,
             black_elo: 0,
             skip_game: false,
@@ -87,6 +95,7 @@ impl Extractor {
             candidate_fens: Vec::new(),
             out: BufWriter::new(writer),
             found: 0,
+            games_started: 0,
             rng: rand::thread_rng(),
         }
     }
@@ -100,6 +109,7 @@ impl Visitor for Extractor {
     type Result = bool; // true = keep going, false = stop
 
     fn begin_game(&mut self) {
+        self.games_started += 1;
         self.white_elo = 0;
         self.black_elo = 0;
         self.skip_game = false;
@@ -128,7 +138,8 @@ impl Visitor for Extractor {
 
     fn end_headers(&mut self) -> Skip {
         self.skip_game = !self.elo_ok();
-        Skip(self.skip_game || self.found >= self.max_positions)
+        let in_skip_phase = self.games_started <= self.skip_games;
+        Skip(in_skip_phase || self.skip_game || self.found >= self.max_positions)
     }
 
     fn san(&mut self, san_plus: SanPlus) {
@@ -153,7 +164,8 @@ impl Visitor for Extractor {
     }
 
     fn end_game(&mut self) -> Self::Result {
-        if !self.skip_game && !self.candidate_fens.is_empty() {
+        // During the skip-games phase candidate_fens is empty (move parsing was skipped).
+        if self.games_started > self.skip_games && !self.skip_game && !self.candidate_fens.is_empty() {
             let n = self.positions_per_game.min(self.candidate_fens.len());
             // reservoir-sample n positions
             let mut chosen: Vec<usize> = (0..self.candidate_fens.len().min(n)).collect();
@@ -179,15 +191,22 @@ fn main() {
     let args = Args::parse();
 
     let file = File::open(&args.input).expect("cannot open input PGN");
-    let mut reader = BufferedReader::new(file);
+    let is_zst = args.input.extension().and_then(|e| e.to_str()) == Some("zst");
+    let reader_box: Box<dyn Read> = if is_zst {
+        Box::new(zstd::stream::read::Decoder::new(file).expect("failed to initialize zstd decoder"))
+    } else {
+        Box::new(file)
+    };
+    let mut reader = BufferedReader::new(reader_box);
     let mut extractor = Extractor::new(&args);
 
     eprintln!(
-        "Scanning {} for up to {} positions (elo {}-{})...",
+        "Scanning {} for up to {} positions (elo {}-{}, skip-games {})...",
         args.input.display(),
         args.max_positions,
         if args.min_elo == 0 { "any".to_string() } else { args.min_elo.to_string() },
         if args.max_elo == 0 { "any".to_string() } else { args.max_elo.to_string() },
+        args.skip_games,
     );
 
     let mut games = 0u64;

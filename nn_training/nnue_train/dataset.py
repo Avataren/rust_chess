@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .features import cp_to_wdl_target, encode_board_12x64, encode_board_halfkp, HALFKP_FEATURE_DIM, FEATURE_DIM, encode_board_halfkp_dual
+from .features import cp_to_wdl_target, cp_to_wdl_batch, encode_board_12x64, encode_board_halfkp, HALFKP_FEATURE_DIM, FEATURE_DIM, encode_board_halfkp_dual
 
 
 class BinaryPositionDataset(Dataset):
@@ -101,7 +101,7 @@ class BinaryDualPositionDataset(Dataset):
 
     def __getitem__(self, idx: int):
         count = int(self.counts[idx])
-        SENTINEL = HALFKP_FEATURE_DIM  # 12288
+        SENTINEL = HALFKP_FEATURE_DIM  # 24576
 
         w_idx = np.full(32, SENTINEL, dtype=np.int64)
         b_idx = np.full(32, SENTINEL, dtype=np.int64)
@@ -121,6 +121,97 @@ class BinaryDualPositionDataset(Dataset):
             torch.from_numpy(cp),
             torch.from_numpy(wdl),
         )
+
+
+class GPUPreloadedDualDataset:
+    """Loads the entire dual-perspective dataset into GPU VRAM at startup.
+
+    Eliminates DataLoader worker overhead by serving shuffled batches directly
+    from GPU tensors with zero CPU→GPU transfer per batch. Best used when GPU
+    utilization is low and VRAM is available (model is too small to saturate GPU).
+
+    Memory: ~136 bytes/position  (indices×2 as int16, cp/wdl/pc as float32/int64).
+    Example: 77M positions ≈ 10.5 GB VRAM.
+
+    Drop-in replacement for DataLoader: supports len() and __iter__,
+    yielding (w_idx, b_idx, piece_count, cp, wdl) tuples with all tensors on GPU.
+    """
+
+    def __init__(
+        self,
+        path: str,
+        max_cp_abs: int,
+        device: torch.device,
+        batch_size: int,
+        shuffle: bool = True,
+    ):
+        prefix = str(Path(path).with_suffix(""))
+        SENTINEL = HALFKP_FEATURE_DIM  # 24576 — fits in int16 (max 32767)
+
+        print(f"  GPU preload: {Path(path).name} → {device}")
+
+        white_np = np.load(prefix + ".white_indices.npy", mmap_mode="r")  # (N, 32) uint16
+        black_np = np.load(prefix + ".black_indices.npy", mmap_mode="r")  # (N, 32) uint16
+        counts_np = np.load(prefix + ".counts.npy",       mmap_mode="r")  # (N,)    uint8
+        cp_raw_np = np.load(prefix + ".cp.npy",           mmap_mode="r")  # (N,)    float32
+        pc_path = prefix + ".piece_count.npy"
+        pc_np = np.load(pc_path, mmap_mode="r") if Path(pc_path).exists() else counts_np
+
+        N = len(cp_raw_np)
+
+        # Materialise mmap → RAM as int16 (uint16 values ≤24576 all fit in int16)
+        white_arr = white_np.astype(np.int16)
+        black_arr = black_np.astype(np.int16)
+        counts_arr = counts_np.astype(np.int32)
+
+        # Fill padding slots (positions ≥ count) with SENTINEL column by column.
+        # preprocess_dataset.py zero-initialises the npy arrays, so unused slots
+        # contain 0 — a valid feature index.  We must overwrite them with SENTINEL
+        # so EmbeddingBag (padding_idx=HALFKP_FEATURE_DIM) ignores them correctly.
+        for j in range(32):
+            mask = counts_arr <= j  # (N,) bool — rows where column j is padding
+            if mask.any():
+                white_arr[mask, j] = SENTINEL
+                black_arr[mask, j] = SENTINEL
+
+        # Precompute WDL targets and clip cp
+        cp_raw = np.asarray(cp_raw_np, dtype=np.float32)
+        cp_clipped = np.clip(cp_raw, -max_cp_abs, max_cp_abs)
+        wdl_np = cp_to_wdl_batch(cp_raw)  # (N, 3) float32
+
+        # Transfer to GPU
+        print(f"  Transferring {N:,} positions to GPU...", flush=True)
+        self.white_idx = torch.from_numpy(white_arr).to(device)                             # (N, 32) int16
+        self.black_idx = torch.from_numpy(black_arr).to(device)                             # (N, 32) int16
+        self.cp  = torch.from_numpy(cp_clipped).unsqueeze(1).to(device)                     # (N, 1)  float32
+        self.wdl = torch.from_numpy(wdl_np).to(device)                                     # (N, 3)  float32
+        self.pc  = torch.from_numpy(np.asarray(pc_np, dtype=np.int64)).unsqueeze(1).to(device)  # (N, 1) int64
+
+        self.N = N
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.device = device
+
+        mem_bytes = (self.white_idx.nbytes + self.black_idx.nbytes +
+                     self.cp.nbytes + self.wdl.nbytes + self.pc.nbytes)
+        print(f"  Loaded: {N:,} positions  ({mem_bytes / 1e9:.2f} GB GPU RAM)")
+
+    def __len__(self) -> int:
+        return (self.N + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        perm = (torch.randperm(self.N, device=self.device)
+                if self.shuffle else torch.arange(self.N, device=self.device))
+        for start in range(0, self.N, self.batch_size):
+            idx = perm[start : start + self.batch_size]
+            # Cast int16 → int64 on GPU (EmbeddingBag requires int64 indices)
+            yield (
+                self.white_idx[idx].to(torch.int64),
+                self.black_idx[idx].to(torch.int64),
+                self.pc[idx],
+                self.cp[idx],
+                self.wdl[idx],
+            )
 
 
 class JsonlPositionDataset(Dataset):

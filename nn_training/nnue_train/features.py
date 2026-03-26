@@ -185,3 +185,16 @@ def cp_to_wdl_target(cp: float) -> np.ndarray:
 
     s = p_win + draw + p_loss
     return np.array([p_win / s, draw / s, p_loss / s], dtype=np.float32)
+
+
+def cp_to_wdl_batch(cp: np.ndarray) -> np.ndarray:
+    """Vectorized cp_to_wdl_target over a numpy array. Returns (N, 3) float32."""
+    cp = np.asarray(cp, dtype=np.float32)
+    p_win = 1.0 / (1.0 + np.exp(-cp / 180.0))
+    p_loss = 1.0 - p_win
+    draw = np.clip(1.0 - np.abs(cp) / 800.0, 0.0, None)
+    non_draw = 1.0 - draw
+    p_win = p_win * non_draw
+    p_loss = p_loss * non_draw
+    s = p_win + draw + p_loss
+    return np.stack([p_win / s, draw / s, p_loss / s], axis=1).astype(np.float32)

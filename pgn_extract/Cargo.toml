@@ -16,3 +16,4 @@ pgn-reader = "0.24"
 shakmaty = "0.25"
 rand = "0.8"
 clap = { version = "4", features = ["derive"] }
+zstd = "0.13"

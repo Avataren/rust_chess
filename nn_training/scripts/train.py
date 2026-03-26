@@ -5,6 +5,10 @@ import argparse
 import random
 from pathlib import Path
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import numpy as np
 import torch
 import yaml
@@ -14,7 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from torch.utils.data import Sampler
-from nnue_train.dataset import BinaryPositionDataset, BinaryDualPositionDataset, JsonlPositionDataset
+from nnue_train.dataset import BinaryPositionDataset, BinaryDualPositionDataset, JsonlPositionDataset, GPUPreloadedDualDataset
 from nnue_train.model import EvalNet, EvalNetDual, get_output_bucket
 
 
@@ -294,67 +298,93 @@ def main():
 
     use_halfkp = cfg["model"].get("use_halfkp", False)
     dual = cfg["model"].get("dual_perspective", False)
-    train_ds = load_dataset(cfg["data"]["train_file"], cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
-    val_ds   = load_dataset(cfg["data"]["val_file"],   cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
+    preload_to_gpu = (cfg["training"].get("preload_to_gpu", False)
+                      and device.type == "cuda" and dual)
 
-
-    if len(train_ds) == 0:
-        raise ValueError("Training dataset is empty. Provide at least one training sample.")
-    if len(val_ds) == 0:
-        raise ValueError("Validation dataset is empty. Provide at least one validation sample.")
-
-    if len(train_ds) < cfg["training"]["batch_size"]:
-        print(
-            "Warning: train dataset is smaller than batch_size; "
-            "training will use a partial batch each epoch (drop_last=False)."
-        )
-
-    train_workers = int(cfg["training"]["workers"])
-    default_val_workers = 0 if train_workers == 0 else max(1, train_workers // 2)
-    val_workers = int(cfg["training"].get("val_workers", default_val_workers))
-    persistent = cfg["training"].get("persistent_workers", False) and train_workers > 0
-    prefetch = cfg["training"].get("prefetch_factor", 2) if train_workers > 0 else None
-
-    endgame_fraction = cfg["training"].get("endgame_fraction", None)
-    if endgame_fraction is not None:
-        from pathlib import Path as _Path
-        _prefix = str(_Path(cfg["data"]["train_file"]).with_suffix(""))
-        _pc = np.load(_prefix + ".piece_count.npy", mmap_mode="r").astype(np.int32)
-        _n_eg = int((_pc <= 16).sum())
-        print(f"Stratified sampling: endgame_fraction={endgame_fraction:.2f}  "
-              f"endgame={_n_eg:,} ({100*_n_eg/len(_pc):.1f}%)  "
-              f"midgame={len(_pc)-_n_eg:,}")
-        _sampler = StratifiedEndgameSampler(_pc, endgame_fraction)
-        train_loader = DataLoader(
-            train_ds,
-            batch_size=cfg["training"]["batch_size"],
-            sampler=_sampler,
-            num_workers=train_workers,
-            pin_memory=cfg["training"]["pin_memory"],
-            drop_last=False,
-            persistent_workers=persistent,
-            prefetch_factor=prefetch,
-        )
-    else:
-        train_loader = DataLoader(
-            train_ds,
+    if preload_to_gpu:
+        if cfg["training"].get("endgame_fraction"):
+            print("Warning: preload_to_gpu=true ignores endgame_fraction (not supported together)")
+        train_loader = GPUPreloadedDualDataset(
+            cfg["data"]["train_file"],
+            max_cp_abs=cfg["data"]["max_cp_abs"],
+            device=device,
             batch_size=cfg["training"]["batch_size"],
             shuffle=True,
-            num_workers=train_workers,
+        )
+        val_loader = GPUPreloadedDualDataset(
+            cfg["data"]["val_file"],
+            max_cp_abs=cfg["data"]["max_cp_abs"],
+            device=device,
+            batch_size=cfg["training"]["batch_size"],
+            shuffle=False,
+        )
+        if train_loader.N == 0:
+            raise ValueError("Training dataset is empty.")
+        if val_loader.N == 0:
+            raise ValueError("Validation dataset is empty.")
+        print(f"GPU preloaded: {train_loader.N:,} train  {val_loader.N:,} val  "
+              f"({len(train_loader)} / {len(val_loader)} batches/epoch)")
+    else:
+        train_ds = load_dataset(cfg["data"]["train_file"], cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
+        val_ds   = load_dataset(cfg["data"]["val_file"],   cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
+
+        if len(train_ds) == 0:
+            raise ValueError("Training dataset is empty. Provide at least one training sample.")
+        if len(val_ds) == 0:
+            raise ValueError("Validation dataset is empty. Provide at least one validation sample.")
+
+        if len(train_ds) < cfg["training"]["batch_size"]:
+            print(
+                "Warning: train dataset is smaller than batch_size; "
+                "training will use a partial batch each epoch (drop_last=False)."
+            )
+
+        train_workers = int(cfg["training"]["workers"])
+        default_val_workers = 0 if train_workers == 0 else max(1, train_workers // 2)
+        val_workers = int(cfg["training"].get("val_workers", default_val_workers))
+        persistent = cfg["training"].get("persistent_workers", False) and train_workers > 0
+        prefetch = cfg["training"].get("prefetch_factor", 2) if train_workers > 0 else None
+
+        endgame_fraction = cfg["training"].get("endgame_fraction", None)
+        if endgame_fraction is not None:
+            from pathlib import Path as _Path
+            _prefix = str(_Path(cfg["data"]["train_file"]).with_suffix(""))
+            _pc = np.load(_prefix + ".piece_count.npy", mmap_mode="r").astype(np.int32)
+            _n_eg = int((_pc <= 16).sum())
+            print(f"Stratified sampling: endgame_fraction={endgame_fraction:.2f}  "
+                  f"endgame={_n_eg:,} ({100*_n_eg/len(_pc):.1f}%)  "
+                  f"midgame={len(_pc)-_n_eg:,}")
+            _sampler = StratifiedEndgameSampler(_pc, endgame_fraction)
+            train_loader = DataLoader(
+                train_ds,
+                batch_size=cfg["training"]["batch_size"],
+                sampler=_sampler,
+                num_workers=train_workers,
+                pin_memory=cfg["training"]["pin_memory"],
+                drop_last=False,
+                persistent_workers=persistent,
+                prefetch_factor=prefetch,
+            )
+        else:
+            train_loader = DataLoader(
+                train_ds,
+                batch_size=cfg["training"]["batch_size"],
+                shuffle=True,
+                num_workers=train_workers,
+                pin_memory=cfg["training"]["pin_memory"],
+                drop_last=False,
+                persistent_workers=persistent,
+                prefetch_factor=prefetch,
+            )
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=cfg["training"]["batch_size"],
+            shuffle=False,
+            num_workers=val_workers,
             pin_memory=cfg["training"]["pin_memory"],
-            drop_last=False,
             persistent_workers=persistent,
             prefetch_factor=prefetch,
         )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=cfg["training"]["batch_size"],
-        shuffle=False,
-        num_workers=val_workers,
-        pin_memory=cfg["training"]["pin_memory"],
-        persistent_workers=persistent,
-        prefetch_factor=prefetch,
-    )
 
     mcfg = cfg["model"]
     if mcfg.get("dual_perspective", False):
@@ -426,7 +456,8 @@ def main():
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"DataLoader workers: train={train_workers}, val={val_workers}")
+    if not preload_to_gpu:
+        print(f"DataLoader workers: train={train_workers}, val={val_workers}")
 
     writer = SummaryWriter(log_dir=args.tb_logdir)
     print(f"TensorBoard logdir: {args.tb_logdir}")

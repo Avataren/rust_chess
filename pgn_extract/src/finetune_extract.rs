@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -276,7 +276,13 @@ fn main() {
     );
 
     let file = File::open(&input).expect("cannot open input PGN");
-    let mut reader = BufferedReader::new(file);
+    let is_zst = input.extension().and_then(|e| e.to_str()) == Some("zst");
+    let reader_box: Box<dyn Read> = if is_zst {
+        Box::new(zstd::stream::read::Decoder::new(file).expect("failed to initialize zstd decoder"))
+    } else {
+        Box::new(file)
+    };
+    let mut reader = BufferedReader::new(reader_box);
     let mut extractor = Extractor::new(args);
 
     loop {

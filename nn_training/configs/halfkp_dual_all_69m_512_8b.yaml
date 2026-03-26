@@ -1,0 +1,34 @@
+seed: 137
+
+training:
+  batch_size: 32768
+  epochs: 200
+  lr: 0.001
+  warmup_epochs: 5
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  workers: 8
+  pin_memory: true
+  amp: true
+  persistent_workers: true
+  prefetch_factor: 4
+  preload_to_gpu: true   # load all tensors into VRAM at startup; eliminates DataLoader overhead
+
+model:
+  input_dim: 24576
+  hidden_dim: 512
+  hidden2_dim: 32
+  dropout: 0.3
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  train_file: data/all_69m/train_all_69m.jsonl
+  val_file:   data/all_69m/val_all_69m.jsonl
+  max_cp_abs: 800
+# ~69M positions, 8 buckets, hidden_dim=512, hidden2_dim=32
+# Inference: requires HIDDEN1=512, HIDDEN2=32 in chess_evaluation/src/neural_eval.rs
