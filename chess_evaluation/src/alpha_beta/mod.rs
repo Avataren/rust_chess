@@ -668,7 +668,7 @@ pub fn alpha_beta(
     // singular_extension: true = extend TT move; se_singular_score/se_singular_beta for double ext.
     let (singular_extension, se_singular_score, se_singular_beta) = if ctx.excluded_move[p]
         .is_none()
-        && depth >= 6
+        && depth >= 5
         && ply > 0
         && !in_check
         && tt_move.is_some()
@@ -786,6 +786,16 @@ pub fn alpha_beta(
     ctx.ordering_scratch = scratch;
     // `killers` raw-pointer borrow of ctx ends here.
 
+    // Index boundary between good captures and bad captures in the ordered list.
+    // order_moves always lays out: [TT?] [good caps] [killers] [cm] [quiets] [bad caps].
+    // Killers, cm, and quiets are all non-captures, so any capture at
+    // move_index > non_bad_cap_end is necessarily a bad capture (SEE < 0).
+    // Must be read NOW: the first child alpha_beta call will overwrite ordering_scratch.
+    let non_bad_cap_end: usize = {
+        let tt_offset = if tt_move.is_some() { 1 } else { 0 };
+        tt_offset + ctx.ordering_scratch.good_captures.len()
+    };
+
     let mut best_move: Option<ChessMove> = None;
     let mut best_eval: i32 = if is_white { i32::MIN } else { i32::MAX };
     // Track moves tried so we can apply history malus to the ones that did
@@ -888,24 +898,37 @@ pub fn alpha_beta(
 
         // LMR reduction: R grows with depth and move index.
         // Reduce less for moves with high continuation history score (they're "interesting").
-        let lmr_r = if move_index >= 2 && depth >= 3 && is_quiet && !in_check {
-            let r = lmr_reduction(depth, move_index).max(1);
-            let r = if improving { r } else { r + 1 };
-            // Scale back reduction for moves that cont_hist considers good.
-            let ch_score = {
-                let mv_piece = piece_idx(chess_move);
-                let mv_to = chess_move.target_square() as usize;
-                let mut s = 0i32;
-                if let Some((pp, pt)) = prev1 {
-                    s += ch1.get(pp, pt, mv_piece, mv_to);
-                }
-                if let Some((pp, pt)) = prev2 {
-                    s += ch2.get(pp, pt, mv_piece, mv_to);
-                }
-                s
-            };
-            let r = if ch_score > 8_000 { (r - 1).max(0) } else { r };
-            r.min(depth - 1)
+        //
+        // Also applies to bad captures (SEE < 0): they appear after all quiets in the
+        // ordered list, so move_index > non_bad_cap_end identifies them without recomputing
+        // SEE.  Bad captures get a smaller reduction (ceiling of half the quiet LMR) since
+        // they are more forcing than quiets and may require closer inspection.
+        let is_bad_capture = is_capture && move_index > non_bad_cap_end;
+        let lmr_r = if move_index >= 2 && depth >= 3 && !in_check && (is_quiet || is_bad_capture) {
+            if is_quiet {
+                let r = lmr_reduction(depth, move_index).max(1);
+                let r = if improving { r } else { r + 1 };
+                // Scale back reduction for moves that cont_hist considers good.
+                let ch_score = {
+                    let mv_piece = piece_idx(chess_move);
+                    let mv_to = chess_move.target_square() as usize;
+                    let mut s = 0i32;
+                    if let Some((pp, pt)) = prev1 {
+                        s += ch1.get(pp, pt, mv_piece, mv_to);
+                    }
+                    if let Some((pp, pt)) = prev2 {
+                        s += ch2.get(pp, pt, mv_piece, mv_to);
+                    }
+                    s
+                };
+                let r = if ch_score > 8_000 { (r - 1).max(0) } else { r };
+                r.min(depth - 1)
+            } else {
+                // Bad capture: use ceiling(quiet_LMR / 2) as a conservative reduction.
+                // The re-search safety net ensures we never miss a good line.
+                let r = (lmr_reduction(depth, move_index) + 1) / 2;
+                r.max(1).min(depth - 1)
+            }
         } else {
             0
         };
