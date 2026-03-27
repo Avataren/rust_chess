@@ -13,6 +13,11 @@ Cargo.lock
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 web/wasm/assets
+web/wasm/chess.js
+web/wasm/chess.d.ts
+web/wasm/chess_bg.wasm
+web/wasm/chess_bg.wasm.d.ts
+web/wasm/snippets/
 arguments_log.txt
 lichess-bot/
 lichess_db_puzzle.csv.zst
