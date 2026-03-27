@@ -122,30 +122,62 @@ fn quiescence_inner<const IS_WHITE: bool>(
         &mut pseudo_buf,
     );
     ctx.pseudo_buf = pseudo_buf;
-    captures.sort();
 
-    for idx in 0..captures.len() {
-        let mut chess_move = captures[idx];
-        // Delta pruning: if even capturing the piece (plus a margin) can't
-        // improve the bound, skip this capture (saves SEE computation).
-        let cap_val = capture_value(chess_board, &chess_move)
-            + if chess_move.is_promotion() { 800 } else { 0 };
-        if IS_WHITE {
-            if stand_pat + cap_val + DELTA_MARGIN <= alpha { continue; }
+    // Score each capture by SEE (net material exchange) and sort best-first.
+    //
+    // Previously, captures.sort() was effectively a no-op: ChessMove::capture is
+    // never set by the move generator, so every capture sorted equally (score 0),
+    // producing arbitrary/generator order.  Proper SEE ordering lets alpha-beta
+    // find cutoffs much earlier in qsearch — typically the most valuable winning
+    // capture raises alpha/lowers beta quickly, pruning the remaining list.
+    //
+    // Promotions: SEE treats the attacker as a pawn throughout and misses the
+    // pawn→queen gain.  We compensate by adding 800 cp (queen 900 − pawn 100)
+    // so promotion captures sort to the front as they deserve.
+    //
+    // Buffer is reused across recursive qsearch calls via the ordering scratch:
+    // each level takes the Vec, clears, populates, and returns it, so no heap
+    // allocation occurs in the hot path.
+    let mut scored = std::mem::take(&mut ctx.ordering_scratch.good_captures);
+    scored.clear();
+    for &mv in captures.iter() {
+        let score = if mv.is_promotion() {
+            capture_value(chess_board, &mv) + 800
         } else {
-            if stand_pat - cap_val - DELTA_MARGIN >= beta { continue; }
+            see(
+                chess_board,
+                conductor,
+                mv.start_square() as usize,
+                mv.target_square() as usize,
+                IS_WHITE,
+            )
+        };
+        scored.push((score, mv));
+    }
+    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    captures.clear();
+    ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
+
+    for &(see_val, chess_move) in scored.iter() {
+        let mut chess_move = chess_move;
+
+        // Losing captures: break (list is sorted by SEE desc, so all remaining
+        // are also losing).
+        if see_val < 0 {
+            break;
         }
 
-        // SEE pruning: skip losing captures (SEE < 0).
-        if see(
-            chess_board,
-            conductor,
-            chess_move.start_square() as usize,
-            chess_move.target_square() as usize,
-            IS_WHITE,
-        ) < 0
-        {
-            continue;
+        // Delta pruning: even gaining `see_val` plus a safety margin cannot raise
+        // alpha (white) or lower beta (black).  Break because every subsequent
+        // capture has see_val ≤ this one (sorted), so the condition holds for all.
+        if IS_WHITE {
+            if stand_pat + see_val + DELTA_MARGIN <= alpha {
+                break;
+            }
+        } else {
+            if stand_pat - see_val - DELTA_MARGIN >= beta {
+                break;
+            }
         }
 
         ctx.make_move_with_acc(ply, &mut chess_move, chess_board);
@@ -164,24 +196,21 @@ fn quiescence_inner<const IS_WHITE: bool>(
 
         if IS_WHITE {
             if eval >= beta {
-                captures.clear();
-                ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
+                ctx.ordering_scratch.good_captures = scored;
                 return eval;
             }
             if eval > best { best = eval; }
             if eval > alpha { alpha = eval; }
         } else {
             if eval <= alpha {
-                captures.clear();
-                ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
+                ctx.ordering_scratch.good_captures = scored;
                 return eval;
             }
             if eval < best { best = eval; }
             if eval < beta { beta = eval; }
         }
     }
-    captures.clear();
-    ctx.move_lists[ply.min(MAX_PLY - 1)] = captures;
+    ctx.ordering_scratch.good_captures = scored;
     best
 }
 
