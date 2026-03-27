@@ -112,15 +112,26 @@ impl ChessBoard {
     /// Give the opponent a free move without moving any piece.
     /// Must always be followed by exactly one `undo_null_move()`.
     pub fn make_null_move(&mut self) {
+        let t = ZobristTable::get();
+        // XOR out current EP key before clearing it.
+        let old_ep_file: Option<u8> = if let Some(sq) = self.ep_target_from_fen {
+            Some(sq % 8)
+        } else {
+            self.get_last_move()
+                .filter(|m| m.has_flag(ChessMove::PAWN_TWO_UP_FLAG))
+                .map(|m| (m.target_square() % 8) as u8)
+        };
         // Sentinel with flag=0 (NO_FLAG): get_last_move() will not report
         // PAWN_TWO_UP_FLAG, erasing en-passant rights for the sub-search.
         let prev_ep = self.ep_target_from_fen.take();
         self.move_history.push((ChessMove::new(0, 0), self.castling_rights, self.halfmove_clock, self.fullmove_number, prev_ep));
         self.halfmove_clock += 1;
         self.white_is_active = !self.white_is_active;
-        // Incremental hash update: only the side-to-move bit changes.
-        let t = ZobristTable::get();
-        let new_hash = self.current_hash() ^ t.side_to_move;
+        // Incremental hash update: toggle side-to-move and remove EP key.
+        let mut new_hash = self.current_hash() ^ t.side_to_move;
+        if let Some(file) = old_ep_file {
+            new_hash ^= t.ep_file[file as usize];
+        }
         self.position_history.push(new_hash);
     }
 
@@ -180,6 +191,19 @@ impl ChessBoard {
         h ^= t.castling[(self.castling_rights & 0xF) as usize];
         if self.white_is_active {
             h ^= t.side_to_move;
+        }
+        // XOR in EP file if en passant is available in this position.
+        // EP availability comes from either the FEN-loaded square or the last
+        // move being a double pawn push.
+        let ep_file: Option<u8> = if let Some(sq) = self.ep_target_from_fen {
+            Some(sq % 8)
+        } else {
+            self.get_last_move()
+                .filter(|m| m.has_flag(ChessMove::PAWN_TWO_UP_FLAG))
+                .map(|m| (m.target_square() % 8) as u8)
+        };
+        if let Some(file) = ep_file {
+            h ^= t.ep_file[file as usize];
         }
         h
     }
@@ -422,6 +446,18 @@ impl ChessBoard {
         let mut h = self.current_hash();
         let t = ZobristTable::get();
 
+        // XOR out the EP key for the current position (before this move clears it).
+        let old_ep_file: Option<u8> = if let Some(sq) = self.ep_target_from_fen {
+            Some(sq % 8)
+        } else {
+            self.get_last_move()
+                .filter(|m| m.has_flag(ChessMove::PAWN_TWO_UP_FLAG))
+                .map(|m| (m.target_square() % 8) as u8)
+        };
+        if let Some(file) = old_ep_file {
+            h ^= t.ep_file[file as usize];
+        }
+
         if let Some(piece_type) = self.get_piece_type(start_square) {
             chess_move.set_piece(ChessPiece::new(piece_type, is_white));
 
@@ -554,6 +590,10 @@ impl ChessBoard {
         // XOR out old castling rights, XOR in new castling rights.
         h ^= t.castling[(old_castling_rights & 0xF) as usize];
         h ^= t.castling[(self.castling_rights & 0xF) as usize];
+        // XOR in new EP key if this double pawn push creates an EP opportunity.
+        if chess_move.has_flag(ChessMove::PAWN_TWO_UP_FLAG) {
+            h ^= t.ep_file[(target_square % 8) as usize];
+        }
         // Toggle side to move.
         h ^= t.side_to_move;
         self.position_history.push(h);
@@ -1002,6 +1042,24 @@ mod tests {
         board.undo_null_move();
         // Undo restores the original last move.
         assert!(board.get_last_move().map_or(false, |m| m.has_flag(ChessMove::PAWN_TWO_UP_FLAG)));
+    }
+
+    #[test]
+    fn ep_rights_affect_hash() {
+        // After 1.e4 the position has an EP right on e3 (file 4).
+        let mut board_with_ep = ChessBoard::new();
+        let mut mv = ChessMove::new_with_flag(12, 28, ChessMove::PAWN_TWO_UP_FLAG);
+        board_with_ep.make_move(&mut mv);
+
+        // Same piece layout but NO EP right (FEN omits the ep square).
+        let mut board_no_ep = ChessBoard::new();
+        board_no_ep.set_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+
+        assert_ne!(
+            board_with_ep.current_hash(),
+            board_no_ep.current_hash(),
+            "EP availability must change the Zobrist hash"
+        );
     }
 
     #[test]

@@ -11,6 +11,8 @@ pub struct ZobristTable {
     pub castling: [u64; 16],
     /// XORed in when it is white's turn
     pub side_to_move: u64,
+    /// One entry per en-passant file (0=a .. 7=h); XORed in when EP is available
+    pub ep_file: [u64; 8],
 }
 
 fn xorshift64(s: &mut u64) -> u64 {
@@ -38,10 +40,18 @@ impl ZobristTable {
             *c = next();
         }
 
+        let side_to_move = next();
+
+        let mut ep_file = [0u64; 8];
+        for e in ep_file.iter_mut() {
+            *e = next();
+        }
+
         ZobristTable {
             pieces,
             castling,
-            side_to_move: next(),
+            side_to_move,
+            ep_file,
         }
     }
 
