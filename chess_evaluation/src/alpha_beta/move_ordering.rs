@@ -73,13 +73,18 @@ pub(super) fn order_moves(
         let mv_is_capture = m.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG)
             || board.get_piece_at_square(m.target_square()).is_some();
         if mv_is_capture || m.is_promotion() {
-            let score = see(
+            let mut score = see(
                 board,
                 conductor,
                 m.start_square() as usize,
                 m.target_square() as usize,
                 is_white,
             );
+            // Promotion: add queen-minus-pawn gain so promotions are
+            // valued correctly (SEE only accounts for the pawn on the board).
+            if m.is_promotion() {
+                score += crate::see::SEE_QUEEN - crate::see::SEE_PAWN;
+            }
             if score >= 0 {
                 scratch.good_captures.push((score, m));
             } else {

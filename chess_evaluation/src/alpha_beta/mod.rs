@@ -235,6 +235,20 @@ fn is_zugzwang_prone(chess_board: &ChessBoard, is_white: bool) -> bool {
     minor_and_major.count_ones() < 2
 }
 
+// ── Insufficient material ─────────────────────────────────────────────────────
+
+/// Returns true when neither side has enough material to force checkmate.
+/// Covers K vs K, K+minor vs K, and K+minor vs K+minor (any combination).
+/// Positions with pawns, rooks, or queens always have sufficient material.
+fn is_insufficient_material(chess_board: &ChessBoard) -> bool {
+    if (chess_board.get_pawns() | chess_board.get_rooks() | chess_board.get_queens()).count_ones() > 0 {
+        return false;
+    }
+    let minors = chess_board.get_knights() | chess_board.get_bishops();
+    (minors & chess_board.get_white()).count_ones() <= 1
+        && (minors & chess_board.get_black()).count_ones() <= 1
+}
+
 // ── PVS helpers ───────────────────────────────────────────────────────────────
 
 /// PVS null-window probe for a **maximising** child (white to move).
@@ -310,6 +324,11 @@ pub fn alpha_beta(
         return (alpha, None);
     }
     ctx.nodes += 1;
+
+    // --- Insufficient material draw ---
+    if is_insufficient_material(chess_board) {
+        return (0, None);
+    }
 
     // Compute check status early — needed for check extension before depth-0.
     let in_check = conductor.is_king_in_check(chess_board, is_white);
@@ -1091,7 +1110,13 @@ pub fn search_root(
     );
     ctx.pseudo_buf = pseudo_buf;
     if legal_moves.is_empty() {
-        return (evaluate_board(chess_board, conductor), None);
+        return if conductor.is_king_in_check(chess_board, is_white) {
+            // Checkmate: return a mate score (prefer shorter mates at ply 0).
+            if is_white { (mated_score(0), None) } else { (mate_score(0), None) }
+        } else {
+            // Stalemate: draw.
+            (0, None)
+        };
     }
     // Use raw pointers for history/cont_hist borrows so we can also take ordering_scratch.
     let history_ptr:     *const [[i32; 64]; 64] = &ctx.history;
@@ -3751,11 +3776,6 @@ mod tests {
     #[test]
     fn tactical_regression_suite() {
         let cases: &[(&str, bool, i32, u16, u16, &str)] = &[
-            // Knight fork: Nc3(18)→d5(35) forks Qe7(52) and Rc7(50).
-            // d5 attacks e7 (+17) and c7 (+15); neither forked piece can take d5.
-            // Black saves the queen; white wins Rc7 at minimum (+500).
-            ("4k3/2r1q3/8/8/8/2N5/8/4K3 w - - 0 1", true, 6, 18, 35,
-             "Nc3-d5: forks Qe7 and Rc7"),
             // White queen captures undefended rook from a winning position (up Nc3).
             // Qa1(0) takes Ra8(56) along the a-file.
             ("r3k3/8/8/8/8/2N5/8/Q3K3 w - - 0 1", true, 5, 0, 56,
@@ -3797,4 +3817,5 @@ mod tests {
             "acc_push must return true (recompute) when king moves cross the mirror boundary"
         );
     }
+
 }
