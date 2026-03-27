@@ -254,7 +254,16 @@ pub fn drag_piece(
                     return;
                 };
 
-                piece_is_picked_up.is_dragging = true;
+                // Only mark as dragging once the piece leaves its original square,
+                // so a plain click-and-release keeps the tap-select state.
+                if let Some((drag_col, drag_row)) =
+                    board_coords_to_chess_coords(board_coords, board_dimensions.square_size)
+                {
+                    let (orig_row, orig_col) = piece_is_picked_up.original_row_col;
+                    if drag_row != orig_row || drag_col != orig_col {
+                        piece_is_picked_up.is_dragging = true;
+                    }
+                }
                 transform.translation = Vec3::new(
                     board_coords.x - board_dimensions.board_size.x / 2.0,
                     board_coords.y - board_dimensions.board_size.y / 2.0,
