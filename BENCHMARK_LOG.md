@@ -295,3 +295,68 @@ At equivalent time (~49s), depth 8 with proper ordering achieves **93.2%** vs 90
 
 **Weak spots:** `veryLong` (85.2%), `defensiveMove` (84.8%), `sacrifice` (88.2%)
 
+---
+
+## 2026-03-27 — 512×32×8 dual-perspective model on 69M positions (no dropout)
+
+**Changes:** Switched from 1024×64×8 (checkpoint_all_54m_1024_h64_8b_32kb) to a freshly trained
+512×32×8 dual-perspective model on the all_69m dataset. Key training fix: removed dropout (was 0.3,
+now 0.0) — high dropout was hurting convergence for NNUE given the large, diverse dataset.
+Inference HIDDEN1: 512, HIDDEN2: 32.
+
+**Reproduce:**
+```
+cargo run -p chess_evaluation --bin puzzle_bench --release -- \
+  --file lichess_db_puzzle.csv.zst \
+  --eval-file nn_training/artifacts/eval_all_69m_512_8b_nodrop.npz \
+  --count 2000 --min-rating 1000 --max-rating 2500 --depth 8 --seed 42
+```
+
+| Setting | Value |
+|---------|-------|
+| Depth | 8 |
+| Puzzles | 2000 (seed 42) |
+| Rating range | 1000–2500 |
+| Eval | NNUE nn-incremental (eval_all_69m_512_8b_nodrop.npz) |
+| Time | 28.1s (vs 48.7s with 1024×64×8 — 1.73× faster) |
+
+### Overall: 1816/2000 (90.8%) — 28.1s
+
+| Rating band | Solved | Total | % | Δ vs prev |
+|-------------|--------|-------|---|-----------|
+| 1000–1249 | 414 | 423 | 97.9% | −0.4pp |
+| 1250–1499 | 411 | 428 | 96.0% | −0.3pp |
+| 1500–1749 | 380 | 406 | 93.6% | −1.7pp |
+| 1750–1999 | 298 | 338 | 88.2% | −3.5pp |
+| 2000–2249 | 197 | 239 | 82.4% | −5.9pp |
+| 2250–2499 | 116 | 166 | 69.9% | −9.0pp |
+
+| Theme | Solved | Total | % |
+|-------|--------|-------|---|
+| short | 992 | 1058 | 93.8% |
+| endgame | 875 | 977 | 89.6% |
+| middlegame | 856 | 930 | 92.0% |
+| crushing | 773 | 882 | 87.6% |
+| advantage | 616 | 675 | 91.3% |
+| long | 528 | 611 | 86.4% |
+| mate | 411 | 424 | 96.9% |
+| master | 271 | 292 | 92.8% |
+| fork | 245 | 259 | 94.6% |
+| mateIn2 | 193 | 195 | 99.0% |
+| sacrifice | 140 | 170 | 82.4% |
+| veryLong | 134 | 162 | 82.7% |
+| mateIn1 | 151 | 156 | 96.8% |
+| oneMove | 151 | 156 | 96.8% |
+| advancedPawn | 131 | 147 | 89.1% |
+| pin | 130 | 143 | 90.9% |
+| kingsideAttack | 130 | 140 | 92.9% |
+| defensiveMove | 116 | 138 | 84.1% |
+| discoveredAttack | 129 | 138 | 93.5% |
+| deflection | 122 | 133 | 91.7% |
+
+**Notes:** Same overall solve rate (90.8%) as the larger 1024×64×8 model, but 1.73× faster due to
+smaller architecture. Regression at high ratings (2000+) suggests the smaller model has less
+positional understanding at complex positions. The solve rate gap widens with difficulty.
+
+**Weak spots:** `veryLong` (82.7%), `sacrifice` (82.4%), `defensiveMove` (84.1%)
+

@@ -27,12 +27,24 @@ use chess_evaluation::{
 static NNUE_WEIGHTS: &[u8] = include_bytes!("../eval.npz");
 
 #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
-fn init_nn() {
-    match chess_evaluation::init_neural_eval_from_bytes(NNUE_WEIGHTS) {
-        Ok(()) => {
+fn init_nn(eval_file: &str) {
+    let result = if eval_file.is_empty() {
+        chess_evaluation::init_neural_eval_from_bytes(NNUE_WEIGHTS)
+            .map(|_| NNUE_WEIGHTS.len())
+    } else {
+        std::fs::read(eval_file)
+            .map_err(|e| format!("cannot read {eval_file}: {e}"))
+            .and_then(|bytes| {
+                let n = bytes.len();
+                chess_evaluation::init_neural_eval_from_bytes(&bytes).map(|_| n)
+            })
+    };
+    match result {
+        Ok(n) => {
             #[cfg(feature = "runtime-switch")]
             chess_evaluation::set_neural_eval_enabled(true);
-            eprintln!("Neural eval loaded ({} KB).", NNUE_WEIGHTS.len() / 1024);
+            let src = if eval_file.is_empty() { "embedded" } else { eval_file };
+            eprintln!("Neural eval loaded from {src} ({} KB).", n / 1024);
         }
         Err(e) => eprintln!("warn: neural eval not loaded: {e}"),
     }
@@ -257,10 +269,15 @@ fn print_top_results(results: &[BenchResult], n: usize) {
 }
 
 fn main() {
-    #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
-    init_nn();
-
     let args: Vec<String> = std::env::args().collect();
+
+    let eval_file = args.windows(2)
+        .find(|w| w[0] == "--eval-file")
+        .map(|w| w[1].as_str())
+        .unwrap_or("");
+
+    #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
+    init_nn(eval_file);
 
     // --hash-sweep: predefined grid of hash sizes and thread counts at depth 12.
     // The right depth to show meaningful TT hit rate differences.
