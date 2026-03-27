@@ -145,7 +145,7 @@ async fn alpha_beta_task(
         // Opening book fast path (no worker needed).
         if let Some((from, to)) = book.probe(chess_board) {
             let mut legal = Vec::new();
-            get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal, &mut Vec::new());
+            get_all_legal_moves_for_color(chess_board, &conductor, is_white, &mut legal, &mut Vec::new());
             if let Some(bm) = legal
                 .into_iter()
                 .find(|m| m.start_square() == from && m.target_square() == to)

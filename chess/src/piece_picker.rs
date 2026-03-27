@@ -91,6 +91,7 @@ pub fn handle_touch_input(
 pub fn handle_mouse_input(
     q_windows: Query<&Window>,
     mouse_button_input: ResMut<'_, ButtonInput<MouseButton>>,
+    piece_is_picked_up: Res<PieceIsPickedUp>,
     mut chess_pickup_ew: MessageWriter<PickUpPieceEvent>,
     mut chess_drag_ew: MessageWriter<DragPieceEvent>,
     mut chess_drop_ew: MessageWriter<DropPieceEvent>,
@@ -98,9 +99,16 @@ pub fn handle_mouse_input(
     if let Some(window) = q_windows.iter().next() {
         if let Some(cursor_position) = window.cursor_position() {
             if mouse_button_input.just_pressed(MouseButton::Left) {
-                chess_pickup_ew.write(PickUpPieceEvent {
-                    position: cursor_position,
-                });
+                if piece_is_picked_up.is_tap_selected && !piece_is_picked_up.is_dragging {
+                    // Piece already selected — treat this click as the destination.
+                    chess_drop_ew.write(DropPieceEvent {
+                        position: cursor_position,
+                    });
+                } else {
+                    chess_pickup_ew.write(PickUpPieceEvent {
+                        position: cursor_position,
+                    });
+                }
             } else if mouse_button_input.pressed(MouseButton::Left) {
                 chess_drag_ew.write(DragPieceEvent {
                     position: cursor_position,
@@ -108,9 +116,12 @@ pub fn handle_mouse_input(
             }
 
             if mouse_button_input.just_released(MouseButton::Left) {
-                chess_drop_ew.write(DropPieceEvent {
-                    position: cursor_position,
-                });
+                // Only drop on release when dragging; tap-select mode drops on the next press.
+                if piece_is_picked_up.is_dragging {
+                    chess_drop_ew.write(DropPieceEvent {
+                        position: cursor_position,
+                    });
+                }
             }
         }
     }
