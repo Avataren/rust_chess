@@ -135,7 +135,7 @@ def main():
                     help="Number of iterations (0 = run forever)")
     ap.add_argument("--games-per-iter", type=int, default=5000,
                     help="Self-play games per iteration")
-    ap.add_argument("--positions-per-game", type=int, default=4,
+    ap.add_argument("--positions-per-game", type=int, default=10,
                     help="Positions sampled per self-play game")
     ap.add_argument("--movetime-ms", type=int, default=100,
                     help="Engine think time per move during self-play")

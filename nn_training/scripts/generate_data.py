@@ -171,7 +171,11 @@ def _selfplay_worker(args: tuple) -> list[str]:
                     states.append(board.fen())
             if states:
                 k = min(positions_per_game, len(states))
-                out.extend(random.sample(states, k))
+                # Sample evenly across the game arc so all phases
+                # (opening→middlegame→endgame) are represented, giving
+                # each of the 8 material buckets a fair share.
+                step = len(states) / k
+                out.extend(states[int(i * step)] for i in range(k))
         return out
     finally:
         engine.quit()
