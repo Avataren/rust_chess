@@ -212,8 +212,6 @@ def main():
                     help="Parallel self-play engine instances (default 32)")
     ap.add_argument("--pool-size", type=int, default=1_000_000,
                     help="Max positions kept in the replay pool")
-    ap.add_argument("--neural-mae-threshold", type=float, default=80.0,
-                    help="Only use neural eval for self-play once val_cp_mae is below this (default 80)")
     ap.add_argument("--config", default="configs/finetune.yaml")
     ap.add_argument("--artifacts-dir", default="artifacts")
     # ── Evaluation ────────────────────────────────────────────────────────────
@@ -276,12 +274,9 @@ def main():
         print(f"[loop] Iteration {iteration}")
         print(f"{'='*60}")
 
-        # 1. Export current best weights (always, in case we need them)
+        # 1. Export current best weights for self-play
         npz_path = artifacts / "loop_weights.npz"
         export_weights(best_ck, npz_path)
-
-        use_neural = best_mae < args.neural_mae_threshold
-        print(f"[loop] Self-play engine: {'neural' if use_neural else 'classical'} eval  (mae={best_mae:.1f}, threshold={args.neural_mae_threshold})")
 
         # 2. Generate self-play data (skip if already done — supports resume)
         new_data = Path(f"data/selfplay_iter{iteration}.jsonl")
@@ -290,7 +285,7 @@ def main():
         else:
             generate_data(
                 engine_path=args.engine,
-                npz_path=npz_path if use_neural else None,
+                npz_path=npz_path,
                 stockfish_path=args.stockfish,
                 output_path=new_data,
                 games=args.games_per_iter,
