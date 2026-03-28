@@ -178,6 +178,7 @@ def fine_tune(
         [sys.executable, "scripts/train.py",
          "--config", config,
          "--resume", str(checkpoint_path),
+         "--reset-best-val",
          "--out", str(out_checkpoint),
          "--tb-logdir", tb_logdir,
          ],
