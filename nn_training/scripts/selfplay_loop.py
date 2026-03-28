@@ -48,6 +48,68 @@ def export_weights(checkpoint_path: Path, npz_path: Path):
     )
 
 
+def puzzle_score(bench_binary: str, puzzle_file: str, npz_path: Path,
+                 count: int, depth: int, seed: int,
+                 min_rating: int = 0, max_rating: int = 0) -> float:
+    """Run puzzle_bench and return the overall solve rate (0.0–100.0).
+    Returns -1.0 if the binary or puzzle file is not available."""
+    if not bench_binary or not puzzle_file:
+        return -1.0
+    cmd = [bench_binary,
+           "--file",      puzzle_file,
+           "--eval-file", str(npz_path),
+           "--count",     str(count),
+           "--depth",     str(depth),
+           "--seed",      str(seed)]
+    if min_rating > 0:
+        cmd += ["--min-rating", str(min_rating)]
+    if max_rating > 0:
+        cmd += ["--max-rating", str(max_rating)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    for line in result.stdout.splitlines():
+        if "Overall:" in line:
+            # Format: "  Overall:  solved/total  (pct%)"
+            pct_str = line.split("(")[-1].rstrip("%)").strip()
+            try:
+                return float(pct_str)
+            except ValueError:
+                pass
+    return -1.0
+
+
+def selfplay_winrate(selfplay_binary: str, engine_path: str,
+                     candidate_npz: Path, baseline_npz: Path,
+                     games: int, movetime_ms: int) -> float:
+    """Pit candidate vs baseline using the self_play binary.
+    Returns candidate score (0.0–100.0, draws count 0.5) or -1.0 if unavailable."""
+    if not selfplay_binary:
+        return -1.0
+    result = subprocess.run(
+        [selfplay_binary,
+         engine_path, engine_path,
+         "--games",        str(games),
+         "--movetime",     str(movetime_ms),
+         "--no-ponder",
+         "--engine1-opt",  f"EvalFile={candidate_npz}",
+         "--engine1-opt",  "NeuralEval=true",
+         "--engine1-opt",  "Threads=2",
+         "--engine2-opt",  f"EvalFile={baseline_npz}",
+         "--engine2-opt",  "NeuralEval=true",
+         "--engine2-opt",  "Threads=2",
+         ],
+        capture_output=True, text=True,
+    )
+    for line in result.stdout.splitlines():
+        if "score:" in line and "%" in line:
+            # Format: "  chess_uci score: 81.5%"
+            pct_str = line.split(":")[-1].strip().rstrip("%")
+            try:
+                return float(pct_str)
+            except ValueError:
+                pass
+    return -1.0
+
+
 def generate_data(
     engine_path: str,
     npz_path: Path | None,
@@ -153,6 +215,29 @@ def main():
                     help="Only use neural eval for self-play once val_cp_mae is below this (default 80)")
     ap.add_argument("--config", default="configs/finetune.yaml")
     ap.add_argument("--artifacts-dir", default="artifacts")
+    # ── Evaluation ────────────────────────────────────────────────────────────
+    ap.add_argument("--puzzle-binary", default="",
+                    help="Path to puzzle_bench binary for promotion gating")
+    ap.add_argument("--puzzle-file", default="",
+                    help="Path to lichess puzzle CSV (.zst) for benchmarking")
+    ap.add_argument("--puzzle-count", type=int, default=1000,
+                    help="Puzzles to solve per eval (default 1000)")
+    ap.add_argument("--puzzle-depth", type=int, default=7,
+                    help="Search depth for puzzle bench (default 7)")
+    ap.add_argument("--puzzle-min-rating", type=int, default=1500,
+                    help="Minimum puzzle rating for eval (default 1500, filters trivial puzzles)")
+    ap.add_argument("--puzzle-max-rating", type=int, default=0,
+                    help="Maximum puzzle rating for eval (default 0 = no limit)")
+    ap.add_argument("--puzzle-regression-tolerance", type=float, default=1.0,
+                    help="Allow puzzle score to be up to this %% below best before rejecting (default 1.0)")
+    ap.add_argument("--selfplay-binary", default="",
+                    help="Path to self_play binary for head-to-head eval")
+    ap.add_argument("--selfplay-eval-games", type=int, default=20,
+                    help="Games for head-to-head eval (default 20, ~50 for statistical confidence)")
+    ap.add_argument("--selfplay-eval-movetime", type=int, default=100,
+                    help="Movetime ms for head-to-head eval games (default 100)")
+    ap.add_argument("--selfplay-min-winrate", type=float, default=45.0,
+                    help="Minimum self-play win rate %% to count as not-a-regression (default 45.0)")
     args = ap.parse_args()
 
     artifacts = Path(args.artifacts_dir)
@@ -164,6 +249,17 @@ def main():
 
     best_mae = load_val_mae(best_ck)
     print(f"[loop] Starting from {best_ck}  val_cp_mae={best_mae:.1f}")
+
+    # Export initial weights so puzzle/selfplay eval can baseline against them.
+    best_npz = artifacts / "best_weights.npz"
+    export_weights(best_ck, best_npz)
+    best_puzzle = puzzle_score(
+        args.puzzle_binary, args.puzzle_file, best_npz,
+        args.puzzle_count, args.puzzle_depth, seed=0,
+        min_rating=args.puzzle_min_rating, max_rating=args.puzzle_max_rating,
+    )
+    if best_puzzle >= 0:
+        print(f"[loop] Initial puzzle score: {best_puzzle:.1f}%")
 
     pool_file = Path("data/selfplay_pool.jsonl")
     pool_file.parent.mkdir(exist_ok=True)
@@ -230,17 +326,70 @@ def main():
             print(f"[loop] Iteration {iteration}: no improvement during fine-tune — continuing from current best.")
         else:
             candidate_mae = load_val_mae(candidate_ck)
-            print(f"[loop] Iteration {iteration}: candidate={candidate_mae:.1f}cp  best={best_mae:.1f}cp")
-            # Always advance to the latest checkpoint so training accumulates.
-            # Only export to eval.npz (for deployment) when we actually improve.
-            best_ck = candidate_ck
-            if candidate_mae < best_mae:
-                best_mae = candidate_mae
-                shutil.copy(candidate_ck, artifacts / "best_checkpoint.pt")
-                export_weights(artifacts / "best_checkpoint.pt", artifacts / "eval.npz")
-                print(f"[loop] Improved! New best={best_mae:.1f}cp — exported weights → {artifacts / 'eval.npz'}")
+            candidate_npz = artifacts / f"candidate_iter{iteration}.npz"
+            export_weights(candidate_ck, candidate_npz)
+
+            # ── Evaluate candidate strength ───────────────────────────────
+            cand_puzzle = puzzle_score(
+                args.puzzle_binary, args.puzzle_file, candidate_npz,
+                args.puzzle_count, args.puzzle_depth, seed=iteration,
+                min_rating=args.puzzle_min_rating, max_rating=args.puzzle_max_rating,
+            )
+            cand_winrate = selfplay_winrate(
+                args.selfplay_binary, args.engine,
+                candidate_npz, best_npz,
+                args.selfplay_eval_games, args.selfplay_eval_movetime,
+            )
+
+            print(f"[loop] Iteration {iteration}: candidate mae={candidate_mae:.1f}cp  best mae={best_mae:.1f}cp")
+            if cand_puzzle >= 0:
+                print(f"[loop] Puzzle score: candidate={cand_puzzle:.1f}%  best={best_puzzle:.1f}%")
+            if cand_winrate >= 0:
+                print(f"[loop] Self-play win rate (candidate vs best): {cand_winrate:.1f}%")
+
+            # ── Promotion decision ────────────────────────────────────────
+            # val_cp_mae on the self-play pool is a circular signal (model fits
+            # its own data) and is NOT used for promotion.  Use external signals:
+            #   - puzzle score >= best (equal or better tactical ability)
+            #   - self-play win rate >= min_winrate (not a regression in play)
+            # Both signals must pass when both tools are configured.
+            # Falls back to each individual signal if only one is available.
+            # If neither tool is configured, always promote with a warning.
+            puzzle_ok   = cand_puzzle  >= best_puzzle - args.puzzle_regression_tolerance  if cand_puzzle  >= 0 and best_puzzle >= 0 else None
+            winrate_ok  = cand_winrate >= args.selfplay_min_winrate                      if cand_winrate >= 0                     else None
+
+            if puzzle_ok is not None and winrate_ok is not None:
+                promoted = puzzle_ok and winrate_ok
+                reason = (f"puzzle {cand_puzzle:.1f}%>={best_puzzle - args.puzzle_regression_tolerance:.1f}%"
+                          f" AND win rate {cand_winrate:.1f}%>={args.selfplay_min_winrate:.0f}%")
+            elif puzzle_ok is not None:
+                promoted = puzzle_ok
+                reason = f"puzzle {cand_puzzle:.1f}% >= {best_puzzle - args.puzzle_regression_tolerance:.1f}%"
+            elif winrate_ok is not None:
+                promoted = winrate_ok
+                reason = f"win rate {cand_winrate:.1f}% >= {args.selfplay_min_winrate:.0f}%"
             else:
-                print(f"[loop] No MAE improvement, but advancing training base to iteration checkpoint.")
+                promoted = True
+                reason = "no eval tools configured — always promoting"
+                print("[loop] WARNING: no --puzzle-binary or --selfplay-binary configured; "
+                      "promotion is unconditional.")
+
+            # Always advance the training base so learning accumulates.
+            best_ck = candidate_ck
+            best_mae = candidate_mae
+
+            if promoted:
+                if cand_puzzle >= 0:
+                    best_puzzle = cand_puzzle
+                best_npz = candidate_npz
+                shutil.copy(candidate_ck, artifacts / "best_checkpoint.pt")
+                shutil.copy(candidate_npz, artifacts / "eval.npz")
+                print(f"[loop] Promoted! ({reason}) — exported weights → {artifacts / 'eval.npz'}")
+            else:
+                not_reason = reason.replace(">", "<=").replace("<", ">=")
+                print(f"[loop] Not promoted ({not_reason}), but advancing training base to iteration checkpoint.")
+                # Clean up candidate npz — best_npz still points to previous best.
+                candidate_npz.unlink(missing_ok=True)
 
     print(f"\n[loop] Done. Best val_cp_mae={best_mae:.1f}  checkpoint={best_ck}")
 
