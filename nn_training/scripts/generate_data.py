@@ -186,6 +186,8 @@ def main():
                     help="Optional UCI engine for self-play move generation (default: label engine)")
     ap.add_argument("--selfplay-engine-opt", action="append", default=[], metavar="NAME=VALUE",
                     help="UCI setoption for the self-play engine (repeatable)")
+    ap.add_argument("--selfplay-threads", type=int, default=1,
+                    help="Threads for the self-play engine (default 1)")
     ap.add_argument("--output", required=True, help="Output JSONL path")
     ap.add_argument("--pgn", help="Optional PGN source file")
     ap.add_argument("--fens", help="Optional pre-extracted FENs file (one FEN per line) — skips PGN scan")
@@ -248,13 +250,12 @@ def main():
         if args.selfplay_engine:
             selfplay_engine.quit()
             selfplay_engine = chess.engine.SimpleEngine.popen_uci(args.selfplay_engine)
-        if args.selfplay_engine_opt:
-            opts = {}
-            for opt in args.selfplay_engine_opt:
-                if "=" in opt:
-                    name, value = opt.split("=", 1)
-                    opts[name.strip()] = value.strip()
-            selfplay_engine.configure(opts)
+        opts = {"Threads": str(args.selfplay_threads)}
+        for opt in args.selfplay_engine_opt:
+            if "=" in opt:
+                name, value = opt.split("=", 1)
+                opts[name.strip()] = value.strip()
+        selfplay_engine.configure(opts)
 
         selfplay_cap = args.max_positions - len(fens)
         if selfplay_cap > 0:
