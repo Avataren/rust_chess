@@ -150,10 +150,18 @@ def selfplay_positions(
     min_ply: int,
     max_ply: int,
     positions_per_game: int = 1,
+    opening_plies: int = 10,
 ) -> list[chess.Board]:
     out: list[chess.Board] = []
     for _ in tqdm(range(games), desc="selfplay"):
         board = chess.Board()
+        # Play random opening moves to diversify starting positions so a
+        # deterministic engine doesn't replay the same game every time.
+        n_opening = random.randint(opening_plies - 2, opening_plies + 2)
+        for _ in range(n_opening):
+            if board.is_game_over():
+                break
+            board.push(random.choice(list(board.legal_moves)))
         states: list[chess.Board] = []
         for ply in range(max_ply):
             if board.is_game_over():
