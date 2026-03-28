@@ -137,7 +137,7 @@ def main():
                     help="Self-play games per iteration")
     ap.add_argument("--positions-per-game", type=int, default=4,
                     help="Positions sampled per self-play game")
-    ap.add_argument("--movetime-ms", type=int, default=50,
+    ap.add_argument("--movetime-ms", type=int, default=100,
                     help="Engine think time per move during self-play")
     ap.add_argument("--eval-depth", type=int, default=14,
                     help="Stockfish depth for labelling")
