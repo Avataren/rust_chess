@@ -57,6 +57,7 @@ def generate_data(
     positions_per_game: int,
     movetime_ms: int,
     eval_depth: int,
+    workers: int,
 ):
     print(f"[loop] Generating {games} self-play games → {output_path}")
     cmd = [sys.executable, "scripts/generate_data.py",
@@ -68,6 +69,7 @@ def generate_data(
            "--selfplay-movetime-ms", str(movetime_ms),
            "--eval-depth", str(eval_depth),
            "--max-positions", str(games * positions_per_game),
+           "--workers", str(workers),
            ]
     if npz_path is not None:
         cmd += [
@@ -133,8 +135,10 @@ def main():
                     help="Positions sampled per self-play game")
     ap.add_argument("--movetime-ms", type=int, default=50,
                     help="Engine think time per move during self-play")
-    ap.add_argument("--eval-depth", type=int, default=10,
+    ap.add_argument("--eval-depth", type=int, default=14,
                     help="Stockfish depth for labelling")
+    ap.add_argument("--workers", type=int, default=8,
+                    help="Parallel Stockfish labelling workers")
     ap.add_argument("--pool-size", type=int, default=1_000_000,
                     help="Max positions kept in the replay pool")
     ap.add_argument("--neural-mae-threshold", type=float, default=80.0,
@@ -185,6 +189,7 @@ def main():
             positions_per_game=args.positions_per_game,
             movetime_ms=args.movetime_ms,
             eval_depth=args.eval_depth,
+            workers=args.workers,
         )
 
         # 3. Append to replay pool
