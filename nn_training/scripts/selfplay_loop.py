@@ -137,7 +137,7 @@ def main():
                     help="Engine think time per move during self-play")
     ap.add_argument("--eval-depth", type=int, default=14,
                     help="Stockfish depth for labelling")
-    ap.add_argument("--workers", type=int, default=8,
+    ap.add_argument("--workers", type=int, default=24,
                     help="Parallel Stockfish labelling workers")
     ap.add_argument("--pool-size", type=int, default=1_000_000,
                     help="Max positions kept in the replay pool")
