@@ -5,6 +5,7 @@ import argparse
 import io
 import json
 import random
+import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Pool
 from pathlib import Path
@@ -149,7 +150,7 @@ def _selfplay_worker(args: tuple) -> list[str]:
     Returns FEN strings (picklable across process boundaries)."""
     engine_path, engine_opts, n_games, movetime_ms, min_ply, max_ply, positions_per_game, opening_plies, seed = args
     random.seed(seed)
-    engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+    engine = chess.engine.SimpleEngine.popen_uci(engine_path, stderr=subprocess.DEVNULL)
     try:
         engine.configure(engine_opts)
         out: list[str] = []
@@ -186,27 +187,32 @@ def selfplay_positions(
     positions_per_game: int = 1,
     opening_plies: int = 10,
     n_parallel: int = 1,
+    batch_size: int = 10,
 ) -> list[str]:
-    """Play self-play games across n_parallel engine instances, returning FENs."""
-    games_per_worker = max(1, games // n_parallel)
-    # Last worker picks up any remainder
-    worker_counts = [games_per_worker] * n_parallel
-    worker_counts[-1] += games - sum(worker_counts)
+    """Play self-play games across n_parallel engine instances, returning FENs.
+    Uses small batches so the progress bar updates frequently."""
+    # Split total games into small batches for responsive progress reporting.
+    batches = []
+    remaining = games
+    while remaining > 0:
+        n = min(batch_size, remaining)
+        batches.append(n)
+        remaining -= n
 
     worker_args = [
-        (engine_path, engine_opts, count, movetime_ms, min_ply, max_ply,
+        (engine_path, engine_opts, n, movetime_ms, min_ply, max_ply,
          positions_per_game, opening_plies, random.randint(0, 2**31))
-        for count in worker_counts
+        for n in batches
     ]
 
     out: list[str] = []
     with ProcessPoolExecutor(max_workers=n_parallel) as pool:
-        futures = {pool.submit(_selfplay_worker, a): i for i, a in enumerate(worker_args)}
+        futures = {pool.submit(_selfplay_worker, a): n for a, n in zip(worker_args, batches)}
         with tqdm(total=games, desc=f"selfplay ({n_parallel} workers)") as pbar:
             for fut in as_completed(futures):
                 fens = fut.result()
                 out.extend(fens)
-                pbar.update(worker_counts[futures[fut]])
+                pbar.update(futures[fut])
     return out
 
 
