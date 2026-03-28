@@ -11,10 +11,12 @@ training:
   amp: true
 
 model:
-  input_dim: 768
+  input_dim: 24576
   hidden_dim: 512
   hidden2_dim: 32
-  dropout: 0.1
+  dropout: 0.05
+  dual_perspective: true
+  n_output_buckets: 8
 
 loss:
   cp_weight: 0.3
