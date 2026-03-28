@@ -59,6 +59,7 @@ def generate_data(
     eval_depth: int,
     workers: int,
     selfplay_threads: int,
+    selfplay_parallel: int,
 ):
     print(f"[loop] Generating {games} self-play games → {output_path}")
     cmd = [sys.executable, "scripts/generate_data.py",
@@ -72,6 +73,7 @@ def generate_data(
            "--max-positions", str(games * positions_per_game),
            "--workers", str(workers),
            "--selfplay-threads", str(selfplay_threads),
+           "--selfplay-parallel", str(selfplay_parallel),
            ]
     if npz_path is not None:
         cmd += [
@@ -141,8 +143,10 @@ def main():
                     help="Stockfish depth for labelling")
     ap.add_argument("--workers", type=int, default=24,
                     help="Parallel Stockfish labelling workers")
-    ap.add_argument("--selfplay-threads", type=int, default=8,
-                    help="Threads for the self-play engine (default 8)")
+    ap.add_argument("--selfplay-threads", type=int, default=1,
+                    help="Threads per self-play engine instance (default 1)")
+    ap.add_argument("--selfplay-parallel", type=int, default=16,
+                    help="Parallel self-play engine instances (default 16)")
     ap.add_argument("--pool-size", type=int, default=1_000_000,
                     help="Max positions kept in the replay pool")
     ap.add_argument("--neural-mae-threshold", type=float, default=80.0,
@@ -182,20 +186,24 @@ def main():
         use_neural = best_mae < args.neural_mae_threshold
         print(f"[loop] Self-play engine: {'neural' if use_neural else 'classical'} eval  (mae={best_mae:.1f}, threshold={args.neural_mae_threshold})")
 
-        # 2. Generate self-play data
+        # 2. Generate self-play data (skip if already done — supports resume)
         new_data = Path(f"data/selfplay_iter{iteration}.jsonl")
-        generate_data(
-            engine_path=args.engine,
-            npz_path=npz_path if use_neural else None,
-            stockfish_path=args.stockfish,
-            output_path=new_data,
-            games=args.games_per_iter,
-            positions_per_game=args.positions_per_game,
-            movetime_ms=args.movetime_ms,
-            eval_depth=args.eval_depth,
-            workers=args.workers,
-            selfplay_threads=args.selfplay_threads,
-        )
+        if new_data.exists() and new_data.stat().st_size > 0:
+            print(f"[loop] Reusing existing {new_data} ({new_data.stat().st_size // 1024}KB) — skipping generation")
+        else:
+            generate_data(
+                engine_path=args.engine,
+                npz_path=npz_path if use_neural else None,
+                stockfish_path=args.stockfish,
+                output_path=new_data,
+                games=args.games_per_iter,
+                positions_per_game=args.positions_per_game,
+                movetime_ms=args.movetime_ms,
+                eval_depth=args.eval_depth,
+                workers=args.workers,
+                selfplay_threads=args.selfplay_threads,
+                selfplay_parallel=args.selfplay_parallel,
+            )
 
         # 3. Append to replay pool
         append_to_pool(new_data, pool_file, args.pool_size)

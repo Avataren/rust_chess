@@ -5,6 +5,7 @@ import argparse
 import io
 import json
 import random
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -143,36 +144,69 @@ def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_
 
 # ── Self-play position generator ───────────────────────────────────────────
 
+def _selfplay_worker(args: tuple) -> list[str]:
+    """Run in a subprocess — each worker owns its own engine instance.
+    Returns FEN strings (picklable across process boundaries)."""
+    engine_path, engine_opts, n_games, movetime_ms, min_ply, max_ply, positions_per_game, opening_plies, seed = args
+    random.seed(seed)
+    engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+    try:
+        engine.configure(engine_opts)
+        out: list[str] = []
+        for _ in range(n_games):
+            board = chess.Board()
+            n_opening = random.randint(opening_plies - 2, opening_plies + 2)
+            for _ in range(n_opening):
+                if board.is_game_over():
+                    break
+                board.push(random.choice(list(board.legal_moves)))
+            states: list[str] = []
+            for ply in range(max_ply):
+                if board.is_game_over():
+                    break
+                result = engine.play(board, chess.engine.Limit(time=movetime_ms / 1000.0))
+                board.push(result.move)
+                if ply >= min_ply:
+                    states.append(board.fen())
+            if states:
+                k = min(positions_per_game, len(states))
+                out.extend(random.sample(states, k))
+        return out
+    finally:
+        engine.quit()
+
+
 def selfplay_positions(
-    engine: chess.engine.SimpleEngine,
+    engine_path: str,
+    engine_opts: dict,
     games: int,
     movetime_ms: int,
     min_ply: int,
     max_ply: int,
     positions_per_game: int = 1,
     opening_plies: int = 10,
-) -> list[chess.Board]:
-    out: list[chess.Board] = []
-    for _ in tqdm(range(games), desc="selfplay"):
-        board = chess.Board()
-        # Play random opening moves to diversify starting positions so a
-        # deterministic engine doesn't replay the same game every time.
-        n_opening = random.randint(opening_plies - 2, opening_plies + 2)
-        for _ in range(n_opening):
-            if board.is_game_over():
-                break
-            board.push(random.choice(list(board.legal_moves)))
-        states: list[chess.Board] = []
-        for ply in range(max_ply):
-            if board.is_game_over():
-                break
-            result = engine.play(board, chess.engine.Limit(time=movetime_ms / 1000.0))
-            board.push(result.move)
-            if ply >= min_ply:
-                states.append(board.copy())
-        if states:
-            k = min(positions_per_game, len(states))
-            out.extend(random.sample(states, k))
+    n_parallel: int = 1,
+) -> list[str]:
+    """Play self-play games across n_parallel engine instances, returning FENs."""
+    games_per_worker = max(1, games // n_parallel)
+    # Last worker picks up any remainder
+    worker_counts = [games_per_worker] * n_parallel
+    worker_counts[-1] += games - sum(worker_counts)
+
+    worker_args = [
+        (engine_path, engine_opts, count, movetime_ms, min_ply, max_ply,
+         positions_per_game, opening_plies, random.randint(0, 2**31))
+        for count in worker_counts
+    ]
+
+    out: list[str] = []
+    with ProcessPoolExecutor(max_workers=n_parallel) as pool:
+        futures = {pool.submit(_selfplay_worker, a): i for i, a in enumerate(worker_args)}
+        with tqdm(total=games, desc=f"selfplay ({n_parallel} workers)") as pbar:
+            for fut in as_completed(futures):
+                fens = fut.result()
+                out.extend(fens)
+                pbar.update(worker_counts[futures[fut]])
     return out
 
 
@@ -187,7 +221,9 @@ def main():
     ap.add_argument("--selfplay-engine-opt", action="append", default=[], metavar="NAME=VALUE",
                     help="UCI setoption for the self-play engine (repeatable)")
     ap.add_argument("--selfplay-threads", type=int, default=1,
-                    help="Threads for the self-play engine (default 1)")
+                    help="Threads per self-play engine instance (default 1)")
+    ap.add_argument("--selfplay-parallel", type=int, default=1,
+                    help="Number of parallel self-play engine instances (default 1)")
     ap.add_argument("--output", required=True, help="Output JSONL path")
     ap.add_argument("--pgn", help="Optional PGN source file")
     ap.add_argument("--fens", help="Optional pre-extracted FENs file (one FEN per line) — skips PGN scan")
@@ -246,30 +282,27 @@ def main():
         pbar.close()
 
     if args.selfplay_games > 0:
-        selfplay_engine = chess.engine.SimpleEngine.popen_uci(args.label_engine)
-        if args.selfplay_engine:
-            selfplay_engine.quit()
-            selfplay_engine = chess.engine.SimpleEngine.popen_uci(args.selfplay_engine)
-        opts = {"Threads": str(args.selfplay_threads)}
+        sp_engine_path = args.selfplay_engine if args.selfplay_engine else args.label_engine
+        sp_opts: dict[str, str] = {"Threads": str(args.selfplay_threads)}
         for opt in args.selfplay_engine_opt:
             if "=" in opt:
                 name, value = opt.split("=", 1)
-                opts[name.strip()] = value.strip()
-        selfplay_engine.configure(opts)
+                sp_opts[name.strip()] = value.strip()
 
         selfplay_cap = args.max_positions - len(fens)
         if selfplay_cap > 0:
-            boards = selfplay_positions(
-                selfplay_engine,
+            sp_fens = selfplay_positions(
+                engine_path=sp_engine_path,
+                engine_opts=sp_opts,
                 games=args.selfplay_games,
                 movetime_ms=args.selfplay_movetime_ms,
                 min_ply=12,
                 max_ply=180,
                 positions_per_game=args.positions_per_game,
+                n_parallel=args.selfplay_parallel,
             )
-            random.shuffle(boards)
-            fens.extend(b.fen() for b in boards[:selfplay_cap])
-        selfplay_engine.quit()
+            random.shuffle(sp_fens)
+            fens.extend(sp_fens[:selfplay_cap])
 
     print(f"Collected {len(fens)} positions — labeling with {args.workers} worker(s) at depth {args.eval_depth}...")
 
