@@ -214,6 +214,62 @@ class GPUPreloadedDualDataset:
             )
 
 
+class JsonlDualPositionDataset(Dataset):
+    """Fallback dual-perspective JSONL dataset (no preprocessing required).
+
+    Returns (x_white, x_black, piece_count, cp, wdl) matching BinaryDualPositionDataset.
+    Slower than the binary dataset but works directly from JSONL files.
+    """
+
+    def __init__(self, path: str, max_cp_abs: int = 1500):
+        self.path = path
+        offsets = []
+        cp_values = []
+        cp_raw_values = []
+
+        with open(path, "rb") as f:
+            while True:
+                offset = f.tell()
+                line = f.readline()
+                if not line:
+                    break
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                cp_raw = float(row["cp"])
+                cp = max(-max_cp_abs, min(max_cp_abs, cp_raw))
+                offsets.append(offset)
+                cp_values.append(cp)
+                cp_raw_values.append(cp_raw)
+
+        self.offsets = np.array(offsets, dtype=np.int64)
+        self.cp_values = np.array(cp_values, dtype=np.float32)
+        self.cp_raw_values = np.array(cp_raw_values, dtype=np.float32)
+
+    def __len__(self) -> int:
+        return len(self.offsets)
+
+    def __getitem__(self, idx: int):
+        with open(self.path, "rb") as f:
+            f.seek(int(self.offsets[idx]))
+            line = f.readline()
+        row = json.loads(line)
+        board = chess.Board(row["fen"])
+
+        w_idx, b_idx = encode_board_halfkp_dual(board)
+        piece_count = np.array([len(board.piece_map())], dtype=np.int64)
+        cp = np.array([self.cp_values[idx]], dtype=np.float32)
+        wdl = cp_to_wdl_target(float(self.cp_raw_values[idx]))
+
+        return (
+            torch.from_numpy(w_idx),
+            torch.from_numpy(b_idx),
+            torch.from_numpy(piece_count),
+            torch.from_numpy(cp),
+            torch.from_numpy(wdl),
+        )
+
+
 class JsonlPositionDataset(Dataset):
     """Fallback JSONL dataset using byte offsets (no preprocessing required).
 

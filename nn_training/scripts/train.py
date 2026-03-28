@@ -18,7 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from torch.utils.data import Sampler
-from nnue_train.dataset import BinaryPositionDataset, BinaryDualPositionDataset, JsonlPositionDataset, GPUPreloadedDualDataset
+from nnue_train.dataset import BinaryPositionDataset, BinaryDualPositionDataset, JsonlPositionDataset, JsonlDualPositionDataset, GPUPreloadedDualDataset
 from nnue_train.model import EvalNet, EvalNetDual, get_output_bucket
 
 
@@ -60,6 +60,9 @@ def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool, dual: bool = Fals
     if all(Path(prefix + ext).exists() for ext in (".indices.npy", ".counts.npy", ".cp.npy")):
         print(f"  Loading binary dataset: {prefix}.*")
         return BinaryPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
+    if dual:
+        print(f"  Loading dual JSONL dataset: {path}  (run preprocess_dataset.py for faster training)")
+        return JsonlDualPositionDataset(path, max_cp_abs=max_cp_abs)
     print(f"  Loading JSONL dataset: {path}  (run preprocess_dataset.py for faster training)")
     return JsonlPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
 
