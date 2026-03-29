@@ -113,8 +113,14 @@ impl TranspositionTable {
     pub fn probe(&self, hash: u64) -> Option<TtEntry> {
         let idx = (hash as usize) % self.size;
         // Safety: benign data race — hash field validates the copy.
+        //
+        // The stored hash is XOR'd with the score bits (see store() below).
+        // This catches torn reads in Lazy SMP: if a helper thread's score
+        // lands in a slot while a new hash is being written (or vice-versa),
+        // the XOR check will almost certainly fail, preventing phantom mate
+        // scores from propagating to the root.
         let entry = unsafe { (&(*self.table.get()))[idx] };
-        if entry.hash == hash { Some(entry) } else { None }
+        if entry.hash ^ (entry.score as u32 as u64) == hash { Some(entry) } else { None }
     }
 
 
@@ -141,15 +147,21 @@ impl TranspositionTable {
         let age = self.age_of(&existing);
         // Effective depth of the existing entry, penalised by age.
         let existing_eff = existing.depth - age * AGE_COST;
+        // Decode the existing entry's hash (stored XOR'd with its score bits).
+        let existing_real_hash = existing.hash ^ (existing.score as u32 as u64);
         // Replace if: slot is empty, hash collision (different position), or
         // the new entry's depth beats the age-adjusted existing depth.
-        if existing.hash == 0 || existing.hash != hash || depth >= existing_eff {
+        if existing.hash == 0 || existing_real_hash != hash || depth >= existing_eff {
             // Preserve a previously-cached static eval if we don't have one now.
             let se = static_eval.unwrap_or_else(|| {
-                if existing.hash == hash { existing.static_eval } else { i32::MIN }
+                if existing_real_hash == hash { existing.static_eval } else { i32::MIN }
             });
+            // Store hash XOR'd with score bits so probe() can detect torn reads:
+            // if a concurrent reader sees the new hash but an old score (or vice-
+            // versa), the XOR check fails and the entry is silently discarded.
             table[idx] = TtEntry {
-                hash, depth, score, flag,
+                hash: hash ^ (score as u32 as u64),
+                depth, score, flag,
                 static_eval: se,
                 generation: self.generation.load(Ordering::Relaxed),
                 best_move_raw: best_move.map_or(0, |m| m.value()),

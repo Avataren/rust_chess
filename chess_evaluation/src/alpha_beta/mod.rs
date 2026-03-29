@@ -3818,4 +3818,111 @@ mod tests {
         );
     }
 
+    // ── Blunder regression: queen sacrifice on h4 ────────────────────────────
+
+    /// Reproducer: run with 5-second deadline + all threads to match lichess bot conditions.
+    /// Run with `cargo test -p chess_evaluation --release -- --nocapture --include-ignored qxh4_time_search`
+    #[test]
+    #[ignore = "requires src/eval.npz — run with --include-ignored"]
+    fn qxh4_time_search() {
+        use crate::alpha_beta::iterative_deepening::{iterative_deepening_root_with_tt, available_threads};
+        use web_time::Instant;
+        let bytes = match std::fs::read("../nn_training/artifacts/eval.npz")
+            .or_else(|_| std::fs::read("src/eval.npz"))
+        {
+            Ok(b) => b,
+            Err(e) => { println!("skipping: {e}"); return; }
+        };
+        let _ = crate::neural_eval::init_neural_eval_from_bytes(&bytes);
+        let was_enabled = crate::neural_eval::is_neural_eval_enabled();
+        crate::neural_eval::set_neural_eval_enabled(true);
+
+        let c = conductor();
+        let threads = 32.min(available_threads());
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let tt = TranspositionTable::new(TT_SIZE);
+        let mut board = ChessBoard::new();
+        board.set_from_fen("8/pQ3pkp/4p1p1/8/3q3P/6P1/P2n1PRK/4r3 b - - 4 44");
+
+        let on_depth = |depth: i32, score: i32, nodes: u64, ms: u128| {
+            println!("depth {depth:2}: score={score:8}  nodes={nodes}  time={ms}ms");
+        };
+        let r = iterative_deepening_root_with_tt(
+            &mut board, &c, None, &tt, 64, false,
+            Some(deadline), None, threads, Some(&on_depth), 0,
+        );
+        crate::neural_eval::set_neural_eval_enabled(was_enabled);
+
+        let mv = r.best_move.expect("Engine must return a move");
+        println!("FINAL: move={}→{}  score={}", mv.start_square(), mv.target_square(), r.score);
+        let is_qxh4 = mv.start_square() == 27 && mv.target_square() == 31;
+        assert!(!is_qxh4,
+            "Engine must NOT play Qxh4+ (27→31), score={}", r.score);
+        assert!(r.score.abs() < 999_000,
+            "Engine must not claim phantom mate, score={}", r.score);
+    }
+
+
+
+    /// Regression: engine must NOT sacrifice the queen on h4 in the position
+    /// from lichess.org/k2bHMzGh, move 44 (black to move after 44. Kh2).
+    ///
+    /// FEN: 8/pQ3pkp/4p1p1/8/3q3P/6P1/P2n1PRK/4r3 b - - 4 44
+    ///
+    /// Black's queen on d4 (sq 27) can capture the h4 pawn (sq 31) with Qxh4+,
+    /// but after gxh4 the queen is lost for just a pawn.  The engine erroneously
+    /// claimed "mate in 10" via this line — a phantom mate caused by NNUE
+    /// misevaluation.
+    ///
+    /// Run with: cargo test -p chess_evaluation -- --include-ignored black_does_not_blunder_queen_on_h4
+    #[test]
+    #[ignore = "requires src/eval.npz — run with --include-ignored"]
+    fn black_does_not_blunder_queen_on_h4() {
+        let bytes = match std::fs::read("../nn_training/artifacts/eval.npz")
+            .or_else(|_| std::fs::read("src/eval.npz"))
+        {
+            Ok(b) => b,
+            Err(e) => { println!("skipping: {e}"); return; }
+        };
+        let _ = crate::neural_eval::init_neural_eval_from_bytes(&bytes);
+        let was_enabled = crate::neural_eval::is_neural_eval_enabled();
+        crate::neural_eval::set_neural_eval_enabled(true);
+
+        let c = conductor();
+        let tt = TranspositionTable::new(1 << 20);
+        let mut ctx = SearchContext::new();
+        let mut board = ChessBoard::new();
+        board.set_from_fen("8/pQ3pkp/4p1p1/8/3q3P/6P1/P2n1PRK/4r3 b - - 4 44");
+        ctx.init_accumulators(&board);
+
+        let (score, mv) = alpha_beta(
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            7,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            false,
+            true,
+            None,
+        );
+        crate::neural_eval::set_neural_eval_enabled(was_enabled);
+
+        let mv = mv.expect("Engine must return a move");
+
+        // Qxh4+ (d4→h4, sq 27→31): queen sacrifice for a pawn — must be rejected.
+        let is_qxh4 = mv.start_square() == 27 && mv.target_square() == 31;
+        assert!(
+            !is_qxh4,
+            "Engine must NOT play Qxh4+ (sq 27→31, queen sacrifice for pawn), score={score}"
+        );
+        // Score must not be a phantom mate claim.
+        assert!(
+            score.abs() < 999_000,
+            "Engine must not claim a phantom mate in this position, score={score}"
+        );
+    }
+
 }
