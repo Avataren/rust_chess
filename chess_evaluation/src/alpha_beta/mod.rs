@@ -647,29 +647,16 @@ pub fn alpha_beta(
         }
     }
 
-    // --- Internal Iterative Deepening (IID) ---
-    // When there is no TT move at a high-depth node, move ordering is poor.
-    // A reduced search populates the TT so we get a useful move hint.
-    // Applied at depth >= 5 when not in check and the TT gave no move.
-    let tt_move = if tt_move.is_none() && depth >= 5 && !in_check && ctx.excluded_move[p].is_none()
-    {
-        alpha_beta(
-            chess_board,
-            conductor,
-            tt,
-            ctx,
-            depth - 2,
-            ply,
-            alpha,
-            beta,
-            is_white,
-            false, // no null move in IID to avoid recursion overhead
-            stop,
-        );
-        // Re-probe the TT — the reduced search will have stored its best move.
-        tt.probe(hash).and_then(|e| e.best_move())
+    // --- Internal Iterative Reduction (IIR) ---
+    // When there is no TT move at a high-depth node, move ordering will be
+    // suboptimal.  Rather than paying for a full depth-2 sub-search (IID),
+    // simply reduce the current depth by one.  This avoids a whole recursive
+    // sub-tree on every TT miss in the hot path, with minimal quality loss.
+    // SE fires only when tt_move.is_some(), so the two are mutually exclusive.
+    let depth = if tt_move.is_none() && depth >= 5 && !in_check && ctx.excluded_move[p].is_none() {
+        depth - 1
     } else {
-        tt_move
+        depth
     };
 
     // --- Singular Extensions ---
@@ -927,11 +914,14 @@ pub fn alpha_beta(
             if is_quiet {
                 let r = lmr_reduction(depth, move_index).max(1);
                 let r = if improving { r } else { r + 1 };
-                // Scale back reduction for moves that cont_hist considers good.
-                let ch_score = {
-                    let mv_piece = piece_idx(chess_move);
+                // Scale reduction by combined quiet history + continuation history.
+                // High combined score → reduce less (promising move).
+                // Low combined score → reduce more (repeatedly failed move).
+                let combined_score = {
+                    let mv_from = chess_move.start_square() as usize;
                     let mv_to = chess_move.target_square() as usize;
-                    let mut s = 0i32;
+                    let mv_piece = piece_idx(chess_move);
+                    let mut s = history[mv_from][mv_to];
                     if let Some((pp, pt)) = prev1 {
                         s += ch1.get(pp, pt, mv_piece, mv_to);
                     }
@@ -940,8 +930,7 @@ pub fn alpha_beta(
                     }
                     s
                 };
-                let r = if ch_score > 8_000 { (r - 1).max(0) } else { r };
-                r.min(depth - 1)
+                (r - combined_score / 8_192).clamp(0, depth - 1)
             } else {
                 // Bad capture: use ceiling(quiet_LMR / 2) as a conservative reduction.
                 // The re-search safety net ensures we never miss a good line.
