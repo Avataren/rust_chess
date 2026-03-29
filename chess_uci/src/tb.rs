@@ -209,3 +209,187 @@ pub fn probe_root(
 
     best_mv.map(|mv| (mv, rank_to_score(best_key.0), rank_to_label(best_key.0)))
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chess_board::FENParser;
+    use shakmaty::{Square, Position as _, Chess as SChess, CastlingMode as SCM, Move as SM};
+    use shakmaty::fen::Fen as SFen;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Build a ChessMoves vec from shakmaty's legal move generator for a FEN.
+    /// Used so probe_root (which calls match_shakmaty_move internally) can find
+    /// the best_move result inside the provided legal list.
+    fn shakmaty_legal_moves(fen_str: &str) -> Vec<ChessMove> {
+        let pos: SChess = fen_str.parse::<SFen>().unwrap()
+            .into_position(SCM::Standard).unwrap();
+        pos.legal_moves().into_iter().filter_map(|sm| {
+            let (from, to, flag) = match &sm {
+                SM::Normal { from, to, promotion, .. } => {
+                    let f = match promotion {
+                        Some(Role::Queen)  => ChessMove::PROMOTE_TO_QUEEN_FLAG,
+                        Some(Role::Knight) => ChessMove::PROMOTE_TO_KNIGHT_FLAG,
+                        Some(Role::Rook)   => ChessMove::PROMOTE_TO_ROOK_FLAG,
+                        Some(Role::Bishop) => ChessMove::PROMOTE_TO_BISHOP_FLAG,
+                        None               => ChessMove::NO_FLAG,
+                        _                  => return None,
+                    };
+                    (u16::from(*from), u16::from(*to), f)
+                }
+                SM::EnPassant { from, to } =>
+                    (u16::from(*from), u16::from(*to), ChessMove::EN_PASSANT_CAPTURE_FLAG),
+                SM::Castle { king, rook } => {
+                    let ks   = u16::from(*king);
+                    let rf   = u16::from(*rook) % 8;
+                    let rank = ks / 8;
+                    let kto  = rank * 8 + if rf == 7 { 6 } else { 2 };
+                    (ks, kto, ChessMove::CASTLE_FLAG)
+                }
+                _ => return None,
+            };
+            Some(ChessMove::new_with_flag(from, to, flag))
+        }).collect()
+    }
+
+    fn board_from_fen(fen: &str) -> ChessBoard {
+        let mut board = ChessBoard::new();
+        FENParser::set_board_from_fen(&mut board, fen);
+        board
+    }
+
+    // ── Unit tests: match_shakmaty_move (no TB files required) ───────────────
+
+    #[test]
+    fn match_normal_move() {
+        // e2→e4: file e=4, rank 2→4.  sq = rank*8+file → e2=12, e4=28.
+        let sm = SM::Normal {
+            role: Role::Pawn, from: Square::E2, to: Square::E4,
+            capture: None, promotion: None,
+        };
+        let mv = ChessMove::new(12, 28);
+        assert_eq!(match_shakmaty_move(&sm, &[mv]), Some(mv));
+    }
+
+    #[test]
+    fn match_normal_does_not_match_promotion_chessmove() {
+        // A shakmaty Normal move with no promotion must not match a ChessMove
+        // that carries a PROMOTE_TO_QUEEN_FLAG.
+        let sm = SM::Normal {
+            role: Role::Pawn, from: Square::E7, to: Square::E8,
+            capture: None, promotion: None,
+        };
+        let promo_mv = ChessMove::new_with_flag(52, 60, ChessMove::PROMOTE_TO_QUEEN_FLAG);
+        assert_eq!(match_shakmaty_move(&sm, &[promo_mv]), None);
+    }
+
+    #[test]
+    fn match_queen_promotion() {
+        // e7→e8=Q: e7=52, e8=60.
+        let sm = SM::Normal {
+            role: Role::Pawn, from: Square::E7, to: Square::E8,
+            capture: None, promotion: Some(Role::Queen),
+        };
+        let mv = ChessMove::new_with_flag(52, 60, ChessMove::PROMOTE_TO_QUEEN_FLAG);
+        assert_eq!(match_shakmaty_move(&sm, &[mv]), Some(mv));
+    }
+
+    #[test]
+    fn match_knight_promotion_not_confused_with_queen_promotion() {
+        let sm = SM::Normal {
+            role: Role::Pawn, from: Square::E7, to: Square::E8,
+            capture: None, promotion: Some(Role::Knight),
+        };
+        let queen_mv  = ChessMove::new_with_flag(52, 60, ChessMove::PROMOTE_TO_QUEEN_FLAG);
+        let knight_mv = ChessMove::new_with_flag(52, 60, ChessMove::PROMOTE_TO_KNIGHT_FLAG);
+        assert_eq!(match_shakmaty_move(&sm, &[queen_mv]),  None,       "must not match queen flag");
+        assert_eq!(match_shakmaty_move(&sm, &[knight_mv]), Some(knight_mv), "must match knight flag");
+    }
+
+    #[test]
+    fn match_white_kingside_castle() {
+        // E1(4) → G1(6),  rook on H1(7) → kingside (rook_file=7).
+        let sm = SM::Castle { king: Square::E1, rook: Square::H1 };
+        let mv = ChessMove::new_with_flag(4, 6, ChessMove::CASTLE_FLAG);
+        assert_eq!(match_shakmaty_move(&sm, &[mv]), Some(mv));
+    }
+
+    #[test]
+    fn match_white_queenside_castle() {
+        // E1(4) → C1(2),  rook on A1(0) → queenside (rook_file=0).
+        let sm = SM::Castle { king: Square::E1, rook: Square::A1 };
+        let mv = ChessMove::new_with_flag(4, 2, ChessMove::CASTLE_FLAG);
+        assert_eq!(match_shakmaty_move(&sm, &[mv]), Some(mv));
+    }
+
+    #[test]
+    fn match_black_kingside_castle() {
+        // E8(60) → G8(62),  rook on H8(63).
+        let sm = SM::Castle { king: Square::E8, rook: Square::H8 };
+        let mv = ChessMove::new_with_flag(60, 62, ChessMove::CASTLE_FLAG);
+        assert_eq!(match_shakmaty_move(&sm, &[mv]), Some(mv));
+    }
+
+    #[test]
+    fn match_returns_none_when_list_empty() {
+        let sm = SM::Normal {
+            role: Role::Queen, from: Square::D1, to: Square::D4,
+            capture: None, promotion: None,
+        };
+        assert_eq!(match_shakmaty_move(&sm, &[]), None);
+    }
+
+    // ── Integration tests (require Syzygy tablebases at /home/avataren/syzygy) ──
+
+    const SYZYGY_PATH: &str = "/home/avataren/syzygy";
+
+    /// KQvKR — Ka1 Qa4 vs ke5 re4 (4 pieces, white to move).
+    ///
+    /// Qa4xe4 is a legal queen move that captures the rook, BUT black can
+    /// immediately recapture: ke5xe4, leaving only Ka1 vs ke4 — a KvK draw.
+    /// The old WDL-only probe sorted captures first and returned Qa4xe4.
+    /// The DTZ-based probe must return a WINNING move, not Qa4xe4 (a4=24→e4=28).
+    #[test]
+    #[ignore = "requires Syzygy tablebases at /home/avataren/syzygy"]
+    fn tb_avoids_queen_sacrifice_that_leads_to_draw() {
+        init(SYZYGY_PATH).expect("tablebases not found at /home/avataren/syzygy");
+
+        let fen = "8/8/8/4k3/Q3r3/8/8/K7 w - - 0 1";
+        let board = board_from_fen(fen);
+        let legal = shakmaty_legal_moves(fen);
+
+        let result = probe_root(&board, &legal, 7);
+        assert!(result.is_some(), "TB must find a move in this 4-piece position");
+
+        let (mv, _score, label) = result.unwrap();
+        assert_eq!(label, "TB Win", "KQvKR should be a TB Win for white");
+
+        // a4=24 (rank 3 * 8 + file 0),  e4=28 (rank 3 * 8 + file 4)
+        assert!(
+            !(mv.start_square() == 24 && mv.target_square() == 28),
+            "TB must not play Qa4xe4, which allows ke5xe4 → KvK draw \
+             (got move {}-{})", mv.start_square(), mv.target_square()
+        );
+    }
+
+    /// KQvK — Ka3 Qd6 vs kh8 (3 pieces, trivially won for white).
+    /// TB must report a Win and return a legal move.
+    #[test]
+    #[ignore = "requires Syzygy tablebases at /home/avataren/syzygy"]
+    fn tb_kqk_reports_win() {
+        init(SYZYGY_PATH).expect("tablebases not found at /home/avataren/syzygy");
+
+        // Ka3=a3(16), Qd6=d6(43), kh8=h8(63); Qd6 does not attack kh8 (Δfile=4,Δrank=2)
+        let fen = "7k/8/3Q4/8/8/K7/8/8 w - - 0 1";
+        let board = board_from_fen(fen);
+        let legal = shakmaty_legal_moves(fen);
+
+        let result = probe_root(&board, &legal, 7);
+        assert!(result.is_some(), "TB must find a move in KQvK");
+        let (_mv, _score, label) = result.unwrap();
+        assert_eq!(label, "TB Win", "KQvK must always be a TB Win");
+    }
+}
