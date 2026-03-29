@@ -234,7 +234,7 @@ pub fn iterative_deepening_root_with_tt(
         helper_stop.store(true, Ordering::Release);
     });
 
-    result.total_nodes += helper_nodes.load(Ordering::Relaxed);
+    result.total_nodes += helper_nodes.load(Ordering::Acquire);
     result
 }
 
@@ -304,7 +304,7 @@ fn id_search_single(
                     stop.clone(),
                     noise_cp,
                 );
-                if stop.as_ref().map_or(false, |s| s.load(Ordering::Relaxed)) {
+                if stop.as_ref().map_or(false, |s| s.load(Ordering::Acquire)) {
                     break result;
                 }
                 if result.0 > lo && result.0 < hi {
@@ -343,7 +343,7 @@ fn id_search_single(
         };
 
         if let Some(ref s) = stop {
-            if s.load(Ordering::Relaxed) {
+            if s.load(Ordering::Acquire) {
                 if best.1.is_none() && result.1.is_some() {
                     best = result;
                 }
@@ -418,7 +418,7 @@ fn smp_helper(
             }
             if ext_stop
                 .as_ref()
-                .map_or(false, |s| s.load(Ordering::Relaxed))
+                .map_or(false, |s| s.load(Ordering::Acquire))
             {
                 stopped = true;
                 break;

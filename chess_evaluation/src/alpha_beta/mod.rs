@@ -320,7 +320,7 @@ pub fn alpha_beta(
     stop: Option<&'_ AtomicBool>,
 ) -> (i32, Option<ChessMove>) {
     // Abort immediately if the hard deadline fired.
-    if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
+    if stop.map_or(false, |s| s.load(Ordering::Acquire)) {
         return (alpha, None);
     }
     ctx.nodes += 1;
@@ -587,7 +587,7 @@ pub fn alpha_beta(
                     continue;
                 }
 
-                if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
+                if stop.map_or(false, |s| s.load(Ordering::Acquire)) {
                     break;
                 }
 
@@ -1170,7 +1170,7 @@ pub fn search_root(
     let mut best_score: i32 = if is_white { i32::MIN + 1 } else { i32::MAX };
 
     for (i, mut chess_move) in legal_moves.into_iter().enumerate() {
-        if stop.map_or(false, |s| s.load(Ordering::Relaxed)) {
+        if stop.map_or(false, |s| s.load(Ordering::Acquire)) {
             break;
         }
         // Record the root move as "previous move at ply 1" so that the
@@ -2649,7 +2649,7 @@ mod tests {
         let stop_c = Arc::clone(&stop);
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
-            stop_c.store(true, Ordering::Relaxed);
+            stop_c.store(true, Ordering::Release);
         });
         let r = iterative_deepening_root_with_tt(
             &mut board,

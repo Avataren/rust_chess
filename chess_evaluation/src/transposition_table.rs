@@ -15,7 +15,7 @@ pub enum TtFlag {
 const AGE_COST: i32 = 4;
 
 
-/// A transposition table entry — 24 bytes.
+/// A transposition table entry — 24 bytes, `#[repr(C)]` to lock the layout.
 ///
 /// The best move is stored as a raw `u16` (the `move_value` field of
 /// `ChessMove`) rather than `Option<ChessMove>`.  `Option<ChessMove>` costs
@@ -25,6 +25,28 @@ const AGE_COST: i32 = 4;
 /// `static_eval` caches the NN static evaluation of this position so that
 /// subsequent visits at any depth can skip the NN forward pass.
 /// `i32::MIN` is the sentinel meaning "not stored".
+///
+/// # Lazy SMP torn-read protection
+///
+/// `probe()` validates entries with a three-field XOR key stored inside `hash`:
+///
+///   `stored_hash = real_hash ^ score_bits ^ (best_move_raw << 32)`
+///
+/// This catches torn reads at the natural 8-byte granularity of the struct:
+///
+/// | Chunk | Bytes | Fields                                    | XOR-protected by |
+/// |-------|-------|-------------------------------------------|-----------------|
+/// |   0   |  0–7  | `hash`                                    | directly         |
+/// |   1   |  8–15 | `depth`, `score`                          | `score`          |
+/// |   2   | 16–23 | `static_eval`, `best_move_raw`, `gen`, `flag` | `best_move_raw` |
+///
+/// If any chunk comes from a different concurrent write the XOR check fails
+/// with overwhelming probability and the entry is silently discarded.
+///
+/// **`#[repr(C)]` is required** — it freezes this three-chunk layout across
+/// compiler versions.  A repr(Rust) reorder could place `score` and
+/// `best_move_raw` in the same chunk, leaving chunk 2 without coverage.
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TtEntry {
     pub hash:        u64,
@@ -32,13 +54,32 @@ pub struct TtEntry {
     pub score:       i32,
     /// Cached static (leaf) evaluation.  `i32::MIN` = not stored.
     pub static_eval: i32,
-    pub flag:        TtFlag,
-    /// Search generation that wrote this entry.
-    pub generation:  u8,
     /// Packed move: bits[5:0]=start, bits[11:6]=target, bits[15:12]=flag.
     /// 0 means no best move recorded.
     best_move_raw:   u16,
+    /// Search generation that wrote this entry.
+    pub generation:  u8,
+    pub flag:        TtFlag,
 }
+
+// Compile-time layout assertions: ensure the three XOR-protected fields
+// remain in separate 8-byte chunks as documented above.
+const _: () = assert!(std::mem::size_of::<TtEntry>() == 24);
+const _: () = {
+    use std::mem::offset_of;
+    // hash in chunk 0 (offset 0)
+    assert!(offset_of!(TtEntry, hash) / 8 == 0);
+    // score in chunk 1 (offset 8-15)
+    assert!(offset_of!(TtEntry, score) / 8 == 1);
+    // best_move_raw in chunk 2 (offset 16-23)
+    assert!(offset_of!(TtEntry, best_move_raw) / 8 == 2);
+    // depth co-resident with score (chunk 1) — implicitly protected
+    assert!(offset_of!(TtEntry, depth) / 8 == 1);
+    // flag/generation/static_eval co-resident with best_move_raw (chunk 2)
+    assert!(offset_of!(TtEntry, flag) / 8 == 2);
+    assert!(offset_of!(TtEntry, generation) / 8 == 2);
+    assert!(offset_of!(TtEntry, static_eval) / 8 == 2);
+};
 
 impl TtEntry {
     /// Decode the stored move.  Returns `None` when no best move was recorded.
