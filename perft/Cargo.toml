@@ -9,3 +9,4 @@ edition = "2021"
 chess_board = { path = "../chess_board" }
 move_generator = { path = "../move_generator" }
 chess_foundation = { path = "../chess_foundation" }
+

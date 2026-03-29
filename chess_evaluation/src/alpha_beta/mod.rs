@@ -3925,4 +3925,128 @@ mod tests {
         );
     }
 
+    // ── Blunder regression: ignored passed pawn in game kjfj24na ─────────────
+
+    /// Regression: engine must push the passed b3-pawn to b2 (or at least NOT
+    /// play the passive Qd1 queen shuffle) in the endgame from lichess.org/kjfj24na,
+    /// ply 88 (black to move after 44. d7).
+    ///
+    /// FEN: 8/3P1pp1/1k2p3/4P3/5n2/1p1P4/5PPP/2q1NK2 b - - 0 44
+    ///
+    /// Black is up a queen vs a knight, has a passed b3-pawn one step from
+    /// promotion, and white's d7-pawn is about to promote.  The winning move is
+    /// 44...b2 (b3→b2, sq 17→9): after 45. d8=Q+ <evasion> 46...b1=Q black
+    /// counter-promotes and wins.  The engine instead played 44...Qd1 (sq 2→3),
+    /// a passive shuffle that lets white's queen dominate and draw by perpetual
+    /// check.  The engine must push the b-pawn and race it to promotion rather
+    /// than ignoring it.
+    ///
+    /// Run with: cargo test -p chess_evaluation --release -- --nocapture --include-ignored b_pawn_advance_kjfj24na
+    #[test]
+    #[ignore = "requires src/eval.npz — run with --include-ignored"]
+    fn b_pawn_advance_kjfj24na() {
+        let bytes = match std::fs::read("../nn_training/artifacts/eval.npz")
+            .or_else(|_| std::fs::read("src/eval.npz"))
+        {
+            Ok(b) => b,
+            Err(e) => { println!("skipping: {e}"); return; }
+        };
+        let _ = crate::neural_eval::init_neural_eval_from_bytes(&bytes);
+        let was_enabled = crate::neural_eval::is_neural_eval_enabled();
+        crate::neural_eval::set_neural_eval_enabled(true);
+
+        let c = conductor();
+        let tt = TranspositionTable::new(1 << 22);
+        let mut ctx = SearchContext::new();
+        let mut board = ChessBoard::new();
+        // Position after 44. d7 — black to move.
+        // Black: Kb6, Qc1, Nf4, pawns b3/e6/f7/g7.
+        // White: Kf1, Ne1, pawns d3/d7/e5/f2/g2/h2.
+        // Winning plan: push b3→b2, then promote on b1 to counter white's d8=Q.
+        board.set_from_fen("8/3P1pp1/1k2p3/4P3/5n2/1p1P4/5PPP/2q1NK2 b - - 0 44");
+        ctx.init_accumulators(&board);
+
+        let (score, mv) = alpha_beta(
+            &mut board,
+            &c,
+            &tt,
+            &mut ctx,
+            10,
+            0,
+            i32::MIN + 1,
+            i32::MAX,
+            false,
+            true,
+            None,
+        );
+        crate::neural_eval::set_neural_eval_enabled(was_enabled);
+
+        let mv = mv.expect("Engine must return a move");
+        println!("move={}→{}  score={score}", mv.start_square(), mv.target_square());
+
+        // b3→b2 (sq 17→9): push the passed pawn toward promotion.
+        let is_b2_push = mv.start_square() == 17 && mv.target_square() == 9;
+        // Qd1 (sq 2→3): passive queen shuffle that lets white draw — must be rejected.
+        let is_qd1 = mv.start_square() == 2 && mv.target_square() == 3;
+
+        assert!(
+            !is_qd1,
+            "Engine must NOT play Qd1 (2→3): passive shuffle that lets white draw by perpetual check. score={score}"
+        );
+        assert!(
+            is_b2_push,
+            "Engine must push the passed pawn b3→b2 (sq 17→9) to race it toward promotion. \
+             Played {}→{} instead. score={score}",
+            mv.start_square(), mv.target_square()
+        );
+    }
+
+    /// Reproducer: run with 5-second deadline + all available threads to match
+    /// lichess bot conditions (kjfj24na, ply 88).
+    ///
+    /// Run with: cargo test -p chess_evaluation --release -- --nocapture --include-ignored b_pawn_advance_time_search
+    #[test]
+    #[ignore = "requires src/eval.npz — run with --include-ignored"]
+    fn b_pawn_advance_time_search() {
+        use crate::alpha_beta::iterative_deepening::{iterative_deepening_root_with_tt, available_threads};
+        use web_time::Instant;
+        let bytes = match std::fs::read("../nn_training/artifacts/eval.npz")
+            .or_else(|_| std::fs::read("src/eval.npz"))
+        {
+            Ok(b) => b,
+            Err(e) => { println!("skipping: {e}"); return; }
+        };
+        let _ = crate::neural_eval::init_neural_eval_from_bytes(&bytes);
+        let was_enabled = crate::neural_eval::is_neural_eval_enabled();
+        crate::neural_eval::set_neural_eval_enabled(true);
+
+        let c = conductor();
+        let threads = 32.min(available_threads());
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let tt = TranspositionTable::new(TT_SIZE);
+        let mut board = ChessBoard::new();
+        board.set_from_fen("8/3P1pp1/1k2p3/4P3/5n2/1p1P4/5PPP/2q1NK2 b - - 0 44");
+
+        let on_depth = |depth: i32, score: i32, nodes: u64, ms: u128| {
+            println!("depth {depth:2}: score={score:8}  nodes={nodes}  time={ms}ms");
+        };
+        let r = iterative_deepening_root_with_tt(
+            &mut board, &c, None, &tt, 64, false,
+            Some(deadline), None, threads, Some(&on_depth), 0,
+        );
+        crate::neural_eval::set_neural_eval_enabled(was_enabled);
+
+        let mv = r.best_move.expect("Engine must return a move");
+        println!("FINAL: move={}→{}  score={}", mv.start_square(), mv.target_square(), r.score);
+
+        let is_b2_push = mv.start_square() == 17 && mv.target_square() == 9;
+        let is_qd1 = mv.start_square() == 2 && mv.target_square() == 3;
+
+        assert!(!is_qd1,
+            "Engine must NOT play Qd1 (2→3): leads to draw by perpetual check. score={}", r.score);
+        assert!(is_b2_push,
+            "Engine must push the passed pawn b3→b2 (sq 17→9) to race toward promotion. \
+             Played {}→{} instead. score={}", mv.start_square(), mv.target_square(), r.score);
+    }
+
 }
