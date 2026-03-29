@@ -295,8 +295,8 @@ def main():
                     help="Minimum puzzle rating for eval (default 1500, filters trivial puzzles)")
     ap.add_argument("--puzzle-max-rating", type=int, default=0,
                     help="Maximum puzzle rating for eval (default 0 = no limit)")
-    ap.add_argument("--puzzle-regression-tolerance", type=float, default=1.0,
-                    help="Allow puzzle score to be up to this %% below best before rejecting (default 1.0)")
+    ap.add_argument("--puzzle-regression-tolerance", type=float, default=0.0,
+                    help="Allow puzzle score to be up to this %% below best before rejecting (default 0.0 — deterministic benchmark, no noise)")
     ap.add_argument("--puzzle-seed", type=int, default=42,
                     help="Fixed RNG seed for all puzzle evaluations — same puzzles every iteration (default 42)")
     ap.add_argument("--selfplay-binary", default="",
