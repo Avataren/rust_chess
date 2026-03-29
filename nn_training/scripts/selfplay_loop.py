@@ -209,6 +209,7 @@ def append_to_pool(new_data: Path, pool_file: Path, pool_size: int):
 
 def split_pool(pool_file: Path, train_file: Path, val_file: Path, val_fraction: float = 0.1):
     lines = pool_file.read_text(encoding="utf-8").splitlines(keepends=True)
+    random.shuffle(lines)
     n_val = max(1000, int(len(lines) * val_fraction))
     n_train = len(lines) - n_val
     train_file.write_text("".join(lines[:n_train]), encoding="utf-8")
@@ -390,6 +391,13 @@ def main():
             inject_anchor_data(Path(args.anchor_data), Path("data/train.jsonl"), args.anchor_size)
         elif args.anchor_data:
             print(f"[loop] WARNING: --anchor-data '{args.anchor_data}' not found — skipping anchor injection")
+
+        # 4c. Shuffle train.jsonl so anchor positions are distributed throughout.
+        train_path = Path("data/train.jsonl")
+        train_lines = train_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        random.shuffle(train_lines)
+        train_path.write_text("".join(train_lines), encoding="utf-8")
+        print(f"[loop] Shuffled {len(train_lines)} training positions")
 
         # 5. Fine-tune
         candidate_ck = artifacts / f"checkpoint_iter{iteration}.pt"
