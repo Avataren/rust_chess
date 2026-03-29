@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod tb;
+
 use chess_board::ChessBoard;
 use chess_evaluation::{
     init_neural_eval, is_neural_eval_enabled, is_neural_eval_initialized,
@@ -460,6 +462,10 @@ fn main() {
     let default_threads = max_threads.min(6);
     let mut num_threads: usize = default_threads;
 
+    // Syzygy tablebase probe limit: probe when piece count <= this value.
+    // 0 = disabled. Set automatically from tb::max_pieces() when SyzygyPath is loaded.
+    let mut syzygy_probe_limit: u32 = 0;
+
     let stop_flag = Arc::new(AtomicBool::new(false));
     let ponderhit_flag = Arc::new(AtomicBool::new(false));
     let mut search_handle: Option<thread::JoinHandle<()>> = None;
@@ -481,6 +487,8 @@ fn main() {
                 println!("option name EvalFile type string default <empty>");
                 println!("option name NeuralEval type check default false");
                 println!("option name NeuralConfidence type string default 0.0");
+                println!("option name SyzygyPath type string default <empty>");
+                println!("option name SyzygyProbeLimit type spin default 0 min 0 max 7");
                 println!("uciok");
             }
             "setoption" => {
@@ -533,6 +541,26 @@ fn main() {
                                 );
                             }
                         }
+                        "syzygypath" => {
+                            if !value.is_empty() && *value != "<empty>" {
+                                match tb::init(value) {
+                                    Ok(count) => {
+                                        // Auto-set probe limit from what's actually loaded.
+                                        syzygy_probe_limit = tb::max_pieces();
+                                        eprintln!(
+                                            "info string Loaded {count} Syzygy tablebase file(s) from {value} (probe limit: {syzygy_probe_limit} pieces)"
+                                        );
+                                    }
+                                    Err(e) => eprintln!("info string Syzygy load failed: {e}"),
+                                }
+                            }
+                        }
+                        "syzygyprobelimit" => {
+                            if let Ok(n) = value.parse::<u32>() {
+                                syzygy_probe_limit = n.min(7);
+                                eprintln!("info string SyzygyProbeLimit set to {syzygy_probe_limit}");
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -570,6 +598,23 @@ fn main() {
                 let is_ponder = tokens.contains(&"ponder");
                 let is_white = board.is_white_active();
                 let params = parse_go(&tokens[1..], is_white, move_number);
+
+                // Tablebase root probe — skip during ponder (we want to think, not just output).
+                if !is_ponder && syzygy_probe_limit > 0 {
+                    let mut legal = Vec::new();
+                    let mut board_for_tb = board.clone();
+                    get_all_legal_moves_for_color(
+                        &mut board_for_tb, &conductor, is_white, &mut legal, &mut Vec::new(),
+                    );
+                    if let Some((tb_move, score_cp, label)) =
+                        tb::probe_root(&board, &legal, syzygy_probe_limit)
+                    {
+                        println!("info depth 0 score cp {score_cp} nodes 1 time 0 string {label}");
+                        println!("bestmove {}", mv_to_uci(tb_move));
+                        let _ = io::stdout().flush();
+                        continue;
+                    }
+                }
 
                 let board_c     = board.clone();
                 let conductor_c = conductor.clone();

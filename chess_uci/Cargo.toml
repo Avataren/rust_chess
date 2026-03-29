@@ -15,3 +15,5 @@ chess_foundation = { path = "../chess_foundation" }
 chess_board     = { path = "../chess_board" }
 chess_evaluation = { workspace = true }
 move_generator  = { path = "../move_generator" }
+shakmaty        = "0.30"
+shakmaty-syzygy = "0.28"
