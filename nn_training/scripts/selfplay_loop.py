@@ -329,8 +329,9 @@ def main():
     print(f"[loop] Starting from {best_ck}  val_cp_mae={best_mae:.1f}")
 
     # Export initial weights and measure baseline puzzle score.
-    best_npz = artifacts / "best_weights.npz"
-    export_weights(best_ck, best_npz)
+    best_npz = artifacts / "eval.npz"
+    if not best_npz.exists():
+        export_weights(best_ck, best_npz)
     best_puzzle = puzzle_score(
         args.puzzle_binary, args.puzzle_file, best_npz,
         args.puzzle_count, args.puzzle_depth, seed=args.puzzle_seed,
@@ -353,9 +354,8 @@ def main():
         print(f"[loop] Iteration {iteration}")
         print(f"{'='*60}")
 
-        # 1. Export current best weights for self-play
-        npz_path = artifacts / "loop_weights.npz"
-        export_weights(best_ck, npz_path)
+        # 1. Use current best weights for self-play (eval.npz is always up to date)
+        npz_path = best_npz  # artifacts/eval.npz
 
         # 2. Generate self-play data (skip if already done — supports resume)
         new_data = Path(f"data/selfplay_iter{iteration}.jsonl")
@@ -472,9 +472,9 @@ def main():
                 best_ck = candidate_ck
                 best_mae = candidate_mae
                 best_puzzle = cand_puzzle
-                best_npz = candidate_npz
                 shutil.copy(candidate_ck, artifacts / "best_checkpoint.pt")
-                shutil.copy(candidate_npz, artifacts / "eval.npz")
+                shutil.copy(candidate_npz, best_npz)  # update eval.npz in place
+                candidate_npz.unlink(missing_ok=True)  # no longer needed; eval.npz has the content
                 print(f"[loop] Promoted! ({reason}) — exported weights → {artifacts / 'eval.npz'}")
             else:
                 not_reason = reason
