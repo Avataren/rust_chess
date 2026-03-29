@@ -356,6 +356,7 @@ pub fn alpha_beta(
     let halfmove_clock = chess_board.get_halfmove_clock();
     let original_alpha = alpha;
     let original_beta = beta;
+    let is_pv_node = original_alpha + 1 < original_beta;
     let p = ply.min(MAX_PLY - 1);
 
     // --- Mate distance pruning ---
@@ -472,6 +473,28 @@ pub fn alpha_beta(
             }
             if !is_white && se + margin <= alpha {
                 return (se, None);
+            }
+        }
+    }
+
+    // --- Razoring ---
+    // At depth 1, if the static eval is far below alpha (white) or far above
+    // beta (black) by a fixed 300 cp margin, run a qsearch.  If qsearch also
+    // fails low/high, prune the node immediately.
+    // Restricted to depth == 1 to avoid falsely pruning sacrificial lines.
+    // Skip at PV nodes to never miss forcing lines on the expected best path.
+    if let Some(se) = static_eval {
+        if depth == 1 && !in_check && ply > 0 && !is_pv_node {
+            let failing_low = if is_white {
+                se + 300 <= alpha
+            } else {
+                se - 300 >= beta
+            };
+            if failing_low {
+                let qscore = quiescence(chess_board, conductor, ctx, alpha, beta, is_white, static_eval, 12, ply);
+                if (is_white && qscore <= alpha) || (!is_white && qscore >= beta) {
+                    return (qscore, None);
+                }
             }
         }
     }
