@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import shutil
 import subprocess
 import sys
@@ -167,6 +168,24 @@ def split_pool(pool_file: Path, train_file: Path, val_file: Path, val_fraction: 
     print(f"[loop] Split: {n_train} train / {n_val} val")
 
 
+def inject_anchor_data(anchor_file: Path, train_file: Path, n: int):
+    """Sample n lines from anchor_file and append them to train_file.
+
+    Injecting a fixed slice of original training data each iteration prevents
+    long-term distributional drift: as the FIFO pool fills with self-play data
+    the model would otherwise eventually train only on its own distribution.
+    These anchor positions are never evicted from training (but not added to
+    the validation set, keeping val as a clean self-play signal).
+    """
+    lines = anchor_file.read_text(encoding="utf-8").splitlines(keepends=True)
+    if not lines:
+        return
+    sample = random.sample(lines, min(n, len(lines)))
+    with train_file.open("a", encoding="utf-8") as f:
+        f.writelines(sample)
+    print(f"[loop] Injected {len(sample)} anchor positions into training set")
+
+
 def fine_tune(
     checkpoint_path: Path,
     out_checkpoint: Path,
@@ -196,10 +215,10 @@ def main():
                     help="Starting checkpoint (.pt) — must already be trained")
     ap.add_argument("--iterations", type=int, default=0,
                     help="Number of iterations (0 = run forever)")
-    ap.add_argument("--games-per-iter", type=int, default=5000,
-                    help="Self-play games per iteration")
-    ap.add_argument("--positions-per-game", type=int, default=10,
-                    help="Positions sampled per self-play game")
+    ap.add_argument("--games-per-iter", type=int, default=3000,
+                    help="Self-play games per iteration (default 3000)")
+    ap.add_argument("--positions-per-game", type=int, default=15,
+                    help="Positions sampled per self-play game (default 15)")
     ap.add_argument("--movetime-ms", type=int, default=100,
                     help="Engine think time per move during self-play")
     ap.add_argument("--eval-depth", type=int, default=14,
@@ -210,8 +229,8 @@ def main():
                     help="Threads per self-play engine instance (default 1)")
     ap.add_argument("--selfplay-parallel", type=int, default=32,
                     help="Parallel self-play engine instances (default 32)")
-    ap.add_argument("--pool-size", type=int, default=1_000_000,
-                    help="Max positions kept in the replay pool")
+    ap.add_argument("--pool-size", type=int, default=750_000,
+                    help="Max positions kept in the replay pool (default 750000 — new data is ~6%% per iter)")
     ap.add_argument("--config", default="configs/finetune.yaml")
     ap.add_argument("--artifacts-dir", default="artifacts")
     # ── Evaluation ────────────────────────────────────────────────────────────
@@ -219,8 +238,8 @@ def main():
                     help="Path to puzzle_bench binary for promotion gating")
     ap.add_argument("--puzzle-file", default="",
                     help="Path to lichess puzzle CSV (.zst) for benchmarking")
-    ap.add_argument("--puzzle-count", type=int, default=1000,
-                    help="Puzzles to solve per eval (default 1000)")
+    ap.add_argument("--puzzle-count", type=int, default=2000,
+                    help="Puzzles to solve per eval (default 2000, SE≈1.1%% at 50%% baseline)")
     ap.add_argument("--puzzle-depth", type=int, default=7,
                     help="Search depth for puzzle bench (default 7)")
     ap.add_argument("--puzzle-min-rating", type=int, default=1500,
@@ -233,12 +252,18 @@ def main():
                     help="Fixed RNG seed for all puzzle evaluations — same puzzles every iteration (default 42)")
     ap.add_argument("--selfplay-binary", default="",
                     help="Path to self_play binary for head-to-head eval")
-    ap.add_argument("--selfplay-eval-games", type=int, default=20,
-                    help="Games for head-to-head eval (default 20, ~50 for statistical confidence)")
+    ap.add_argument("--selfplay-eval-games", type=int, default=40,
+                    help="Games for head-to-head eval (default 40, SE≈7.9%% — only catches clear regressions)")
     ap.add_argument("--selfplay-eval-movetime", type=int, default=100,
                     help="Movetime ms for head-to-head eval games (default 100)")
-    ap.add_argument("--selfplay-min-winrate", type=float, default=45.0,
-                    help="Minimum self-play win rate %% to count as not-a-regression (default 45.0)")
+    ap.add_argument("--selfplay-min-winrate", type=float, default=47.0,
+                    help="Minimum self-play win rate %% to count as not-a-regression (default 47.0)")
+    # ── Anchor data (anti-drift) ───────────────────────────────────────────────
+    ap.add_argument("--anchor-data", default="",
+                    help="Path to JSONL file of original training positions to inject each iteration. "
+                         "Prevents long-term distributional drift as the FIFO pool fills with self-play data.")
+    ap.add_argument("--anchor-size", type=int, default=50_000,
+                    help="Anchor positions sampled and appended to train set each iteration (default 50000)")
     args = ap.parse_args()
 
     artifacts = Path(args.artifacts_dir)
@@ -305,6 +330,15 @@ def main():
 
         # 4. Split pool into train/val
         split_pool(pool_file, Path("data/train.jsonl"), Path("data/val.jsonl"))
+
+        # 4b. Inject anchor positions from original training data (if configured).
+        # This prevents the model from drifting into a narrow self-play distribution
+        # after many iterations. The anchor positions are appended to train.jsonl only
+        # (not val), so the validation signal stays clean.
+        if args.anchor_data and Path(args.anchor_data).exists():
+            inject_anchor_data(Path(args.anchor_data), Path("data/train.jsonl"), args.anchor_size)
+        elif args.anchor_data:
+            print(f"[loop] WARNING: --anchor-data '{args.anchor_data}' not found — skipping anchor injection")
 
         # 5. Fine-tune
         candidate_ck = artifacts / f"checkpoint_iter{iteration}.pt"

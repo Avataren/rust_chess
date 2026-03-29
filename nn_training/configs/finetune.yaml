@@ -3,7 +3,7 @@ seed: 42
 training:
   batch_size: 2048
   epochs: 5          # short runs to avoid catastrophic forgetting
-  lr: 0.00005        # very low LR: fine-tuning 62K positions against 69M-trained model
+  lr: 0.0001         # higher start; cosine-decays to lr/100=1e-6 over 5 epochs
   weight_decay: 0.0001
   grad_clip: 1.0
   workers: 8
@@ -19,13 +19,13 @@ model:
   n_output_buckets: 8
 
 loss:
-  cp_weight: 0.3
-  wdl_weight: 0.7
+  cp_weight: 0.5     # balanced: CP accuracy drives search quality; WDL adds robustness
+  wdl_weight: 0.5
 
 data:
   train_file: data/train.jsonl
   val_file: data/val.jsonl
-  max_cp_abs: 1500
+  max_cp_abs: 800    # matches full-training clip; focuses gradient on undecided positions
 
 export:
   output_path: artifacts/eval.onnx
