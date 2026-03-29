@@ -22,7 +22,10 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+
+use rayon::prelude::*;
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
@@ -277,6 +280,8 @@ fn main() {
     let max_r:  u32     = arg!("--max-rating", u32::MAX);
     let depth:  i32     = arg!("--depth",      7i32);
     let seed:   u64     = arg!("--seed",       42u64);
+    // 0 = use all available logical CPUs; 1 = single-threaded (deterministic).
+    let num_threads: usize = arg!("--threads", 0usize);
     // When set, write one line per failed puzzle: "<FEN>\t<move0> <move1> ..."
     // A downstream Python script expands these into labeled training positions.
     let export_failures = flag_str!("--export-failures");
@@ -306,9 +311,10 @@ fn main() {
         eprintln!("    [--depth N]              search depth (default: 7)");
         eprintln!("    [--seed N]               RNG seed for sampling (default: 42)");
         eprintln!("    [--eval-file FILE]       override embedded NNUE weights (any .npz)");
+        eprintln!("    [--threads N]            parallel solvers (default 0=all CPUs; 1=single-threaded)");
         eprintln!("    [--export-failures FILE] write failed puzzle lines for finetune");
         eprintln!("    [--export-all FILE]      write ALL puzzle lines for finetune (recommended)");
-        eprintln!("    [--fresh-tt]             fresh TT per puzzle (unbiased A/B; slower)");
+        eprintln!("    [--fresh-tt]             fresh TT per puzzle (unbiased A/B; implied by --threads>1)");
         eprintln!();
         eprintln!("Download: https://database.lichess.org/#puzzles");
         eprintln!("  (lichess_db_puzzle.csv.zst, ~280 MB compressed)");
@@ -322,7 +328,12 @@ fn main() {
     println!("Sample:       {count}  (rating {min_r}–{max_r_display})");
     println!("Depth:        {depth}");
     println!("Seed:         {seed}");
-    println!("TT mode:      {}", if fresh_tt { "fresh per puzzle" } else { "shared" });
+    let effective_threads = if num_threads == 0 {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    } else { num_threads };
+    println!("Threads:      {effective_threads}{}",
+        if num_threads == 1 { " (single-threaded)" } else { " (parallel, fresh TT per puzzle)" });
+    println!("TT mode:      {}", if num_threads != 1 || fresh_tt { "fresh per puzzle" } else { "shared" });
     if !export_failures.is_empty() { println!("Export (failures): {export_failures}"); }
     if !export_all.is_empty()      { println!("Export (all):      {export_all}"); }
     println!();
@@ -385,13 +396,63 @@ fn main() {
     }
 
     let conductor = PieceConductor::new();
-    // Small TT: large enough to help move ordering within a single puzzle;
-    // small enough to keep memory low and avoid heavy cross-puzzle pollution.
-    let tt = TranspositionTable::new(1 << 18); // 256K entries ≈ 6 MB
+    let total = puzzles.len();
+    let skipped = 0usize;
 
-    // Optional export writers — each line: "<FEN>\t<move0> <move1> ..."
-    // The Python finetune script walks the move list with python-chess to
-    // generate intermediate positions, then labels them with Stockfish.
+    // Configure rayon thread pool.
+    // num_threads == 0: use all logical CPUs (rayon default).
+    // num_threads == 1: single-threaded; uses shared TT (or --fresh-tt if set).
+    // num_threads >  1: parallel; always uses a fresh TT per puzzle (thread safety).
+    let parallel = num_threads != 1;
+    if num_threads > 1 {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build_global()
+            .ok();
+    }
+
+    let dot_every = (total / 40).max(1);
+    let dot_counter = AtomicUsize::new(0);
+    print!("Solving  [");
+    let _ = stdout().flush();
+    let t_solve = Instant::now();
+
+    // Per-puzzle result: (solved, band, themes, export_line)
+    // Collected in original order so export files are deterministically ordered.
+    let need_export = !export_all.is_empty() || !export_failures.is_empty();
+    let results: Vec<(bool, usize, Vec<String>, Option<String>)> = if parallel {
+        puzzles.par_iter().map(|puzzle| {
+            // Each parallel solver gets its own TT — no cross-puzzle pollution
+            // and no data races.
+            let fresh = TranspositionTable::new(1 << 18);
+            let ok = solve(puzzle, &conductor, &fresh, depth, true);
+            let c = dot_counter.fetch_add(1, Ordering::Relaxed);
+            if (c + 1) % dot_every == 0 { print!("."); let _ = stdout().flush(); }
+            let export_line = need_export
+                .then(|| format!("{}\t{}", puzzle.fen, puzzle.moves.join(" ")));
+            (ok, band_index(puzzle.rating), puzzle.themes.clone(), export_line)
+        }).collect()
+    } else {
+        // Single-threaded: shared TT (or fresh per puzzle if --fresh-tt).
+        let shared_tt = TranspositionTable::new(1 << 18);
+        puzzles.iter().enumerate().map(|(i, puzzle)| {
+            let ok = solve(puzzle, &conductor, &shared_tt, depth, fresh_tt);
+            if (i + 1) % dot_every == 0 { print!("."); let _ = stdout().flush(); }
+            let export_line = need_export
+                .then(|| format!("{}\t{}", puzzle.fen, puzzle.moves.join(" ")));
+            (ok, band_index(puzzle.rating), puzzle.themes.clone(), export_line)
+        }).collect()
+    };
+
+    // ── Merge results ─────────────────────────────────────────────────────────
+
+    let mut solved = 0usize;
+    let mut band_total:  [usize; 8] = [0; 8];
+    let mut band_solved: [usize; 8] = [0; 8];
+    let mut theme_total:  HashMap<String, usize> = HashMap::new();
+    let mut theme_solved: HashMap<String, usize> = HashMap::new();
+
+    // Optional export writers (filled sequentially so file order is stable).
     let mut fail_writer: Option<std::io::BufWriter<std::fs::File>> = if !export_failures.is_empty() {
         let f = std::fs::File::create(export_failures)
             .unwrap_or_else(|e| { eprintln!("Cannot create {export_failures}: {e}"); std::process::exit(1); });
@@ -404,49 +465,23 @@ fn main() {
         Some(std::io::BufWriter::new(f))
     } else { None };
 
-    let total = puzzles.len();
-    let mut solved = 0usize;
-    let skipped = 0usize; // puzzles with illegal setup moves (corrupt FEN / moves)
-
-    let mut band_total:  [usize; 8] = [0; 8];
-    let mut band_solved: [usize; 8] = [0; 8];
-    let mut theme_total:  HashMap<String, usize> = HashMap::new();
-    let mut theme_solved: HashMap<String, usize> = HashMap::new();
-
-    let dot_every = (total / 40).max(1);
-    print!("Solving  [");
-    let _ = stdout().flush();
-    let t_solve = Instant::now();
-
-    for (i, puzzle) in puzzles.iter().enumerate() {
-        let ok = solve(puzzle, &conductor, &tt, depth, fresh_tt);
-        if ok { solved += 1; }
-
-        // Export line format: "<FEN>\t<move0> <move1> ..."
-        let export_line = || -> String {
-            format!("{}\t{}", puzzle.fen, puzzle.moves.join(" "))
-        };
-        if let Some(ref mut w) = all_writer {
-            writeln!(w, "{}", export_line()).ok();
-        }
-        if !ok {
-            if let Some(ref mut w) = fail_writer {
-                writeln!(w, "{}", export_line()).ok();
-            }
-        }
-
-        let band = band_index(puzzle.rating);
-        band_total[band]  += 1;
-        if ok { band_solved[band] += 1; }
-
-        for theme in &puzzle.themes {
+    for (ok, band, themes, export_line) in &results {
+        if *ok { solved += 1; }
+        band_total[*band]  += 1;
+        if *ok { band_solved[*band] += 1; }
+        for theme in themes {
             *theme_total.entry(theme.clone()).or_insert(0) += 1;
-            if ok { *theme_solved.entry(theme.clone()).or_insert(0) += 1; }
+            if *ok { *theme_solved.entry(theme.clone()).or_insert(0) += 1; }
         }
-
-        if (i + 1) % dot_every == 0 {
-            print!(".");
-            let _ = stdout().flush();
+        if let Some(line) = export_line {
+            if let Some(ref mut w) = all_writer {
+                writeln!(w, "{line}").ok();
+            }
+            if !ok {
+                if let Some(ref mut w) = fail_writer {
+                    writeln!(w, "{line}").ok();
+                }
+            }
         }
     }
 

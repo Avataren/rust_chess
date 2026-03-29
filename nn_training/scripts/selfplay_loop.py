@@ -19,7 +19,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
+import os
 import random
 import shutil
 import subprocess
@@ -61,7 +63,8 @@ def puzzle_score(bench_binary: str, puzzle_file: str, npz_path: Path,
            "--eval-file", str(npz_path),
            "--count",     str(count),
            "--depth",     str(depth),
-           "--seed",      str(seed)]
+           "--seed",      str(seed),
+           "--threads",   "0"]  # 0 = use all available CPUs
     if min_rating > 0:
         cmd += ["--min-rating", str(min_rating)]
     if max_rating > 0:
@@ -78,13 +81,10 @@ def puzzle_score(bench_binary: str, puzzle_file: str, npz_path: Path,
     return -1.0
 
 
-def selfplay_winrate(selfplay_binary: str, engine_path: str,
-                     candidate_npz: Path, baseline_npz: Path,
-                     games: int, movetime_ms: int) -> float:
-    """Pit candidate vs baseline using the self_play binary.
-    Returns candidate score (0.0–100.0, draws count 0.5) or -1.0 if unavailable."""
-    if not selfplay_binary:
-        return -1.0
+def _selfplay_chunk(selfplay_binary: str, engine_path: str,
+                    candidate_npz: str, baseline_npz: str,
+                    games: int, movetime_ms: int, threads_per_engine: int) -> tuple[int, int, int]:
+    """Run one self_play chunk and return (wins, draws, losses) for engine1 (candidate)."""
     result = subprocess.run(
         [selfplay_binary,
          engine_path, engine_path,
@@ -93,22 +93,70 @@ def selfplay_winrate(selfplay_binary: str, engine_path: str,
          "--no-ponder",
          "--engine1-opt",  f"EvalFile={candidate_npz}",
          "--engine1-opt",  "NeuralEval=true",
-         "--engine1-opt",  "Threads=2",
+         "--engine1-opt",  f"Threads={threads_per_engine}",
          "--engine2-opt",  f"EvalFile={baseline_npz}",
          "--engine2-opt",  "NeuralEval=true",
-         "--engine2-opt",  "Threads=2",
+         "--engine2-opt",  f"Threads={threads_per_engine}",
          ],
         capture_output=True, text=True,
     )
+    wins = draws = losses = 0
     for line in result.stdout.splitlines():
-        if "score:" in line and "%" in line:
-            # Format: "  chess_uci score: 81.5%"
-            pct_str = line.split(":")[-1].strip().rstrip("%")
-            try:
-                return float(pct_str)
-            except ValueError:
-                pass
-    return -1.0
+        # "  engine1 : 5 wins  (50.0%)"  or  "  Draws   : 3"
+        if "wins" in line and "engine1" in line:
+            try: wins = int(line.split(":")[1].strip().split()[0])
+            except (IndexError, ValueError): pass
+        elif line.strip().startswith("Draws"):
+            try: draws = int(line.split(":")[1].strip().split()[0])
+            except (IndexError, ValueError): pass
+        elif "wins" in line and "engine2" in line:
+            try: losses = int(line.split(":")[1].strip().split()[0])
+            except (IndexError, ValueError): pass
+    return wins, draws, losses
+
+
+def selfplay_winrate(selfplay_binary: str, engine_path: str,
+                     candidate_npz: Path, baseline_npz: Path,
+                     games: int, movetime_ms: int,
+                     n_workers: int = 4) -> float:
+    """Pit candidate vs baseline in parallel using n_workers self_play instances.
+
+    Splits `games` across workers so all run concurrently.  Each worker gets
+    `threads_per_engine = max(2, available_cpus // (2 * n_workers))` threads so
+    the total CPU usage stays within the machine's core count.
+
+    Returns candidate score (0.0–100.0, draws count 0.5) or -1.0 if unavailable.
+    """
+    if not selfplay_binary:
+        return -1.0
+
+    cpu_count = os.cpu_count() or 4
+    threads_per_engine = max(2, cpu_count // (2 * n_workers))
+
+    # Distribute games as evenly as possible across workers.
+    base, remainder = divmod(games, n_workers)
+    chunk_sizes = [base + (1 if i < remainder else 0) for i in range(n_workers)]
+
+    # subprocess.run releases the GIL so ThreadPoolExecutor is sufficient.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
+        futures = [
+            ex.submit(_selfplay_chunk,
+                      selfplay_binary, engine_path,
+                      str(candidate_npz), str(baseline_npz),
+                      chunk, movetime_ms, threads_per_engine)
+            for chunk in chunk_sizes
+        ]
+        results = [f.result() for f in futures]
+
+    total_wins   = sum(r[0] for r in results)
+    total_draws  = sum(r[1] for r in results)
+    total_losses = sum(r[2] for r in results)
+    total_games  = total_wins + total_draws + total_losses
+    if total_games == 0:
+        return -1.0
+    score = (total_wins + 0.5 * total_draws) / total_games * 100.0
+    print(f"[loop]   self-play chunks: {[f'{r[0]}W/{r[1]}D/{r[2]}L' for r in results]}")
+    return score
 
 
 def generate_data(
@@ -256,6 +304,9 @@ def main():
                     help="Games for head-to-head eval (default 40, SE≈7.9%% — only catches clear regressions)")
     ap.add_argument("--selfplay-eval-movetime", type=int, default=100,
                     help="Movetime ms for head-to-head eval games (default 100)")
+    ap.add_argument("--selfplay-eval-workers", type=int, default=4,
+                    help="Parallel self_play instances for eval (default 4); "
+                         "threads per engine auto-scaled to fill available CPUs")
     ap.add_argument("--selfplay-min-winrate", type=float, default=47.0,
                     help="Minimum self-play win rate %% to count as not-a-regression (default 47.0)")
     # ── Anchor data (anti-drift) ───────────────────────────────────────────────
@@ -373,6 +424,7 @@ def main():
                 args.selfplay_binary, args.engine,
                 candidate_npz, best_npz,
                 args.selfplay_eval_games, args.selfplay_eval_movetime,
+                n_workers=args.selfplay_eval_workers,
             )
 
             print(f"[loop] Iteration {iteration}: candidate mae={candidate_mae:.1f}cp  best mae={best_mae:.1f}cp")
