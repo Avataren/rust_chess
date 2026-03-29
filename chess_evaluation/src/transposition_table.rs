@@ -114,13 +114,19 @@ impl TranspositionTable {
         let idx = (hash as usize) % self.size;
         // Safety: benign data race — hash field validates the copy.
         //
-        // The stored hash is XOR'd with the score bits (see store() below).
-        // This catches torn reads in Lazy SMP: if a helper thread's score
-        // lands in a slot while a new hash is being written (or vice-versa),
-        // the XOR check will almost certainly fail, preventing phantom mate
-        // scores from propagating to the root.
+        // The stored hash is XOR'd with both the score bits (bits 31:0) and
+        // the best_move_raw bits (bits 47:32).  This catches two classes of
+        // torn reads in Lazy SMP:
+        //
+        //  • New hash + old score  → score bits mismatch, check fails.
+        //  • New hash+score + old best_move → best_move bits mismatch, check
+        //    fails.  Without this second XOR, a phantom best_move from a
+        //    different position could arrive with an otherwise-valid hash+score,
+        //    causing the engine to search a garbage TT move first and play it
+        //    at the root (the kjfj24na Qd1 blunder, observed post-XOR-v1).
         let entry = unsafe { (&(*self.table.get()))[idx] };
-        if entry.hash ^ (entry.score as u32 as u64) == hash { Some(entry) } else { None }
+        let key = (entry.score as u32 as u64) | ((entry.best_move_raw as u64) << 32);
+        if entry.hash ^ key == hash { Some(entry) } else { None }
     }
 
 
@@ -147,8 +153,9 @@ impl TranspositionTable {
         let age = self.age_of(&existing);
         // Effective depth of the existing entry, penalised by age.
         let existing_eff = existing.depth - age * AGE_COST;
-        // Decode the existing entry's hash (stored XOR'd with its score bits).
-        let existing_real_hash = existing.hash ^ (existing.score as u32 as u64);
+        // Decode the existing entry's hash (stored XOR'd with score + move bits).
+        let existing_key = (existing.score as u32 as u64) | ((existing.best_move_raw as u64) << 32);
+        let existing_real_hash = existing.hash ^ existing_key;
         // Replace if: slot is empty, hash collision (different position), or
         // the new entry's depth beats the age-adjusted existing depth.
         if existing.hash == 0 || existing_real_hash != hash || depth >= existing_eff {
@@ -156,15 +163,17 @@ impl TranspositionTable {
             let se = static_eval.unwrap_or_else(|| {
                 if existing_real_hash == hash { existing.static_eval } else { i32::MIN }
             });
-            // Store hash XOR'd with score bits so probe() can detect torn reads:
-            // if a concurrent reader sees the new hash but an old score (or vice-
-            // versa), the XOR check fails and the entry is silently discarded.
+            // Compute best_move_raw first so it can be folded into the stored hash.
+            let best_move_raw = best_move.map_or(0, |m| m.value());
+            // Store hash XOR'd with score (bits 31:0) and best_move_raw (bits 47:32)
+            // so probe() can detect both phantom scores and phantom moves from torn reads.
+            let key = (score as u32 as u64) | ((best_move_raw as u64) << 32);
             table[idx] = TtEntry {
-                hash: hash ^ (score as u32 as u64),
+                hash: hash ^ key,
                 depth, score, flag,
                 static_eval: se,
                 generation: self.generation.load(Ordering::Relaxed),
-                best_move_raw: best_move.map_or(0, |m| m.value()),
+                best_move_raw,
             };
         }
     }
