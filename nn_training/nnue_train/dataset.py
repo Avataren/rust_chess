@@ -258,8 +258,10 @@ class JsonlDualPositionDataset(Dataset):
 
         w_idx, b_idx = encode_board_halfkp_dual(board)
         piece_count = np.array([len(board.piece_map())], dtype=np.int64)
-        cp = np.array([self.cp_values[idx]], dtype=np.float32)
-        wdl = cp_to_wdl_target(float(self.cp_raw_values[idx]))
+        # JSONL stores side-to-move CP; model expects white-absolute.
+        sign = 1.0 if board.turn == chess.WHITE else -1.0
+        cp = np.array([self.cp_values[idx] * sign], dtype=np.float32)
+        wdl = cp_to_wdl_target(float(self.cp_raw_values[idx]) * sign)
 
         return (
             torch.from_numpy(w_idx),
