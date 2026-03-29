@@ -204,6 +204,20 @@ pub fn iterative_deepening_root_with_tt(
         total_nodes: 0,
     };
 
+    // Wrap on_depth so UCI info lines report *all* threads' combined nodes/NPS.
+    // Helpers flush their delta to `helper_nodes` after each depth, so by the
+    // time the main thread fires this callback the counter reflects live helper
+    // progress (not just end-of-search totals).
+    let hn_cb = Arc::clone(&helper_nodes);
+    let wrapped_cb = move |depth: i32, score: i32, nodes: u64, ms: u128| {
+        let total = nodes + hn_cb.load(Ordering::Relaxed);
+        if let Some(cb) = on_depth {
+            cb(depth, score, total, ms);
+        }
+    };
+    let wrapped_ref: &(dyn Fn(i32, i32, u64, u128) + Sync) = &wrapped_cb;
+    let on_depth_smp = on_depth.map(|_| wrapped_ref);
+
     rayon::scope(|s| {
         // Spawn N-1 helper threads, each with its own board clone & context.
         for i in 0..num_threads - 1 {
@@ -226,7 +240,7 @@ pub fn iterative_deepening_root_with_tt(
             is_white,
             deadline,
             stop.clone(),
-            on_depth,
+            on_depth_smp,
             noise_cp,
         );
 
@@ -402,7 +416,6 @@ fn smp_helper(
 ) {
     // Stagger starting depth across helpers so they cover different layers.
     let start_depth = 1 + (thread_idx % 3) as i32;
-    let mut local_nodes = 0u64;
 
     'outer: loop {
         let mut ctx = SearchContext::new();
@@ -410,6 +423,8 @@ fn smp_helper(
         let mut prev_score: i32 = if is_white { i32::MIN + 1 } else { i32::MAX };
         let mut prev_move: Option<ChessMove> = None;
         let mut stopped = false;
+        // Track node delta so we can flush to the shared counter after each depth.
+        let mut prev_node_count = 0u64;
 
         for depth in start_depth..=max_depth {
             if helper_stop.load(Ordering::Relaxed) {
@@ -491,12 +506,17 @@ fn smp_helper(
 
             prev_score = result.0;
             prev_move = result.1;
+
+            // Flush node delta after every depth so the main thread's on_depth
+            // callback sees a live combined count rather than just its own nodes.
+            let delta = ctx.nodes - prev_node_count;
+            total_nodes.fetch_add(delta, Ordering::Relaxed);
+            prev_node_count = ctx.nodes;
         }
-        local_nodes += ctx.nodes;
         if stopped {
             break 'outer;
         }
         // Completed one full pass — loop back for the next pass.
     }
-    total_nodes.fetch_add(local_nodes, Ordering::Relaxed);
+    // All nodes were flushed per-depth above; no final fetch_add needed.
 }
