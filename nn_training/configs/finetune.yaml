@@ -2,8 +2,8 @@ seed: 42
 
 training:
   batch_size: 2048
-  epochs: 20         # shorter runs per iteration
-  lr: 0.0002         # lower LR for fine-tuning
+  epochs: 5          # short runs to avoid catastrophic forgetting
+  lr: 0.00005        # very low LR: fine-tuning 62K positions against 69M-trained model
   weight_decay: 0.0001
   grad_clip: 1.0
   workers: 8

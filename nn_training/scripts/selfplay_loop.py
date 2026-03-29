@@ -370,11 +370,9 @@ def main():
                 print("[loop] WARNING: no --puzzle-binary or --selfplay-binary configured; "
                       "promotion is unconditional.")
 
-            # Always advance the training base so learning accumulates.
-            best_ck = candidate_ck
-            best_mae = candidate_mae
-
             if promoted:
+                best_ck = candidate_ck
+                best_mae = candidate_mae
                 if cand_puzzle >= 0:
                     best_puzzle = cand_puzzle
                 best_npz = candidate_npz
@@ -383,8 +381,9 @@ def main():
                 print(f"[loop] Promoted! ({reason}) — exported weights → {artifacts / 'eval.npz'}")
             else:
                 not_reason = reason.replace(">", "<=").replace("<", ">=")
-                print(f"[loop] Not promoted ({not_reason}), but advancing training base to iteration checkpoint.")
-                # Clean up candidate npz — best_npz still points to previous best.
+                print(f"[loop] Not promoted ({not_reason}) — keeping current best as training base.")
+                # Discard candidate entirely; next iteration fine-tunes from best_ck again.
+                candidate_ck.unlink(missing_ok=True)
                 candidate_npz.unlink(missing_ok=True)
 
     print(f"\n[loop] Done. Best val_cp_mae={best_mae:.1f}  checkpoint={best_ck}")
