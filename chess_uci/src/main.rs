@@ -262,7 +262,7 @@ fn make_search_stop(
             if !remaining.is_zero() {
                 thread::sleep(remaining);
             }
-            stop_c.store(true, Ordering::Relaxed);
+            stop_c.store(true, Ordering::Release);
         });
     }
 
@@ -271,8 +271,8 @@ fn make_search_stop(
     let prop = Arc::clone(&search_stop);
     thread::spawn(move || {
         while !prop.load(Ordering::Relaxed) {
-            if ext.load(Ordering::Relaxed) {
-                prop.store(true, Ordering::Relaxed);
+            if ext.load(Ordering::Acquire) {
+                prop.store(true, Ordering::Release);
                 break;
             }
             thread::sleep(Duration::from_millis(5));

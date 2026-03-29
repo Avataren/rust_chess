@@ -505,6 +505,12 @@ pub fn alpha_beta(
         // iteration's move.
         ctx.prev_moves[(ply + 1).min(MAX_PLY - 1)] = None;
         chess_board.make_null_move();
+        // Use a null window to confirm fail-high / fail-low efficiently.
+        // For white: check if score >= beta even after giving opponent a free move.
+        // For black: check if score <= alpha even after giving opponent a free move.
+        // The null window cuts off as soon as the threshold is confirmed, saving
+        // the significant node overhead of a full (alpha, beta) NMP search.
+        let (nw_lo, nw_hi) = if is_white { (beta - 1, beta) } else { (alpha, alpha + 1) };
         let null_score = alpha_beta(
             chess_board,
             conductor,
@@ -512,8 +518,8 @@ pub fn alpha_beta(
             ctx,
             depth - 1 - r,
             ply + 1,
-            alpha,
-            beta,
+            nw_lo,
+            nw_hi,
             !is_white,
             false,
             stop,
