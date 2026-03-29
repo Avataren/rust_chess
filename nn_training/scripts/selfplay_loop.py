@@ -249,16 +249,9 @@ def main():
     best_mae = load_val_mae(best_ck)
     print(f"[loop] Starting from {best_ck}  val_cp_mae={best_mae:.1f}")
 
-    # Export initial weights so puzzle/selfplay eval can baseline against them.
+    # Export initial weights as the baseline for self-play win rate comparisons.
     best_npz = artifacts / "best_weights.npz"
     export_weights(best_ck, best_npz)
-    best_puzzle = puzzle_score(
-        args.puzzle_binary, args.puzzle_file, best_npz,
-        args.puzzle_count, args.puzzle_depth, seed=0,
-        min_rating=args.puzzle_min_rating, max_rating=args.puzzle_max_rating,
-    )
-    if best_puzzle >= 0:
-        print(f"[loop] Initial puzzle score: {best_puzzle:.1f}%")
 
     pool_file = Path("data/selfplay_pool.jsonl")
     pool_file.parent.mkdir(exist_ok=True)
@@ -326,9 +319,16 @@ def main():
             export_weights(candidate_ck, candidate_npz)
 
             # ── Evaluate candidate strength ───────────────────────────────
+            # Use the same seed for both models so they are scored on identical puzzles.
+            eval_seed = iteration
             cand_puzzle = puzzle_score(
                 args.puzzle_binary, args.puzzle_file, candidate_npz,
-                args.puzzle_count, args.puzzle_depth, seed=iteration,
+                args.puzzle_count, args.puzzle_depth, seed=eval_seed,
+                min_rating=args.puzzle_min_rating, max_rating=args.puzzle_max_rating,
+            )
+            best_puzzle_now = puzzle_score(
+                args.puzzle_binary, args.puzzle_file, best_npz,
+                args.puzzle_count, args.puzzle_depth, seed=eval_seed,
                 min_rating=args.puzzle_min_rating, max_rating=args.puzzle_max_rating,
             )
             cand_winrate = selfplay_winrate(
@@ -339,7 +339,7 @@ def main():
 
             print(f"[loop] Iteration {iteration}: candidate mae={candidate_mae:.1f}cp  best mae={best_mae:.1f}cp")
             if cand_puzzle >= 0:
-                print(f"[loop] Puzzle score: candidate={cand_puzzle:.1f}%  best={best_puzzle:.1f}%")
+                print(f"[loop] Puzzle score: candidate={cand_puzzle:.1f}%  best={best_puzzle_now:.1f}%  (seed={eval_seed})")
             if cand_winrate >= 0:
                 print(f"[loop] Self-play win rate (candidate vs best): {cand_winrate:.1f}%")
 
@@ -351,16 +351,16 @@ def main():
             # Both signals must pass when both tools are configured.
             # Falls back to each individual signal if only one is available.
             # If neither tool is configured, always promote with a warning.
-            puzzle_ok   = cand_puzzle  >= best_puzzle - args.puzzle_regression_tolerance  if cand_puzzle  >= 0 and best_puzzle >= 0 else None
+            puzzle_ok   = cand_puzzle  >= best_puzzle_now - args.puzzle_regression_tolerance  if cand_puzzle  >= 0 and best_puzzle_now >= 0 else None
             winrate_ok  = cand_winrate >= args.selfplay_min_winrate                      if cand_winrate >= 0                     else None
 
             if puzzle_ok is not None and winrate_ok is not None:
                 promoted = puzzle_ok and winrate_ok
-                reason = (f"puzzle {cand_puzzle:.1f}%>={best_puzzle - args.puzzle_regression_tolerance:.1f}%"
+                reason = (f"puzzle {cand_puzzle:.1f}%>={best_puzzle_now - args.puzzle_regression_tolerance:.1f}%"
                           f" AND win rate {cand_winrate:.1f}%>={args.selfplay_min_winrate:.0f}%")
             elif puzzle_ok is not None:
                 promoted = puzzle_ok
-                reason = f"puzzle {cand_puzzle:.1f}% >= {best_puzzle - args.puzzle_regression_tolerance:.1f}%"
+                reason = f"puzzle {cand_puzzle:.1f}% >= {best_puzzle_now - args.puzzle_regression_tolerance:.1f}%"
             elif winrate_ok is not None:
                 promoted = winrate_ok
                 reason = f"win rate {cand_winrate:.1f}% >= {args.selfplay_min_winrate:.0f}%"
@@ -373,14 +373,12 @@ def main():
             if promoted:
                 best_ck = candidate_ck
                 best_mae = candidate_mae
-                if cand_puzzle >= 0:
-                    best_puzzle = cand_puzzle
                 best_npz = candidate_npz
                 shutil.copy(candidate_ck, artifacts / "best_checkpoint.pt")
                 shutil.copy(candidate_npz, artifacts / "eval.npz")
                 print(f"[loop] Promoted! ({reason}) — exported weights → {artifacts / 'eval.npz'}")
             else:
-                not_reason = reason.replace(">", "<=").replace("<", ">=")
+                not_reason = reason
                 print(f"[loop] Not promoted ({not_reason}) — keeping current best as training base.")
                 # Discard candidate entirely; next iteration fine-tunes from best_ck again.
                 candidate_ck.unlink(missing_ok=True)
