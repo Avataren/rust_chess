@@ -12,11 +12,14 @@ BIN_DIR="$REPO_DIR/target/release"
 cd "$SCRIPT_DIR"
 
 PYTHONPATH=. python3 scripts/selfplay_loop.py \
-  --engine         "$BIN_DIR/chess_uci" \
-  --stockfish      /usr/bin/stockfish \
-  --initial-checkpoint artifacts/best_checkpoint.pt \
-  --puzzle-binary  "$BIN_DIR/puzzle_bench" \
-  --puzzle-file    "$REPO_DIR/lichess_db_puzzle.csv.zst" \
-  --selfplay-binary "$BIN_DIR/self_play" \
-  --anchor-data    data/all_69m/train_all_69m.jsonl \
-  --anchor-size    50000
+  --engine              "$BIN_DIR/chess_uci" \
+  --stockfish           /usr/bin/stockfish \
+  --initial-checkpoint  artifacts/best_checkpoint.pt \
+  --puzzle-binary       "$BIN_DIR/puzzle_bench" \
+  --puzzle-file         "$REPO_DIR/lichess_db_puzzle.csv.zst" \
+  --selfplay-binary     "$BIN_DIR/self_play" \
+  --anchor-data         data/all_69m/train_all_69m.jsonl \
+  --anchor-size         50000 \
+  --anchor-min-fraction 0.10 \
+  --selfplay-eval-games 150 \
+  --gen-val-max-increase 5.0

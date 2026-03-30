@@ -148,19 +148,22 @@ def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_
 def _selfplay_worker(args: tuple) -> list[str]:
     """Run in a subprocess — each worker owns its own engine instance.
     Returns FEN strings (picklable across process boundaries)."""
-    engine_path, engine_opts, n_games, movetime_ms, min_ply, max_ply, positions_per_game, opening_plies, seed = args
+    engine_path, engine_opts, n_games, movetime_ms, min_ply, max_ply, positions_per_game, opening_plies, seed, opening_fens = args
     random.seed(seed)
     engine = chess.engine.SimpleEngine.popen_uci(engine_path, stderr=subprocess.DEVNULL)
     try:
         engine.configure(engine_opts)
         out: list[str] = []
         for _ in range(n_games):
-            board = chess.Board()
-            n_opening = random.randint(opening_plies - 2, opening_plies + 2)
-            for _ in range(n_opening):
-                if board.is_game_over():
-                    break
-                board.push(random.choice(list(board.legal_moves)))
+            if opening_fens:
+                board = chess.Board(random.choice(opening_fens))
+            else:
+                board = chess.Board()
+                n_opening = random.randint(opening_plies - 2, opening_plies + 2)
+                for _ in range(n_opening):
+                    if board.is_game_over():
+                        break
+                    board.push(random.choice(list(board.legal_moves)))
             states: list[str] = []
             for ply in range(max_ply):
                 if board.is_game_over():
@@ -192,9 +195,12 @@ def selfplay_positions(
     opening_plies: int = 10,
     n_parallel: int = 1,
     batch_size: int = 10,
+    opening_fens: list[str] | None = None,
 ) -> list[str]:
     """Play self-play games across n_parallel engine instances, returning FENs.
-    Uses small batches so the progress bar updates frequently."""
+    Uses small batches so the progress bar updates frequently.
+    When opening_fens is provided, each game starts from a randomly chosen FEN
+    instead of random legal moves — aligns training positions with theory."""
     # Split total games into small batches for responsive progress reporting.
     batches = []
     remaining = games
@@ -205,7 +211,7 @@ def selfplay_positions(
 
     worker_args = [
         (engine_path, engine_opts, n, movetime_ms, min_ply, max_ply,
-         positions_per_game, opening_plies, random.randint(0, 2**31))
+         positions_per_game, opening_plies, random.randint(0, 2**31), opening_fens)
         for n in batches
     ]
 
@@ -254,6 +260,10 @@ def main():
     ap.add_argument("--selfplay-movetime-ms", type=int, default=20)
     ap.add_argument("--positions-per-game", type=int, default=1,
                     help="Positions sampled per self-play game (default 1)")
+    ap.add_argument("--opening-fens-file", default="",
+                    help="File with one FEN per line; each self-play game starts from a randomly "
+                         "chosen FEN instead of random legal moves. Use the theory opening book "
+                         "to align training positions with evaluation and real game distributions.")
     args = ap.parse_args()
 
     random.seed()  # OS entropy — different openings every run
@@ -299,6 +309,16 @@ def main():
                 name, value = opt.split("=", 1)
                 sp_opts[name.strip()] = value.strip()
 
+        # Load opening FENs if provided (theory-aligned starts instead of random moves).
+        sp_opening_fens: list[str] | None = None
+        if args.opening_fens_file:
+            fens_path = Path(args.opening_fens_file)
+            if fens_path.exists():
+                sp_opening_fens = [l.strip() for l in fens_path.read_text().splitlines() if l.strip()]
+                print(f"Loaded {len(sp_opening_fens)} opening FENs from {args.opening_fens_file}")
+            else:
+                print(f"WARNING: --opening-fens-file '{args.opening_fens_file}' not found — using random openings")
+
         selfplay_cap = args.max_positions - len(fens)
         if selfplay_cap > 0:
             sp_fens = selfplay_positions(
@@ -310,6 +330,7 @@ def main():
                 max_ply=180,
                 positions_per_game=args.positions_per_game,
                 n_parallel=args.selfplay_parallel,
+                opening_fens=sp_opening_fens,
             )
             random.shuffle(sp_fens)
             fens.extend(sp_fens[:selfplay_cap])

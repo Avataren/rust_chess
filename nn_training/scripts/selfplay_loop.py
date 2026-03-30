@@ -30,6 +30,7 @@ from pathlib import Path
 
 import torch
 import yaml
+from tqdm import tqdm
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -93,9 +94,12 @@ def sample_gen_val(source_file: Path, out_file: Path, n: int, seed: int = 0):
 
 def puzzle_score(bench_binary: str, puzzle_file: str, npz_path: Path,
                  count: int, depth: int, seed: int,
-                 min_rating: int = 0, max_rating: int = 0) -> float:
+                 min_rating: int = 0, max_rating: int = 0,
+                 export_failures_file: str = "") -> float:
     """Run puzzle_bench and return the overall solve rate (0.0–100.0).
-    Returns -1.0 if the binary or puzzle file is not available."""
+    Returns -1.0 if the binary or puzzle file is not available.
+    When export_failures_file is set, puzzle_bench writes a TSV of failed puzzles
+    that can be processed into training data via gen_puzzle_finetune_data.py."""
     if not bench_binary or not puzzle_file:
         return -1.0
     cmd = [bench_binary,
@@ -109,6 +113,8 @@ def puzzle_score(bench_binary: str, puzzle_file: str, npz_path: Path,
         cmd += ["--min-rating", str(min_rating)]
     if max_rating > 0:
         cmd += ["--max-rating", str(max_rating)]
+    if export_failures_file:
+        cmd += ["--export-failures", export_failures_file]
     result = subprocess.run(cmd, capture_output=True, text=True)
     for line in result.stdout.splitlines():
         if "Overall:" in line:
@@ -119,6 +125,54 @@ def puzzle_score(bench_binary: str, puzzle_file: str, npz_path: Path,
             except ValueError:
                 pass
     return -1.0
+
+
+def process_puzzle_failures(
+    failures_tsv: Path,
+    out_jsonl: Path,
+    stockfish_path: str,
+    workers: int,
+) -> bool:
+    """Label positions from a puzzle_bench --export-failures TSV and write JSONL.
+
+    Calls gen_puzzle_finetune_data.py which walks every move in each failed puzzle
+    to extract all intermediate FENs, labels them with Stockfish, and writes a
+    train/val split.  Only the train split is kept (injected as anchor data).
+
+    Returns True if out_jsonl was written with at least one position.
+    """
+    if not failures_tsv.exists() or failures_tsv.stat().st_size == 0:
+        return False
+
+    import tempfile
+    tmp_dir = Path(tempfile.mkdtemp(prefix="puzzle_ft_"))
+    try:
+        result = subprocess.run(
+            [sys.executable, "scripts/gen_puzzle_finetune_data.py",
+             "--input",     str(failures_tsv),
+             "--output",    str(tmp_dir),
+             "--stockfish", stockfish_path,
+             "--workers",   str(workers)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"[loop] WARNING: gen_puzzle_finetune_data failed:\n{result.stderr[-500:]}")
+            return False
+
+        # gen_puzzle_finetune_data writes train_<dirname>.jsonl inside tmp_dir
+        train_files = list(tmp_dir.glob("train_*.jsonl"))
+        if not train_files:
+            return False
+        train_file = train_files[0]
+        if train_file.stat().st_size == 0:
+            return False
+
+        shutil.move(str(train_file), str(out_jsonl))
+        n_lines = sum(1 for _ in out_jsonl.open())
+        print(f"[loop] Puzzle failures → {n_lines} labeled positions → {out_jsonl}")
+        return True
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # Opening lines from chess_evaluation/src/opening_book.rs (UCI move sequences).
@@ -355,27 +409,42 @@ def selfplay_winrate(selfplay_binary: str, engine_path: str,
 
     try:
         # subprocess.run releases the GIL so ThreadPoolExecutor is sufficient.
+        # Use as_completed so the progress bar updates as each chunk finishes
+        # rather than blocking until all chunks are done.
         with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
-            futures = [
+            future_to_chunk = {
                 ex.submit(_selfplay_chunk,
                           selfplay_binary, engine_path,
                           str(candidate_npz), str(baseline_npz),
                           chunk, movetime_ms, threads_per_engine,
-                          opening_fens_file)
+                          opening_fens_file): chunk
                 for chunk in chunk_sizes
-            ]
-            results = [f.result() for f in futures]
+            }
+
+            total_wins = total_draws = total_losses = 0
+            chunk_results = []
+            with tqdm(total=games, desc="[loop] self-play eval", unit="game",
+                      bar_format="{l_bar}{bar}| {n}/{total} games  {postfix}") as pbar:
+                for fut in concurrent.futures.as_completed(future_to_chunk):
+                    w, d, l = fut.result()
+                    chunk_results.append((w, d, l))
+                    total_wins   += w
+                    total_draws  += d
+                    total_losses += l
+                    done = total_wins + total_draws + total_losses
+                    score_so_far = (total_wins + 0.5 * total_draws) / done * 100.0 if done else 0.0
+                    pbar.set_postfix_str(
+                        f"{total_wins}W/{total_draws}D/{total_losses}L  score={score_so_far:.1f}%"
+                    )
+                    pbar.update(future_to_chunk[fut])
     finally:
         os.unlink(opening_fens_file)
 
-    total_wins   = sum(r[0] for r in results)
-    total_draws  = sum(r[1] for r in results)
-    total_losses = sum(r[2] for r in results)
-    total_games  = total_wins + total_draws + total_losses
+    total_games = total_wins + total_draws + total_losses
     if total_games == 0:
         return -1.0
     score = (total_wins + 0.5 * total_draws) / total_games * 100.0
-    print(f"[loop]   self-play chunks: {[f'{r[0]}W/{r[1]}D/{r[2]}L' for r in results]}")
+    print(f"[loop]   self-play chunks: {[f'{r[0]}W/{r[1]}D/{r[2]}L' for r in chunk_results]}")
     return score
 
 
@@ -391,6 +460,7 @@ def generate_data(
     workers: int,
     selfplay_threads: int,
     selfplay_parallel: int,
+    opening_fens_file: str = "",
 ):
     print(f"[loop] Generating {games} self-play games → {output_path}")
     cmd = [sys.executable, "scripts/generate_data.py",
@@ -410,8 +480,9 @@ def generate_data(
         cmd += [
             "--selfplay-engine-opt", f"EvalFile={npz_path}",
             "--selfplay-engine-opt", "NeuralEval=true",
-            "--selfplay-engine-opt", "NeuralConfidence=0.4",
         ]
+    if opening_fens_file:
+        cmd += ["--opening-fens-file", opening_fens_file]
     subprocess.run(cmd, check=True)
 
 
@@ -437,7 +508,8 @@ def split_pool(pool_file: Path, train_file: Path, val_file: Path, val_fraction: 
     print(f"[loop] Split: {n_train} train / {n_val} val")
 
 
-def inject_anchor_data(anchor_file: Path, train_file: Path, n: int):
+def inject_anchor_data(anchor_file: Path, train_file: Path, n: int,
+                       extra_files: list[Path] | None = None):
     """Sample n lines from anchor_file and append them to train_file.
 
     Injecting a fixed slice of original training data each iteration prevents
@@ -445,6 +517,9 @@ def inject_anchor_data(anchor_file: Path, train_file: Path, n: int):
     the model would otherwise eventually train only on its own distribution.
     These anchor positions are never evicted from training (but not added to
     the validation set, keeping val as a clean self-play signal).
+
+    extra_files: additional JSONL files whose entire contents are appended
+    after the anchor sample (e.g. puzzle failure positions for targeted repair).
     """
     lines = anchor_file.read_text(encoding="utf-8").splitlines(keepends=True)
     if not lines:
@@ -453,6 +528,15 @@ def inject_anchor_data(anchor_file: Path, train_file: Path, n: int):
     with train_file.open("a", encoding="utf-8") as f:
         f.writelines(sample)
     print(f"[loop] Injected {len(sample)} anchor positions into training set")
+
+    if extra_files:
+        for extra in extra_files:
+            if not extra or not extra.exists() or extra.stat().st_size == 0:
+                continue
+            extra_lines = extra.read_text(encoding="utf-8").splitlines(keepends=True)
+            with train_file.open("a", encoding="utf-8") as f:
+                f.writelines(extra_lines)
+            print(f"[loop] Injected {len(extra_lines)} puzzle-failure positions from {extra}")
 
 
 def fine_tune(
@@ -536,10 +620,18 @@ def main():
                          "Prevents long-term distributional drift as the FIFO pool fills with self-play data.")
     ap.add_argument("--anchor-size", type=int, default=50_000,
                     help="Anchor positions sampled and appended to train set each iteration (default 50000)")
+    ap.add_argument("--anchor-min-fraction", type=float, default=0.10,
+                    help="Keep anchor at least this fraction of the current pool size (default 0.10 = 10%%). "
+                         "Prevents anchor from becoming negligible as the pool grows. "
+                         "Effective anchor = max(--anchor-size, pool_size * fraction).")
     # ── Generalisation validation (real-game positions, not self-play) ─────────
     ap.add_argument("--gen-val-size", type=int, default=10_000,
                     help="Positions to hold out from anchor data for generalisation validation (default 10000). "
                          "CP-MAE on this fixed set reveals whether improvements transfer to real-game positions.")
+    ap.add_argument("--gen-val-max-increase", type=float, default=5.0,
+                    help="Block promotion if gen_val CP-MAE rises more than this %% above best (default 5.0). "
+                         "Catches overfitting to the self-play distribution: puzzle score can hold while the model "
+                         "degrades on real-game positions. Set 0 to disable this gate.")
     args = ap.parse_args()
 
     artifacts = Path(args.artifacts_dir)
@@ -581,6 +673,17 @@ def main():
     if best_gen_mae >= 0:
         print(f"[loop] Initial gen_val CP-MAE: {best_gen_mae:.2f}cp  (real-game positions, fixed set)")
 
+    # Write the theory opening book as FENs once; reused every iteration to align
+    # self-play data generation with the positions seen in evaluation and real games.
+    opening_fens_file = Path("data/opening_fens.txt")
+    opening_fens_file.parent.mkdir(exist_ok=True)
+    if not opening_fens_file.exists():
+        fens = _opening_fens()
+        opening_fens_file.write_text("\n".join(fens) + "\n")
+        print(f"[loop] Wrote {len(fens)} theory opening FENs → {opening_fens_file}")
+    else:
+        print(f"[loop] Reusing existing opening FENs: {opening_fens_file}")
+
     pool_file = Path("data/selfplay_pool.jsonl")
     pool_file.parent.mkdir(exist_ok=True)
     if not pool_file.exists():
@@ -615,6 +718,7 @@ def main():
                 workers=args.workers,
                 selfplay_threads=args.selfplay_threads,
                 selfplay_parallel=args.selfplay_parallel,
+                opening_fens_file=str(opening_fens_file),
             )
 
         # 3. Append to replay pool
@@ -628,8 +732,24 @@ def main():
         # This prevents the model from drifting into a narrow self-play distribution
         # after many iterations. The anchor positions are appended to train.jsonl only
         # (not val), so the validation signal stays clean.
+        #
+        # Dynamic scaling: as the pool grows the fixed --anchor-size would shrink to a
+        # negligible fraction. effective_anchor = max(anchor_size, pool_size * fraction)
+        # keeps anchors at least --anchor-min-fraction of the training set.
+        puzzle_anchor_jsonl = Path(f"data/puzzle_failures_iter{iteration}.jsonl")
         if args.anchor_data and Path(args.anchor_data).exists():
-            inject_anchor_data(Path(args.anchor_data), Path("data/train.jsonl"), args.anchor_size)
+            pool_line_count = sum(1 for _ in pool_file.open(encoding="utf-8"))
+            effective_anchor = max(
+                args.anchor_size,
+                int(pool_line_count * args.anchor_min_fraction),
+            )
+            if effective_anchor != args.anchor_size:
+                print(f"[loop] Anchor scaled: {args.anchor_size} → {effective_anchor} "
+                      f"({args.anchor_min_fraction*100:.0f}%% of {pool_line_count} pool lines)")
+            inject_anchor_data(
+                Path(args.anchor_data), Path("data/train.jsonl"), effective_anchor,
+                extra_files=[puzzle_anchor_jsonl] if puzzle_anchor_jsonl.exists() else None,
+            )
         elif args.anchor_data:
             print(f"[loop] WARNING: --anchor-data '{args.anchor_data}' not found — skipping anchor injection")
 
@@ -664,17 +784,42 @@ def main():
             # ── Evaluate candidate strength ───────────────────────────────
             # Fixed seed ensures candidate is always scored on the same puzzle set
             # as the stored best_puzzle — no need to re-run on the best model.
+            # Export failures for feedback: they become anchor training data next iteration.
+            failures_tsv = Path(f"data/puzzle_failures_iter{iteration}.tsv")
             cand_puzzle = puzzle_score(
                 args.puzzle_binary, args.puzzle_file, candidate_npz,
                 args.puzzle_count, args.puzzle_depth, seed=args.puzzle_seed,
                 min_rating=args.puzzle_min_rating, max_rating=args.puzzle_max_rating,
+                export_failures_file=str(failures_tsv) if args.puzzle_binary else "",
             )
-            cand_winrate = selfplay_winrate(
-                args.selfplay_binary, args.engine,
-                candidate_npz, best_npz,
-                args.selfplay_eval_games, args.selfplay_eval_movetime,
-                n_workers=args.selfplay_eval_workers,
+
+            # Convert puzzle failures TSV → labeled JSONL for next iteration's anchor.
+            if failures_tsv.exists() and failures_tsv.stat().st_size > 0:
+                process_puzzle_failures(
+                    failures_tsv,
+                    puzzle_anchor_jsonl,
+                    args.stockfish,
+                    workers=args.workers,
+                )
+                failures_tsv.unlink(missing_ok=True)
+
+            # Early-exit: compute puzzle gate result immediately so we can skip
+            # the expensive self-play eval when the puzzle gate already fails.
+            puzzle_ok = (
+                cand_puzzle >= best_puzzle - args.puzzle_regression_tolerance
+                if cand_puzzle >= 0 and best_puzzle >= 0 else None
             )
+
+            if puzzle_ok is False:
+                print(f"[loop] Puzzle gate failed ({cand_puzzle:.1f}% < {best_puzzle - args.puzzle_regression_tolerance:.1f}%) — skipping self-play eval")
+                cand_winrate = -1.0
+            else:
+                cand_winrate = selfplay_winrate(
+                    args.selfplay_binary, args.engine,
+                    candidate_npz, best_npz,
+                    args.selfplay_eval_games, args.selfplay_eval_movetime,
+                    n_workers=args.selfplay_eval_workers,
+                )
             cand_gen_mae = gen_val_mae(candidate_ck, gen_val_file) if gen_val_file else -1.0
 
             print(f"[loop] Iteration {iteration}: candidate mae={candidate_mae:.1f}cp  best mae={best_mae:.1f}cp")
@@ -692,11 +837,28 @@ def main():
             # its own data) and is NOT used for promotion.  Use external signals:
             #   - puzzle score >= best (equal or better tactical ability)
             #   - self-play win rate >= min_winrate (not a regression in play)
-            # Both signals must pass when both tools are configured.
+            #   - gen_val CP-MAE increase <= --gen-val-max-increase (real-game generalisation)
+            # Both puzzle + winrate must pass when both tools are configured.
             # Falls back to each individual signal if only one is available.
             # If neither tool is configured, always promote with a warning.
-            puzzle_ok   = cand_puzzle  >= best_puzzle - args.puzzle_regression_tolerance  if cand_puzzle  >= 0 and best_puzzle >= 0 else None
-            winrate_ok  = cand_winrate >= args.selfplay_min_winrate                      if cand_winrate >= 0                     else None
+            # puzzle_ok already computed above (used for self-play early-exit)
+            winrate_ok  = cand_winrate >= args.selfplay_min_winrate if cand_winrate >= 0 else None
+
+            # gen_val soft gate: block if real-game MAE rises more than threshold.
+            # This catches overfitting to the self-play distribution where puzzle score
+            # holds but positional understanding degrades on real-game positions.
+            gen_val_ok = None
+            gen_val_reason = ""
+            if (cand_gen_mae >= 0 and best_gen_mae >= 0 and args.gen_val_max_increase > 0):
+                gen_val_threshold = best_gen_mae * (1.0 + args.gen_val_max_increase / 100.0)
+                gen_val_ok = cand_gen_mae <= gen_val_threshold
+                gen_val_reason = (
+                    f"gen_val {cand_gen_mae:.2f}cp <= {gen_val_threshold:.2f}cp "
+                    f"({args.gen_val_max_increase:.0f}%% tolerance)"
+                )
+                if not gen_val_ok:
+                    print(f"[loop] gen_val gate FAILED: {cand_gen_mae:.2f}cp > {gen_val_threshold:.2f}cp "
+                          f"(best={best_gen_mae:.2f}cp + {args.gen_val_max_increase:.0f}%%)")
 
             if puzzle_ok is not None and winrate_ok is not None:
                 promoted = puzzle_ok and winrate_ok
@@ -714,6 +876,11 @@ def main():
                 print("[loop] WARNING: no --puzzle-binary or --selfplay-binary configured; "
                       "promotion is unconditional.")
 
+            # Apply gen_val gate on top of the primary decision.
+            if promoted and gen_val_ok is not None and not gen_val_ok:
+                promoted = False
+                reason = f"{reason} BUT gen_val gate failed ({gen_val_reason})"
+
             if promoted:
                 best_ck = candidate_ck
                 best_mae = candidate_mae
@@ -730,6 +897,9 @@ def main():
                 # Discard candidate entirely; next iteration fine-tunes from best_ck again.
                 candidate_ck.unlink(missing_ok=True)
                 candidate_npz.unlink(missing_ok=True)
+                # puzzle_anchor_jsonl is kept for the next iteration regardless of promotion,
+                # so the failures are still used to improve the model next round.
+                # (inject_anchor_data at the top of next iteration will pick it up)
 
     print(f"\n[loop] Done. Best val_cp_mae={best_mae:.1f}  checkpoint={best_ck}")
 
