@@ -22,4 +22,5 @@ PYTHONPATH=. python3 scripts/selfplay_loop.py \
   --anchor-size         50000 \
   --anchor-min-fraction 0.10 \
   --selfplay-eval-games 150 \
-  --gen-val-max-increase 5.0
+  --gen-val-max-increase 5.0 \
+  --selfplay-noise-prob 0.05
