@@ -319,7 +319,7 @@ def main():
 
     if args.selfplay_games > 0:
         sp_engine_path = args.selfplay_engine if args.selfplay_engine else args.label_engine
-        sp_opts: dict[str, str] = {"Threads": str(args.selfplay_threads)}
+        sp_opts: dict[str, str] = {"Threads": str(args.selfplay_threads), "Ponder": "false"}
         for opt in args.selfplay_engine_opt:
             if "=" in opt:
                 name, value = opt.split("=", 1)

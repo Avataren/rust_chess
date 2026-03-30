@@ -389,8 +389,13 @@ fn id_search_single(
     // Ponder must be extracted from the position after the *played* move, not
     // the true best move, otherwise the TT returns a continuation for the wrong
     // branch and we send an illegal ponder.
-    let ponder_move = played_move
-        .and_then(|bm| extract_ponder_move(chess_board, conductor, tt, bm, is_white));
+    // Skip entirely when UCI Ponder is disabled (skip_ponder=true) to avoid
+    // the depth-2 fallback search overhead during data generation.
+    let ponder_move = if noise.skip_ponder {
+        None
+    } else {
+        played_move.and_then(|bm| extract_ponder_move(chess_board, conductor, tt, bm, is_white))
+    };
 
     SearchResult {
         score: best.0,

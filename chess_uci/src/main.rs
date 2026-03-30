@@ -473,6 +473,8 @@ fn main() {
     // Disabled by default — alpha=0.0 means no noise.
     let mut dirichlet_alpha: f32 = 0.0;
     let mut dirichlet_amplitude_cp: f32 = 200.0;
+    // UCI Ponder: when false, skip ponder-move extraction to save compute.
+    let mut uci_ponder: bool = true;
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let ponderhit_flag = Arc::new(AtomicBool::new(false));
@@ -587,6 +589,9 @@ fn main() {
                                 eprintln!("info string DirichletAmplitude set to {dirichlet_amplitude_cp:.0}cp");
                             }
                         }
+                        "ponder" => {
+                            uci_ponder = value.eq_ignore_ascii_case("true");
+                        }
                         _ => {}
                     }
                 }
@@ -649,10 +654,13 @@ fn main() {
                 let tt_c        = Arc::clone(&tt);
 
                 let threads = num_threads;
-                let noise = if dirichlet_alpha > 0.0 {
-                    RootNoiseConfig::dirichlet(dirichlet_alpha, dirichlet_amplitude_cp)
-                } else {
-                    RootNoiseConfig::NONE
+                let noise = RootNoiseConfig {
+                    skip_ponder: !uci_ponder,
+                    ..if dirichlet_alpha > 0.0 {
+                        RootNoiseConfig::dirichlet(dirichlet_alpha, dirichlet_amplitude_cp)
+                    } else {
+                        RootNoiseConfig::NONE
+                    }
                 };
                 if is_ponder {
                     ponderhit_flag.store(false, Ordering::Release);

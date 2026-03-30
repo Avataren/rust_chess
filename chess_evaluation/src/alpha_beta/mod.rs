@@ -59,6 +59,9 @@ pub struct RootNoiseConfig {
     /// Each move i gets a centred perturbation of
     /// `(d_i − 1/n) × dirichlet_amplitude_cp` where `d ~ Dir(α, n)`.
     pub dirichlet_amplitude_cp: f32,
+    /// When true, skip ponder-move extraction after search.
+    /// Set via UCI `setoption name Ponder value false`.
+    pub skip_ponder: bool,
 }
 
 impl RootNoiseConfig {
@@ -67,19 +70,20 @@ impl RootNoiseConfig {
         noise_cp: 0,
         dirichlet_alpha: 0.0,
         dirichlet_amplitude_cp: 0.0,
+        skip_ponder: false,
     };
 
     /// Uniform ±cp perturbation only (Bevy difficulty system).
     #[inline]
     pub fn noise_cp(cp: i32) -> Self {
-        Self { noise_cp: cp, dirichlet_alpha: 0.0, dirichlet_amplitude_cp: 0.0 }
+        Self { noise_cp: cp, dirichlet_alpha: 0.0, dirichlet_amplitude_cp: 0.0, skip_ponder: false }
     }
 
     /// Dirichlet noise only.
     /// `alpha` = 0.3 is standard for chess; `amplitude_cp` = 200 is a good default.
     #[inline]
     pub fn dirichlet(alpha: f32, amplitude_cp: f32) -> Self {
-        Self { noise_cp: 0, dirichlet_alpha: alpha, dirichlet_amplitude_cp: amplitude_cp }
+        Self { noise_cp: 0, dirichlet_alpha: alpha, dirichlet_amplitude_cp: amplitude_cp, skip_ponder: false }
     }
 
     #[inline]
