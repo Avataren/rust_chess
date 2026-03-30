@@ -1,3 +1,29 @@
+# Project orientation
+
+This is a UCI chess engine written in Rust with a Python-based NNUE training pipeline. The two halves are connected by a single file: `nn_training/artifacts/eval.npz`.
+
+**Crate responsibilities:**
+- `chess_foundation` — types: pieces, moves, squares, flags
+- `chess_board` — board state, make/undo move, FEN parsing
+- `move_generator` — legal move generation, PieceConductor
+- `chess_evaluation` — search (alpha-beta, iterative deepening, Lazy SMP), NNUE eval, classical HCE, Syzygy TB, opening book
+- `chess_uci` — UCI protocol, time management, the playable engine binary
+- `self_play` — head-to-head binary: plays two engine instances against each other for evaluation
+- `puzzle_bench` — bin inside chess_evaluation: benchmarks puzzle solve rate
+
+**Training pipeline** (`nn_training/`):
+Self-play games → Stockfish labels → FIFO pool → fine-tune → evaluate → promote → `artifacts/eval.npz`
+
+**System seams (non-obvious connections):**
+- `nn_training/artifacts/eval.npz` — the only file shared between training and the live bot; updated in-place on every promotion; read by lichess-bot at game start via UCI `EvalFile` setoption
+- `chess_evaluation/src/eval.npz` — separate file, baked into the binary at compile time; only updated manually before a rebuild; do not confuse with the above
+- Syzygy tables (`/home/avataren/syzygy`) — used by the live engine and lichess bot; intentionally NOT used during self-play data generation or training
+
+**What is intentionally disconnected:**
+- Self-play training does not use Syzygy (would bias position distribution)
+- Gen-val MAE is logged but not a promotion gate (observational only)
+- The 40-game self-play winrate is a regression guard, not a confirmation of improvement
+
 # Code exploration
 
 Prefer codebase-memory MCP tools over Grep+Read for open-ended exploration:
