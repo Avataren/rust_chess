@@ -494,6 +494,7 @@ fn main() {
                 println!("option name Threads type spin default {default_threads} min 1 max {max_threads}");
                 println!("option name Hash type spin default 96 min 1 max 65536");
                 println!("option name Ponder type check default true");
+                println!("option name SkipPonder type check default false");
                 println!("option name EvalFile type string default <empty>");
                 println!("option name NeuralEval type check default false");
                 println!("option name NeuralConfidence type string default 0.0");
@@ -591,6 +592,9 @@ fn main() {
                         }
                         "ponder" => {
                             uci_ponder = value.eq_ignore_ascii_case("true");
+                        }
+                        "skipponder" => {
+                            uci_ponder = !value.eq_ignore_ascii_case("true");
                         }
                         _ => {}
                     }
