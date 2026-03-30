@@ -386,16 +386,23 @@ def _selfplay_chunk(selfplay_binary: str, engine_path: str,
         cmd += ["--opening-fens", opening_fens_file]
     result = subprocess.run(cmd, capture_output=True, text=True,)
     wins = draws = losses = 0
+    wins_seen = 0
     for line in result.stdout.splitlines():
-        # "  engine1 : 5 wins  (50.0%)"  or  "  Draws   : 3"
-        if "wins" in line and "engine1" in line:
-            try: wins = int(line.split(":")[1].strip().split()[0])
-            except (IndexError, ValueError): pass
+        # Final summary lines: "  chess_uci : 5 wins  (33.3%)"  (engine name = file stem,
+        # not the literal "engine1"/"engine2" — detect by position: first = engine1, second = engine2)
+        # or "  Draws         : 10"
+        if " wins " in line and "%" in line:
+            try:
+                val = int(line.split(":")[1].strip().split()[0])
+                if wins_seen == 0:
+                    wins = val
+                else:
+                    losses = val
+                wins_seen += 1
+            except (IndexError, ValueError):
+                pass
         elif line.strip().startswith("Draws"):
             try: draws = int(line.split(":")[1].strip().split()[0])
-            except (IndexError, ValueError): pass
-        elif "wins" in line and "engine2" in line:
-            try: losses = int(line.split(":")[1].strip().split()[0])
             except (IndexError, ValueError): pass
     return wins, draws, losses
 
