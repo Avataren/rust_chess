@@ -66,3 +66,9 @@ Applied to this project: generator = self-play + Stockfish oracle; discriminator
 1. **Regression risk** — does this touch a path that affects the live bot (`artifacts/eval.npz`), the promotion gate, or the data format? If so, what is the worst-case silent failure mode?
 2. **Compute cost** — self-play eval (150 games), puzzle bench (2000 puzzles), and Stockfish labeling are all expensive. Don't add steps that run unconditionally when they can be short-circuited or batched. If the puzzle gate already fails, skip the winrate eval.
 3. **Data invariants** — CP perspective, pool FIFO ordering, anchor-only-in-train, fixed gen_val seed. Any code touching JSONL files must respect these or training silently degrades.
+
+**Component boundary rules** — bugs in this codebase have repeatedly come from assuming an interface instead of verifying it:
+- **Subprocess output parsers**: Read the binary source (e.g. `self_play/src/main.rs`) to find the exact output format before writing any parser. The engine name in `self_play` output is derived from `file_stem()`, not a fixed label.
+- **Iteration-indexed files** (e.g. `puzzle_failures_iter{N}.jsonl`): Trace the read path and write path independently with a concrete N to confirm the offset is correct before writing.
+- **Cached files** (e.g. `data/opening_fens.txt`): A cache that only regenerates when missing silently serves stale data after code changes. Always consider the "file exists but is stale" scenario.
+- **Opening/move sequences**: Validate programmatically (`_opening_fens()` in the venv) before committing — illegal moves fail silently at runtime.
