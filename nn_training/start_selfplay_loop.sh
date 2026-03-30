@@ -24,4 +24,5 @@ PYTHONPATH=. python3 scripts/selfplay_loop.py \
   --selfplay-eval-games 150 \
   --gen-val-max-increase 5.0 \
   --selfplay-noise-prob 0.05 \
-  --selfplay-dirichlet-alpha 0.3
+  --selfplay-dirichlet-alpha 0.3 \
+  --selfplay-dirichlet-amplitude 100

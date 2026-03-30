@@ -276,6 +276,11 @@ fn id_search_single(
     // If no dual model is loaded, this is a no-op (acc_valid stays false).
     ctx.init_accumulators(chess_board);
     let mut best: (i32, Option<ChessMove>) = (if is_white { i32::MIN + 1 } else { i32::MAX }, None);
+    // Tracks the noise-selected move from the most recently *completed* depth.
+    // Kept separate from `best.1` (the true best move) so that move ordering
+    // across depth iterations always uses the true best — only the final played
+    // move is the noisy selection.
+    let mut final_noisy_move: Option<ChessMove> = None;
 
     for depth in 1..=max_depth {
         let (prev_score, prev_move) = best;
@@ -360,12 +365,14 @@ fn id_search_single(
             if s.load(Ordering::Acquire) {
                 if best.1.is_none() && result.1.is_some() {
                     best = result;
+                    final_noisy_move = ctx.noisy_move;
                 }
                 break;
             }
         }
 
         best = result;
+        final_noisy_move = ctx.noisy_move;
 
         if let Some(cb) = on_depth {
             cb(depth, best.0, ctx.nodes, t0.elapsed().as_millis());
@@ -378,13 +385,16 @@ fn id_search_single(
         }
     }
 
+    // Use the noise-selected move for the played move; use the true best move
+    // for ponder extraction so the TT probe finds the right continuation.
+    let played_move = if noise.is_disabled() { best.1 } else { final_noisy_move };
     let ponder_move = best
         .1
         .and_then(|bm| extract_ponder_move(chess_board, conductor, tt, bm, is_white));
 
     SearchResult {
         score: best.0,
-        best_move: best.1,
+        best_move: played_move,
         ponder_move,
         total_nodes: ctx.nodes,
     }

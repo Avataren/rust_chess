@@ -1342,14 +1342,11 @@ pub fn search_root(
             break;
         }
     }
-    (
-        best_score,
-        if noise.is_disabled() {
-            best_move
-        } else {
-            noisy_best_move
-        },
-    )
+    // Store the noise-selected move in ctx so id_search_single can use it for
+    // the final played move without affecting iterative-deepening move ordering.
+    ctx.noisy_move = if noise.is_disabled() { best_move } else { noisy_best_move };
+    // Always return the true best move so prev_best ordering stays accurate.
+    (best_score, best_move)
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────

@@ -149,6 +149,11 @@ pub struct SearchContext {
     /// Reusable buffer for capture moves tried before a beta-cutoff.
     /// Parallel to `tried_quiets_buf`: captures that failed get a capture_history malus.
     pub(in crate::alpha_beta) tried_captures_buf: Vec<ChessMove>,
+    /// The noise-selected move from the most recently completed `search_root` call.
+    /// Set by `search_root` when `RootNoiseConfig` has noise enabled; otherwise equals
+    /// the true best move.  Used by `id_search_single` for the final move returned to
+    /// the caller so that noise never degrades iterative-deepening move ordering.
+    pub(in crate::alpha_beta) noisy_move: Option<ChessMove>,
     /// Lightweight eval cache: `eval_cache[hash & (EVAL_CACHE_SIZE-1)] = (hash, score)`.
     /// Avoids redundant NN forward passes for positions revisited within a search
     /// (especially qsearch transpositions).  Cleared in `init_accumulators`.
@@ -182,6 +187,7 @@ impl SearchContext {
             tried_quiets_buf: Vec::with_capacity(16),
             tried_captures_buf: Vec::with_capacity(16),
             eval_cache: vec![(0u64, 0i32); EVAL_CACHE_SIZE],
+            noisy_move: None,
         }
     }
 

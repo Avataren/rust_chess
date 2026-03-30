@@ -469,9 +469,10 @@ fn main() {
     let mut syzygy_probe_limit: u32 = 0;
 
     // Dirichlet root noise: alpha > 0 enables noise (typical: 0.3 for chess).
-    // Amplitude is fixed at 200cp; only alpha is user-configurable.
-    // Disabled by default — 0.0 means no noise.
+    // Amplitude controls the CP scale of the noise (default 200cp).
+    // Disabled by default — alpha=0.0 means no noise.
     let mut dirichlet_alpha: f32 = 0.0;
+    let mut dirichlet_amplitude_cp: f32 = 200.0;
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let ponderhit_flag = Arc::new(AtomicBool::new(false));
@@ -497,6 +498,7 @@ fn main() {
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name SyzygyProbeLimit type spin default 0 min 0 max 7");
                 println!("option name DirichletAlpha type string default 0.0");
+                println!("option name DirichletAmplitude type string default 200.0");
                 println!("uciok");
             }
             "setoption" => {
@@ -573,10 +575,16 @@ fn main() {
                             if let Ok(a) = value.parse::<f32>() {
                                 dirichlet_alpha = a.max(0.0);
                                 if dirichlet_alpha > 0.0 {
-                                    eprintln!("info string DirichletAlpha set to {dirichlet_alpha:.3} (amplitude 200cp)");
+                                    eprintln!("info string DirichletAlpha set to {dirichlet_alpha:.3} (amplitude {dirichlet_amplitude_cp:.0}cp)");
                                 } else {
                                     eprintln!("info string DirichletAlpha disabled");
                                 }
+                            }
+                        }
+                        "dirichletamplitude" => {
+                            if let Ok(a) = value.parse::<f32>() {
+                                dirichlet_amplitude_cp = a.max(1.0);
+                                eprintln!("info string DirichletAmplitude set to {dirichlet_amplitude_cp:.0}cp");
                             }
                         }
                         _ => {}
@@ -642,7 +650,7 @@ fn main() {
 
                 let threads = num_threads;
                 let noise = if dirichlet_alpha > 0.0 {
-                    RootNoiseConfig::dirichlet(dirichlet_alpha, 200.0)
+                    RootNoiseConfig::dirichlet(dirichlet_alpha, dirichlet_amplitude_cp)
                 } else {
                     RootNoiseConfig::NONE
                 };
