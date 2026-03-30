@@ -33,6 +33,26 @@ import yaml
 from tqdm import tqdm
 
 
+# ── Puzzle tolerance tiers ───────────────────────────────────────────────────
+# When self-play clearly shows improvement, allow small puzzle regressions.
+# Each entry: (min_selfplay_winrate%, max_puzzle_regression%).
+# Evaluated in order — first matching tier wins.
+_PUZZLE_TOLERANCE_TIERS: list[tuple[float, float]] = [
+    (55.0, 3.0),  # self-play ≥ 55%: allow up to 3% puzzle regression
+    (52.0, 2.0),  # self-play ≥ 52%: allow up to 2% puzzle regression
+]
+_PUZZLE_MAX_TOLERANCE: float = max(t for _, t in _PUZZLE_TOLERANCE_TIERS)  # 3.0
+
+
+def _tiered_puzzle_tolerance(base: float, winrate: float) -> float:
+    """Return effective puzzle regression tolerance given the self-play win rate."""
+    if winrate >= 0:
+        for min_wr, tol in _PUZZLE_TOLERANCE_TIERS:
+            if winrate >= min_wr:
+                return tol
+    return base
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def load_val_mae(checkpoint_path: Path) -> float:
@@ -891,19 +911,26 @@ def main():
                 )
                 failures_tsv.unlink(missing_ok=True)
 
-            # Early-exit: compute puzzle gate result immediately so we can skip
-            # the expensive self-play eval when the puzzle gate already fails.
-            puzzle_ok = (
-                cand_puzzle >= best_puzzle - args.puzzle_regression_tolerance
+            # Early-exit check: use max possible tolerance so we don't skip self-play
+            # for models that fail the base tolerance but might pass a tiered tolerance.
+            # (Tiered tolerance is recomputed after self-play when the score is known.)
+            puzzle_ok_early = (
+                cand_puzzle >= best_puzzle - _PUZZLE_MAX_TOLERANCE
                 if cand_puzzle >= 0 and best_puzzle >= 0 else None
             )
 
             if cand_puzzle >= 0:
-                gate_str = {True: "PASSED", False: "FAILED", None: "N/A"}[puzzle_ok]
+                regression = best_puzzle - cand_puzzle if best_puzzle >= 0 else 0.0
+                if puzzle_ok_early is False:
+                    gate_str = "FAILED"
+                elif regression <= args.puzzle_regression_tolerance:
+                    gate_str = "PASSED"
+                else:
+                    gate_str = f"BORDERLINE ({regression:.1f}% regression — needs self-play ≥52%)"
                 print(f"[loop] Puzzle score: candidate={cand_puzzle:.1f}%  best={best_puzzle:.1f}%  [{gate_str}]")
 
-            if puzzle_ok is False:
-                print(f"[loop] Puzzle gate failed ({cand_puzzle:.1f}% < {best_puzzle - args.puzzle_regression_tolerance:.1f}%) — skipping self-play eval")
+            if puzzle_ok_early is False:
+                print(f"[loop] Puzzle gate failed ({cand_puzzle:.1f}% < {best_puzzle - _PUZZLE_MAX_TOLERANCE:.1f}%) — skipping self-play eval")
                 cand_winrate = -1.0
             else:
                 cand_winrate = selfplay_winrate(
@@ -933,8 +960,15 @@ def main():
             # Both puzzle + winrate must pass when both tools are configured.
             # Falls back to each individual signal if only one is available.
             # If neither tool is configured, always promote with a warning.
-            # puzzle_ok already computed above (used for self-play early-exit)
-            winrate_ok  = cand_winrate >= args.selfplay_min_winrate if cand_winrate >= 0 else None
+            effective_tol = _tiered_puzzle_tolerance(args.puzzle_regression_tolerance, cand_winrate)
+            puzzle_ok = (
+                cand_puzzle >= best_puzzle - effective_tol
+                if cand_puzzle >= 0 and best_puzzle >= 0 else None
+            )
+            if effective_tol > args.puzzle_regression_tolerance and cand_puzzle >= 0:
+                tier_reason = f"self-play {cand_winrate:.1f}% → {effective_tol:.0f}% puzzle tolerance"
+                print(f"[loop] Tiered puzzle tolerance applied: {tier_reason}")
+            winrate_ok = cand_winrate >= args.selfplay_min_winrate if cand_winrate >= 0 else None
 
             # gen_val soft gate: block if real-game MAE rises more than threshold.
             # This catches overfitting to the self-play distribution where puzzle score
@@ -954,11 +988,11 @@ def main():
 
             if puzzle_ok is not None and winrate_ok is not None:
                 promoted = puzzle_ok and winrate_ok
-                reason = (f"puzzle {cand_puzzle:.1f}%>={best_puzzle - args.puzzle_regression_tolerance:.1f}%"
+                reason = (f"puzzle {cand_puzzle:.1f}%>={best_puzzle - effective_tol:.1f}%"
                           f" AND win rate {cand_winrate:.1f}%>={args.selfplay_min_winrate:.0f}%")
             elif puzzle_ok is not None:
                 promoted = puzzle_ok
-                reason = f"puzzle {cand_puzzle:.1f}% >= {best_puzzle - args.puzzle_regression_tolerance:.1f}%"
+                reason = f"puzzle {cand_puzzle:.1f}% >= {best_puzzle - effective_tol:.1f}%"
             elif winrate_ok is not None:
                 promoted = winrate_ok
                 reason = f"win rate {cand_winrate:.1f}% >= {args.selfplay_min_winrate:.0f}%"
