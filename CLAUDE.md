@@ -21,8 +21,8 @@ Self-play games → Stockfish labels → FIFO pool → fine-tune → evaluate �
 
 **What is intentionally disconnected:**
 - Self-play training does not use Syzygy (would bias position distribution)
-- Gen-val MAE is logged but not a promotion gate (observational only)
-- The 40-game self-play winrate is a regression guard, not a confirmation of improvement
+- Gen-val MAE is a soft promotion gate (blocks if CP-MAE rises >5% above best); not a hard gate
+- The self-play winrate (150 games, SE≈4.1%) is a regression guard, not a confirmation of improvement
 
 # Code exploration
 
@@ -51,3 +51,18 @@ Before touching `chess_uci/src/tb.rs`, Syzygy probe logic, or endgame engine beh
 
 Before writing data generation code, touching dataset loaders, or working with CP values:
 → Read `.claude/data_pipeline.md` first. The CP perspective convention (side-to-move in JSONL, white-absolute in binary) is a silent failure mode — wrong perspective trains on inverted evaluations with no warning.
+
+# Reasoning approach
+
+**GAN thinking framework** — use this when analysing complex feedback loops (training pipelines, eval systems, iterative processes):
+- **Generator**: what produces the data or signal? Is it adaptive, or does it produce the same thing regardless of downstream results?
+- **Discriminator**: what validates quality or gates promotion? Is it sharp enough to distinguish real improvement from noise? Does it cover all failure modes (tactical *and* positional *and* generalization)?
+- **Feedback path**: does the discriminator's output flow back to improve the generator, or is information discarded after each decision?
+- **Mode collapse risk**: does the system converge to a narrow distribution over time? What forces diversity?
+
+Applied to this project: generator = self-play + Stockfish oracle; discriminator = puzzle gate + winrate gate + gen_val gate; feedback = puzzle failures injected as anchor data next iteration.
+
+**Before proposing or implementing any change, check:**
+1. **Regression risk** — does this touch a path that affects the live bot (`artifacts/eval.npz`), the promotion gate, or the data format? If so, what is the worst-case silent failure mode?
+2. **Compute cost** — self-play eval (150 games), puzzle bench (2000 puzzles), and Stockfish labeling are all expensive. Don't add steps that run unconditionally when they can be short-circuited or batched. If the puzzle gate already fails, skip the winrate eval.
+3. **Data invariants** — CP perspective, pool FIFO ordering, anchor-only-in-train, fixed gen_val seed. Any code touching JSONL files must respect these or training silently degrades.
