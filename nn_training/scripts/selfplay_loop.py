@@ -182,7 +182,7 @@ _OPENING_LINES = [
     ["e2e4","e7e5","g1f3","b8c6","f1b5"],
     ["e2e4","e7e5","g1f3","b8c6","f1b5","a7a6","b5a4","g8f6"],
     ["e2e4","e7e5","g1f3","b8c6","f1b5","a7a6","b5a4","g8f6","e1g1","f8e7"],
-    ["e2e4","e7e5","g1f3","b8c6","f1b5","a7a6","b5a4","g8f6","e1g1","f8e7","f1e1","b7b5","b5b3","d7d6"],
+    ["e2e4","e7e5","g1f3","b8c6","f1b5","a7a6","b5a4","g8f6","e1g1","f8e7","f1e1","b7b5","a4b3","d7d6"],
     ["e2e4","e7e5","g1f3","b8c6","f1b5","g8f6"],
     ["e2e4","e7e5","g1f3","b8c6","f1b5","g8f6","e1g1","f6e4"],
     ["e2e4","e7e5","g1f3","b8c6","f1b5","f8c5"],
@@ -297,12 +297,35 @@ _OPENING_LINES = [
     ["d2d4","g8f6","c2c4","g7g6","b1c3","d7d5"],
     ["d2d4","g8f6","c2c4","g7g6","b1c3","d7d5","c4d5","f6d5","e2e4"],
     ["d2d4","g8f6","c2c4","g7g6","b1c3","d7d5","c4d5","f6d5","e2e4","d5c3","b2c3","f8g7"],
+    # Grünfeld Russian System
+    ["d2d4","g8f6","c2c4","g7g6","b1c3","d7d5","g1f3","f8g7","d1b3"],
+    # Grünfeld Exchange, Bc4 line
+    ["d2d4","g8f6","c2c4","g7g6","b1c3","d7d5","c4d5","f6d5","e2e4","d5c3","b2c3","f8g7","f1c4"],
     # Benoni
     ["d2d4","g8f6","c2c4","c7c5","d4d5"],
     ["d2d4","g8f6","c2c4","c7c5","d4d5","e7e6","b1c3","e6d5","c4d5","d7d6"],
+    # Modern Benoni main line
+    ["d2d4","g8f6","c2c4","c7c5","d4d5","e7e6","b1c3","e6d5","c4d5","d7d6","e2e4","g7g6","g1f3"],
+    # Modern Benoni Fianchetto variation
+    ["d2d4","g8f6","c2c4","c7c5","d4d5","e7e6","b1c3","e6d5","c4d5","d7d6","g2g3","g7g6","f1g2"],
+    # Benko Gambit
+    ["d2d4","g8f6","c2c4","c7c5","d4d5","b7b5","c4b5","a7a6"],
+    ["d2d4","g8f6","c2c4","c7c5","d4d5","b7b5","c4b5","a7a6","b5a6","c8a6"],
     # Dutch
     ["d2d4","f7f5","g2g3","g8f6","f1g2"],
     ["d2d4","f7f5","c2c4","g8f6","g2g3"],
+    # Dutch Stonewall
+    ["d2d4","f7f5","g1f3","g8f6","e2e3","e7e6","f1d3","d7d5","e1g1","c7c6"],
+    # Dutch Leningrad
+    ["d2d4","f7f5","g2g3","g8f6","f1g2","g7g6","g1f3","f8g7","e1g1","e8g8"],
+    # Trompowsky Attack
+    ["d2d4","g8f6","c1g5"],
+    ["d2d4","g8f6","c1g5","e7e6","e2e3"],
+    ["d2d4","g8f6","c1g5","f6e4","g5f4","d7d5"],
+    # Torre Attack
+    ["d2d4","g8f6","g1f3","e7e6","c1g5"],
+    ["d2d4","g8f6","g1f3","d7d5","c1g5"],
+    ["d2d4","d7d5","g1f3","g8f6","c1g5","e7e6","e2e3"],
     # London
     ["d2d4","d7d5","g1f3","g8f6","c1f4"],
     ["d2d4","d7d5","g1f3","g8f6","c1f4","e7e6","e2e3"],
@@ -509,7 +532,8 @@ def split_pool(pool_file: Path, train_file: Path, val_file: Path, val_fraction: 
 
 
 def inject_anchor_data(anchor_file: Path, train_file: Path, n: int,
-                       extra_files: list[Path] | None = None):
+                       extra_files: list[Path] | None = None,
+                       exclude_fens: set[str] | None = None):
     """Sample n lines from anchor_file and append them to train_file.
 
     Injecting a fixed slice of original training data each iteration prevents
@@ -520,10 +544,24 @@ def inject_anchor_data(anchor_file: Path, train_file: Path, n: int,
 
     extra_files: additional JSONL files whose entire contents are appended
     after the anchor sample (e.g. puzzle failure positions for targeted repair).
+    exclude_fens: set of FEN strings to skip when sampling (prevents gen_val
+    positions from leaking into training and making the gen_val gate optimistic).
     """
     lines = anchor_file.read_text(encoding="utf-8").splitlines(keepends=True)
     if not lines:
         return
+    if exclude_fens:
+        filtered = []
+        for line in lines:
+            try:
+                if json.loads(line)["fen"] not in exclude_fens:
+                    filtered.append(line)
+            except (json.JSONDecodeError, KeyError):
+                filtered.append(line)
+        excluded = len(lines) - len(filtered)
+        if excluded:
+            print(f"[loop] Excluded {excluded} gen_val positions from anchor sample")
+        lines = filtered
     sample = random.sample(lines, min(n, len(lines)))
     with train_file.open("a", encoding="utf-8") as f:
         f.writelines(sample)
@@ -657,14 +695,30 @@ def main():
     else:
         gen_val_file = None
 
+    # Build a set of gen_val FENs to exclude from anchor injection.
+    # gen_val is sampled from the same anchor file that gets injected each iteration,
+    # so without exclusion those positions gradually leak into training and make the
+    # gen_val gate optimistic (it measures fit to positions the model trained on).
+    gen_val_fens: set[str] = set()
+    if gen_val_file and gen_val_file.exists():
+        for line in gen_val_file.open(encoding="utf-8"):
+            try:
+                gen_val_fens.add(json.loads(line.strip())["fen"])
+            except (json.JSONDecodeError, KeyError):
+                pass
+        if gen_val_fens:
+            print(f"[loop] Loaded {len(gen_val_fens)} gen_val FENs for anchor exclusion")
+
     # Export initial weights and measure baseline puzzle score.
     best_npz = artifacts / "eval.npz"
     if not best_npz.exists():
         export_weights(best_ck, best_npz)
+    baseline_failures_tsv = Path("data/puzzle_failures_iter0.tsv")
     best_puzzle = puzzle_score(
         args.puzzle_binary, args.puzzle_file, best_npz,
         args.puzzle_count, args.puzzle_depth, seed=args.puzzle_seed,
         min_rating=args.puzzle_min_rating, max_rating=args.puzzle_max_rating,
+        export_failures_file=str(baseline_failures_tsv) if args.puzzle_binary else "",
     )
     if best_puzzle >= 0:
         print(f"[loop] Initial puzzle score: {best_puzzle:.1f}%  (seed={args.puzzle_seed})")
@@ -677,22 +731,35 @@ def main():
     # These are the only per-iteration artifacts that are never deleted during
     # normal operation.  On resume they won't exist yet (injection happens before
     # the file is created), so deleting them here is always safe.
+    # NOTE: this deletes *.jsonl only — the baseline *.tsv above survives.
     stale = sorted(Path("data").glob("puzzle_failures_iter*.jsonl"))
     if stale:
         for f in stale:
             f.unlink()
         print(f"[loop] Removed {len(stale)} stale puzzle-failure file(s) from previous run")
 
-    # Write the theory opening book as FENs once; reused every iteration to align
-    # self-play data generation with the positions seen in evaluation and real games.
+    # Convert the baseline failure TSV into puzzle_failures_iter0.jsonl so that
+    # iteration 1 can inject it via prev_puzzle_anchor (iter{1-1} = iter0).
+    # This gives the first training run the same targeted repair that all later
+    # iterations benefit from.
+    baseline_puzzle_anchor = Path("data/puzzle_failures_iter0.jsonl")
+    if args.puzzle_binary and args.stockfish and baseline_failures_tsv.exists() and baseline_failures_tsv.stat().st_size > 0:
+        process_puzzle_failures(
+            baseline_failures_tsv,
+            baseline_puzzle_anchor,
+            args.stockfish,
+            workers=args.workers,
+        )
+        baseline_failures_tsv.unlink(missing_ok=True)
+
+    # Always regenerate the opening FENs file from _OPENING_LINES so that
+    # changes to the opening book take effect on the next restart without
+    # requiring manual deletion of the cached file.
     opening_fens_file = Path("data/opening_fens.txt")
     opening_fens_file.parent.mkdir(exist_ok=True)
-    if not opening_fens_file.exists():
-        fens = _opening_fens()
-        opening_fens_file.write_text("\n".join(fens) + "\n")
-        print(f"[loop] Wrote {len(fens)} theory opening FENs → {opening_fens_file}")
-    else:
-        print(f"[loop] Reusing existing opening FENs: {opening_fens_file}")
+    fens = _opening_fens()
+    opening_fens_file.write_text("\n".join(fens) + "\n")
+    print(f"[loop] Wrote {len(fens)} theory opening FENs → {opening_fens_file}")
 
     pool_file = Path("data/selfplay_pool.jsonl")
     pool_file.parent.mkdir(exist_ok=True)
@@ -746,6 +813,9 @@ def main():
         # Dynamic scaling: as the pool grows the fixed --anchor-size would shrink to a
         # negligible fraction. effective_anchor = max(anchor_size, pool_size * fraction)
         # keeps anchors at least --anchor-min-fraction of the training set.
+        # Puzzle failures written at the END of iteration N are injected at the
+        # START of iteration N+1, so use iter{N-1} for injection and iter{N} for writing.
+        prev_puzzle_anchor = Path(f"data/puzzle_failures_iter{iteration - 1}.jsonl")
         puzzle_anchor_jsonl = Path(f"data/puzzle_failures_iter{iteration}.jsonl")
         if args.anchor_data and Path(args.anchor_data).exists():
             pool_line_count = sum(1 for _ in pool_file.open(encoding="utf-8"))
@@ -758,7 +828,8 @@ def main():
                       f"({args.anchor_min_fraction*100:.0f}%% of {pool_line_count} pool lines)")
             inject_anchor_data(
                 Path(args.anchor_data), Path("data/train.jsonl"), effective_anchor,
-                extra_files=[puzzle_anchor_jsonl] if puzzle_anchor_jsonl.exists() else None,
+                extra_files=[prev_puzzle_anchor] if prev_puzzle_anchor.exists() else None,
+                exclude_fens=gen_val_fens if gen_val_fens else None,
             )
         elif args.anchor_data:
             print(f"[loop] WARNING: --anchor-data '{args.anchor_data}' not found — skipping anchor injection")
@@ -782,10 +853,10 @@ def main():
 
         # 6. Compare and promote
         if not candidate_ck.exists():
-            # train.py only saves when val_loss improves over the resume point.
-            # If nothing was saved, treat the resumed checkpoint as the candidate
-            # so the next iteration still fine-tunes from the latest state.
-            print(f"[loop] Iteration {iteration}: no improvement during fine-tune — continuing from current best.")
+            # Guard against training crashes: --reset-best-val means epoch 1 always
+            # saves a checkpoint, so this only fires if train.py was killed before
+            # writing anything. Continue from current best so the loop can recover.
+            print(f"[loop] Iteration {iteration}: training produced no checkpoint — continuing from current best.")
         else:
             candidate_mae = load_val_mae(candidate_ck)
             candidate_npz = artifacts / f"candidate_iter{iteration}.npz"
@@ -819,6 +890,10 @@ def main():
                 cand_puzzle >= best_puzzle - args.puzzle_regression_tolerance
                 if cand_puzzle >= 0 and best_puzzle >= 0 else None
             )
+
+            if cand_puzzle >= 0:
+                gate_str = {True: "PASSED", False: "FAILED", None: "N/A"}[puzzle_ok]
+                print(f"[loop] Puzzle score: candidate={cand_puzzle:.1f}%  best={best_puzzle:.1f}%  [{gate_str}]")
 
             if puzzle_ok is False:
                 print(f"[loop] Puzzle gate failed ({cand_puzzle:.1f}% < {best_puzzle - args.puzzle_regression_tolerance:.1f}%) — skipping self-play eval")
@@ -907,9 +982,8 @@ def main():
                 # Discard candidate entirely; next iteration fine-tunes from best_ck again.
                 candidate_ck.unlink(missing_ok=True)
                 candidate_npz.unlink(missing_ok=True)
-                # puzzle_anchor_jsonl is kept for the next iteration regardless of promotion,
-                # so the failures are still used to improve the model next round.
-                # (inject_anchor_data at the top of next iteration will pick it up)
+                # puzzle_anchor_jsonl is kept for the next iteration: it will be
+                # read as prev_puzzle_anchor at the start of iteration N+1.
 
     print(f"\n[loop] Done. Best val_cp_mae={best_mae:.1f}  checkpoint={best_ck}")
 

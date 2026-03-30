@@ -86,7 +86,7 @@ const OPENING_LINES: &[&[&str]] = &[
     &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"],
     &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6"],
     &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6", "e1g1", "f8e7"],
-    &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6", "e1g1", "f8e7", "f1e1", "b7b5", "b5b3", "d7d6"],
+    &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6", "e1g1", "f8e7", "f1e1", "b7b5", "a4b3", "d7d6"],
     &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "g8f6"],  // Berlin
     &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "g8f6", "e1g1", "f6e4"],  // Berlin Endgame
     &["e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "f8c5"],  // Classical Ruy
@@ -222,14 +222,39 @@ const OPENING_LINES: &[&[&str]] = &[
     &["d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "d7d5"],
     &["d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "d7d5", "c4d5", "f6d5", "e2e4"],
     &["d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "d7d5", "c4d5", "f6d5", "e2e4", "d5c3", "b2c3", "f8g7"],
+    // Grünfeld Russian System
+    &["d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "d7d5", "g1f3", "f8g7", "d1b3"],
+    // Grünfeld Exchange, Bc4 line
+    &["d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "d7d5", "c4d5", "f6d5", "e2e4", "d5c3", "b2c3", "f8g7", "f1c4"],
 
     // ── BENONI / MODERN BENONI ──────────────────────────────────────────────
     &["d2d4", "g8f6", "c2c4", "c7c5", "d4d5"],
     &["d2d4", "g8f6", "c2c4", "c7c5", "d4d5", "e7e6", "b1c3", "e6d5", "c4d5", "d7d6"],
+    // Modern Benoni main line
+    &["d2d4", "g8f6", "c2c4", "c7c5", "d4d5", "e7e6", "b1c3", "e6d5", "c4d5", "d7d6", "e2e4", "g7g6", "g1f3"],
+    // Modern Benoni Fianchetto variation
+    &["d2d4", "g8f6", "c2c4", "c7c5", "d4d5", "e7e6", "b1c3", "e6d5", "c4d5", "d7d6", "g2g3", "g7g6", "f1g2"],
+    // Benko Gambit
+    &["d2d4", "g8f6", "c2c4", "c7c5", "d4d5", "b7b5", "c4b5", "a7a6"],
+    &["d2d4", "g8f6", "c2c4", "c7c5", "d4d5", "b7b5", "c4b5", "a7a6", "b5a6", "c8a6"],
 
     // ── DUTCH DEFENSE: 1.d4 f5 ───────────────────────────────────────────────
     &["d2d4", "f7f5", "g2g3", "g8f6", "f1g2"],
     &["d2d4", "f7f5", "c2c4", "g8f6", "g2g3"],
+    // Dutch Stonewall
+    &["d2d4", "f7f5", "g1f3", "g8f6", "e2e3", "e7e6", "f1d3", "d7d5", "e1g1", "c7c6"],
+    // Dutch Leningrad
+    &["d2d4", "f7f5", "g2g3", "g8f6", "f1g2", "g7g6", "g1f3", "f8g7", "e1g1", "e8g8"],
+
+    // ── TROMPOWSKY ATTACK: 1.d4 Nf6 2.Bg5 ───────────────────────────────────
+    &["d2d4", "g8f6", "c1g5"],
+    &["d2d4", "g8f6", "c1g5", "e7e6", "e2e3"],
+    &["d2d4", "g8f6", "c1g5", "f6e4", "g5f4", "d7d5"],
+
+    // ── TORRE ATTACK: 1.d4 Nf6 2.Nf3 ...Bg5 ─────────────────────────────────
+    &["d2d4", "g8f6", "g1f3", "e7e6", "c1g5"],
+    &["d2d4", "g8f6", "g1f3", "d7d5", "c1g5"],
+    &["d2d4", "d7d5", "g1f3", "g8f6", "c1g5", "e7e6", "e2e3"],
 
     // ── LONDON SYSTEM ─────────────────────────────────────────────────────────
     &["d2d4", "d7d5", "g1f3", "g8f6", "c1f4"],
