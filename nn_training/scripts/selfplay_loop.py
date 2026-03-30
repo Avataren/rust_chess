@@ -673,6 +673,16 @@ def main():
     if best_gen_mae >= 0:
         print(f"[loop] Initial gen_val CP-MAE: {best_gen_mae:.2f}cp  (real-game positions, fixed set)")
 
+    # Clean up any stale puzzle-failure JSONL files from previous runs.
+    # These are the only per-iteration artifacts that are never deleted during
+    # normal operation.  On resume they won't exist yet (injection happens before
+    # the file is created), so deleting them here is always safe.
+    stale = sorted(Path("data").glob("puzzle_failures_iter*.jsonl"))
+    if stale:
+        for f in stale:
+            f.unlink()
+        print(f"[loop] Removed {len(stale)} stale puzzle-failure file(s) from previous run")
+
     # Write the theory opening book as FENs once; reused every iteration to align
     # self-play data generation with the positions seen in evaluation and real games.
     opening_fens_file = Path("data/opening_fens.txt")
