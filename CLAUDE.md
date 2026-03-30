@@ -45,3 +45,9 @@ Before running or interpreting any benchmark (puzzle_bench, bench NPS, self_play
 
 Before touching evaluation code, Cargo features, NNUE weights, the accumulator, or anything in `chess_evaluation/`:
 → Read `.claude/eval_system.md` first. It documents the four Cargo features, the two eval.npz files (embedded vs runtime), NNUE architecture, incremental accumulator, and common mistakes.
+
+Before touching `chess_uci/src/tb.rs`, Syzygy probe logic, or endgame engine behaviour:
+→ Read `.claude/syzygy.md` first. It covers the DTZ-vs-WDL distinction, the AmbiguousWdl type gotcha, castle move translation, the queen sacrifice bug and why DTZ fixes it, and the test suite.
+
+Before writing data generation code, touching dataset loaders, or working with CP values:
+→ Read `.claude/data_pipeline.md` first. The CP perspective convention (side-to-move in JSONL, white-absolute in binary) is a silent failure mode — wrong perspective trains on inverted evaluations with no warning.
