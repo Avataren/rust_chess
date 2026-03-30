@@ -367,21 +367,30 @@ _OPENING_LINES = [
 ]
 
 
-def _opening_fens() -> list[str]:
-    """Return one FEN per opening line by replaying moves with python-chess."""
+def _opening_fens(min_ply: int = 6) -> list[str]:
+    """Return FENs from every position at or after min_ply within each opening line.
+
+    Instead of only the endpoint, yield all intermediate positions so that
+    3000 self-play games draw from a much larger pool of starting points and
+    produce less correlated training data.  min_ply=6 (3 full moves each side)
+    ensures positions are past the very first development moves before the engine
+    takes over.  Duplicate FENs (shared prefixes across lines) are removed.
+    """
     import chess
-    fens = []
+    fens: list[str] = []
+    seen: set[str] = set()
     for line in _OPENING_LINES:
         board = chess.Board()
-        ok = True
-        for uci in line:
+        for i, uci in enumerate(line):
             try:
                 board.push_uci(uci)
             except Exception:
-                ok = False
                 break
-        if ok:
-            fens.append(board.fen())
+            if i + 1 >= min_ply:
+                fen = board.fen()
+                if fen not in seen:
+                    seen.add(fen)
+                    fens.append(fen)
     return fens
 
 
@@ -511,6 +520,7 @@ def generate_data(
     selfplay_threads: int,
     selfplay_parallel: int,
     opening_fens_file: str = "",
+    noise_prob: float = 0.0,
 ):
     print(f"[loop] Generating {games} self-play games → {output_path}")
     cmd = [sys.executable, "scripts/generate_data.py",
@@ -533,6 +543,8 @@ def generate_data(
         ]
     if opening_fens_file:
         cmd += ["--opening-fens-file", opening_fens_file]
+    if noise_prob > 0:
+        cmd += ["--noise-prob", str(noise_prob)]
     subprocess.run(cmd, check=True)
 
 
@@ -639,6 +651,9 @@ def main():
                     help="Positions sampled per self-play game (default 15)")
     ap.add_argument("--movetime-ms", type=int, default=100,
                     help="Engine think time per move during self-play")
+    ap.add_argument("--selfplay-noise-prob", type=float, default=0.05,
+                    help="Probability of a random move during data-gen self-play (default 0.05). "
+                         "Increases position diversity from repeated openings. Not used in eval games.")
     ap.add_argument("--eval-depth", type=int, default=14,
                     help="Stockfish depth for labelling")
     ap.add_argument("--workers", type=int, default=32,
@@ -823,6 +838,7 @@ def main():
                 selfplay_threads=args.selfplay_threads,
                 selfplay_parallel=args.selfplay_parallel,
                 opening_fens_file=str(opening_fens_file),
+                noise_prob=args.selfplay_noise_prob,
             )
 
         # 3. Append to replay pool

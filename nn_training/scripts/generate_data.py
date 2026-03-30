@@ -148,7 +148,7 @@ def _iter_pgn_positions(pgn_path: Path, max_positions: int, plies_min: int, min_
 def _selfplay_worker(args: tuple) -> list[str]:
     """Run in a subprocess — each worker owns its own engine instance.
     Returns FEN strings (picklable across process boundaries)."""
-    engine_path, engine_opts, n_games, movetime_ms, min_ply, max_ply, positions_per_game, opening_plies, seed, opening_fens = args
+    engine_path, engine_opts, n_games, movetime_ms, min_ply, max_ply, positions_per_game, opening_plies, seed, opening_fens, noise_prob = args
     random.seed(seed)
     engine = chess.engine.SimpleEngine.popen_uci(engine_path, stderr=subprocess.DEVNULL)
     try:
@@ -168,8 +168,17 @@ def _selfplay_worker(args: tuple) -> list[str]:
             for ply in range(max_ply):
                 if board.is_game_over():
                     break
-                result = engine.play(board, chess.engine.Limit(time=movetime_ms / 1000.0))
-                board.push(result.move)
+                if noise_prob > 0 and random.random() < noise_prob:
+                    # Epsilon-greedy: play a random legal move for positional diversity.
+                    # Stockfish labels the resulting position correctly regardless,
+                    # so these positions are valid (if unusual) training data.
+                    move = random.choice(list(board.legal_moves))
+                else:
+                    result = engine.play(board, chess.engine.Limit(time=movetime_ms / 1000.0))
+                    move = result.move
+                if move is None:
+                    break
+                board.push(move)
                 if ply >= min_ply:
                     states.append(board.fen())
             if states:
@@ -196,11 +205,14 @@ def selfplay_positions(
     n_parallel: int = 1,
     batch_size: int = 10,
     opening_fens: list[str] | None = None,
+    noise_prob: float = 0.0,
 ) -> list[str]:
     """Play self-play games across n_parallel engine instances, returning FENs.
     Uses small batches so the progress bar updates frequently.
     When opening_fens is provided, each game starts from a randomly chosen FEN
-    instead of random legal moves — aligns training positions with theory."""
+    instead of random legal moves — aligns training positions with theory.
+    noise_prob: probability of playing a random legal move instead of engine best,
+    producing more diverse positions from the same opening starts."""
     # Split total games into small batches for responsive progress reporting.
     batches = []
     remaining = games
@@ -211,7 +223,7 @@ def selfplay_positions(
 
     worker_args = [
         (engine_path, engine_opts, n, movetime_ms, min_ply, max_ply,
-         positions_per_game, opening_plies, random.randint(0, 2**31), opening_fens)
+         positions_per_game, opening_plies, random.randint(0, 2**31), opening_fens, noise_prob)
         for n in batches
     ]
 
@@ -264,6 +276,10 @@ def main():
                     help="File with one FEN per line; each self-play game starts from a randomly "
                          "chosen FEN instead of random legal moves. Use the theory opening book "
                          "to align training positions with evaluation and real game distributions.")
+    ap.add_argument("--noise-prob", type=float, default=0.0,
+                    help="Probability [0,1] of playing a random legal move instead of the engine best "
+                         "during self-play data generation. Increases positional diversity from repeated "
+                         "openings. 0.05 (5%%) is a good starting value. Not used during eval games.")
     args = ap.parse_args()
 
     random.seed()  # OS entropy — different openings every run
@@ -331,6 +347,7 @@ def main():
                 positions_per_game=args.positions_per_game,
                 n_parallel=args.selfplay_parallel,
                 opening_fens=sp_opening_fens,
+                noise_prob=args.noise_prob,
             )
             random.shuffle(sp_fens)
             fens.extend(sp_fens[:selfplay_cap])
