@@ -385,11 +385,11 @@ fn id_search_single(
         }
     }
 
-    // Use the noise-selected move for the played move; use the true best move
-    // for ponder extraction so the TT probe finds the right continuation.
     let played_move = if noise.is_disabled() { best.1 } else { final_noisy_move };
-    let ponder_move = best
-        .1
+    // Ponder must be extracted from the position after the *played* move, not
+    // the true best move, otherwise the TT returns a continuation for the wrong
+    // branch and we send an illegal ponder.
+    let ponder_move = played_move
         .and_then(|bm| extract_ponder_move(chess_board, conductor, tt, bm, is_white));
 
     SearchResult {
