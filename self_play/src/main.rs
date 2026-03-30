@@ -528,6 +528,7 @@ fn main() {
     let mut num_games: usize = 20;
     let mut movetime_ms: u64 = 100;
     let mut start_fen: Option<String> = None;
+    let mut opening_fens_path: Option<String> = None;
     let mut ponder = true; // enabled by default
     let mut engine1_opts: Vec<String> = Vec::new();
     let mut engine2_opts: Vec<String> = Vec::new();
@@ -545,6 +546,10 @@ fn main() {
             }
             "--fen" => {
                 start_fen = args.get(i + 1).map(|s| s.to_string());
+                i += 2;
+            }
+            "--opening-fens" => {
+                opening_fens_path = args.get(i + 1).map(|s| s.to_string());
                 i += 2;
             }
             "--no-ponder" => {
@@ -586,6 +591,12 @@ fn main() {
     let e2 = engine2_path
         .expect("Usage: self_play <engine1> <engine2> [--games N] [--movetime MS]");
 
+    // Load per-game opening FENs if provided; each game cycles through the list.
+    let opening_fens: Vec<String> = opening_fens_path
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).map(|l| l.to_string()).collect())
+        .unwrap_or_default();
+
     let conductor = PieceConductor::new();
 
     // Start engines once and reuse across all games.
@@ -605,6 +616,9 @@ fn main() {
     if let Some(ref fen) = start_fen {
         println!("Start FEN: {}", fen);
     }
+    if !opening_fens.is_empty() {
+        println!("Openings : {} FENs (cycling per game pair)", opening_fens.len());
+    }
     println!("{}", "─".repeat(60));
 
     let mut e1_wins = 0u32;
@@ -618,6 +632,14 @@ fn main() {
         let c1 = if engine1_is_white { "W" } else { "B" };
         let c2 = if engine1_is_white { "B" } else { "W" };
 
+        // Per-game FEN: opening_fens list cycles (pairs share same opening, both sides played),
+        // falling back to --fen or the default starting position.
+        let game_fen: Option<&str> = if !opening_fens.is_empty() {
+            Some(opening_fens[(game_num / 2) % opening_fens.len()].as_str())
+        } else {
+            start_fen.as_deref()
+        };
+
         print!(
             "Game {:>3}/{} │ {}({}) vs {}({}) │ ",
             game_num + 1,
@@ -630,7 +652,7 @@ fn main() {
         let _ = std::io::stdout().flush();
 
         let (result, reason, hits, attempts) =
-            play_game(&mut engine1, &mut engine2, movetime_ms, engine1_is_white, &conductor, start_fen.as_deref(), ponder);
+            play_game(&mut engine1, &mut engine2, movetime_ms, engine1_is_white, &conductor, game_fen, ponder);
 
         total_hits += hits;
         total_attempts += attempts;

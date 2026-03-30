@@ -51,6 +51,46 @@ def export_weights(checkpoint_path: Path, npz_path: Path):
     )
 
 
+def gen_val_mae(checkpoint_path: Path, gen_val_file: Path) -> float:
+    """Compute CP-MAE of a checkpoint on the fixed generalisation validation set.
+
+    Returns -1.0 if the checkpoint or data file is missing.
+    This measures whether improvements generalise to real-game positions,
+    not just to the self-play distribution.
+    """
+    if not checkpoint_path or not checkpoint_path.exists():
+        return -1.0
+    if not gen_val_file or not gen_val_file.exists():
+        return -1.0
+    result = subprocess.run(
+        [sys.executable, "scripts/eval_mae.py",
+         "--checkpoint", str(checkpoint_path),
+         "--data",       str(gen_val_file)],
+        capture_output=True, text=True,
+    )
+    for line in result.stdout.splitlines():
+        if line.startswith("cp_mae="):
+            try:
+                return float(line.split("=")[1])
+            except ValueError:
+                pass
+    return -1.0
+
+
+def sample_gen_val(source_file: Path, out_file: Path, n: int, seed: int = 0):
+    """Draw a fixed random sample from source_file and write to out_file.
+
+    Called once at startup — same seed means same positions every run,
+    so the generalisation metric is comparable across all iterations.
+    """
+    import random as _random
+    rng = _random.Random(seed)
+    lines = source_file.read_text(encoding="utf-8").splitlines(keepends=True)
+    sample = rng.sample(lines, min(n, len(lines)))
+    out_file.write_text("".join(sample), encoding="utf-8")
+    print(f"[loop] Generalisation val set: {len(sample)} positions → {out_file}")
+
+
 def puzzle_score(bench_binary: str, puzzle_file: str, npz_path: Path,
                  count: int, depth: int, seed: int,
                  min_rating: int = 0, max_rating: int = 0) -> float:
@@ -81,12 +121,179 @@ def puzzle_score(bench_binary: str, puzzle_file: str, npz_path: Path,
     return -1.0
 
 
+# Opening lines from chess_evaluation/src/opening_book.rs (UCI move sequences).
+# Each entry is played through python-chess to produce a starting FEN.
+_OPENING_LINES = [
+    # Ruy Lopez
+    ["e2e4","e7e5","g1f3","b8c6","f1b5"],
+    ["e2e4","e7e5","g1f3","b8c6","f1b5","a7a6","b5a4","g8f6"],
+    ["e2e4","e7e5","g1f3","b8c6","f1b5","a7a6","b5a4","g8f6","e1g1","f8e7"],
+    ["e2e4","e7e5","g1f3","b8c6","f1b5","a7a6","b5a4","g8f6","e1g1","f8e7","f1e1","b7b5","b5b3","d7d6"],
+    ["e2e4","e7e5","g1f3","b8c6","f1b5","g8f6"],
+    ["e2e4","e7e5","g1f3","b8c6","f1b5","g8f6","e1g1","f6e4"],
+    ["e2e4","e7e5","g1f3","b8c6","f1b5","f8c5"],
+    # Italian
+    ["e2e4","e7e5","g1f3","b8c6","f1c4"],
+    ["e2e4","e7e5","g1f3","b8c6","f1c4","f8c5"],
+    ["e2e4","e7e5","g1f3","b8c6","f1c4","f8c5","c2c3","g8f6"],
+    ["e2e4","e7e5","g1f3","b8c6","f1c4","f8c5","c2c3","g8f6","d2d4","e5d4","c3d4"],
+    ["e2e4","e7e5","g1f3","b8c6","f1c4","f8c5","d2d3","g8f6","c2c3"],
+    # Two Knights
+    ["e2e4","e7e5","g1f3","b8c6","f1c4","g8f6"],
+    ["e2e4","e7e5","g1f3","b8c6","f1c4","g8f6","d2d4","e5d4","e1g1"],
+    # Scotch
+    ["e2e4","e7e5","g1f3","b8c6","d2d4","e5d4","f3d4"],
+    ["e2e4","e7e5","g1f3","b8c6","d2d4","e5d4","f3d4","g8f6"],
+    # Petrov
+    ["e2e4","e7e5","g1f3","g8f6","f3e5","d7d6","e5f3","f6e4"],
+    ["e2e4","e7e5","g1f3","g8f6","d2d4"],
+    ["e2e4","e7e5","g1f3","g8f6","f3e5","d7d6","e5f3","f6e4","d2d4"],
+    # Vienna
+    ["e2e4","e7e5","b1c3","g8f6","f2f4"],
+    ["e2e4","e7e5","b1c3","b8c6","g1f3"],
+    # King's Gambit
+    ["e2e4","e7e5","f2f4","e5f4","g1f3"],
+    ["e2e4","e7e5","f2f4","e5f4","g1f3","g7g5"],
+    # Sicilian
+    ["e2e4","c7c5","g1f3"],
+    ["e2e4","c7c5","g1f3","d7d6","d2d4","c5d4","f3d4"],
+    ["e2e4","c7c5","g1f3","d7d6","d2d4","c5d4","f3d4","g8f6","b1c3"],
+    ["e2e4","c7c5","g1f3","d7d6","d2d4","c5d4","f3d4","g8f6","b1c3","a7a6"],
+    ["e2e4","c7c5","g1f3","d7d6","d2d4","c5d4","f3d4","g8f6","b1c3","a7a6","c1e3"],
+    ["e2e4","c7c5","g1f3","d7d6","d2d4","c5d4","f3d4","g8f6","b1c3","a7a6","f1e2"],
+    ["e2e4","c7c5","g1f3","d7d6","d2d4","c5d4","f3d4","g8f6","b1c3","g7g6"],
+    ["e2e4","c7c5","g1f3","d7d6","d2d4","c5d4","f3d4","g8f6","b1c3","g7g6","c1e3","f8g7","f2f3"],
+    ["e2e4","c7c5","g1f3","b8c6","d2d4","c5d4","f3d4"],
+    ["e2e4","c7c5","g1f3","b8c6","d2d4","c5d4","f3d4","g8f6","b1c3"],
+    ["e2e4","c7c5","g1f3","b8c6","d2d4","c5d4","f3d4","g8f6","b1c3","e7e5"],
+    ["e2e4","c7c5","g1f3","b8c6","d2d4","c5d4","f3d4","g8f6","b1c3","e7e5","d4b5","d7d6"],
+    ["e2e4","c7c5","g1f3","e7e6","d2d4","c5d4","f3d4"],
+    ["e2e4","c7c5","g1f3","e7e6","d2d4","c5d4","f3d4","g8f6","b1c3"],
+    ["e2e4","c7c5","g1f3","e7e6","d2d4","c5d4","f3d4","a7a6"],
+    ["e2e4","c7c5","b1c3","b8c6","g1f3","g7g6"],
+    ["e2e4","c7c5","c2c3","g8f6","e4e5","f6d5"],
+    # French
+    ["e2e4","e7e6","d2d4"],
+    ["e2e4","e7e6","d2d4","d7d5","b1c3"],
+    ["e2e4","e7e6","d2d4","d7d5","b1c3","g8f6","e4e5"],
+    ["e2e4","e7e6","d2d4","d7d5","b1c3","f8b4"],
+    ["e2e4","e7e6","d2d4","d7d5","b1c3","f8b4","e4e5","c7c5"],
+    ["e2e4","e7e6","d2d4","d7d5","e4e5","c7c5"],
+    ["e2e4","e7e6","d2d4","d7d5","e4e5","c7c5","c2c3","b8c6","g1f3"],
+    ["e2e4","e7e6","d2d4","d7d5","b1d2","g8f6"],
+    ["e2e4","e7e6","d2d4","d7d5","b1d2","c7c5"],
+    # Scandinavian
+    ["e2e4","d7d5","e4d5"],
+    ["e2e4","d7d5","e4d5","d8d5","b1c3"],
+    ["e2e4","d7d5","e4d5","d8d5","b1c3","d5a5"],
+    ["e2e4","d7d5","e4d5","g8f6"],
+    # Caro-Kann
+    ["e2e4","c7c6","d2d4","d7d5"],
+    ["e2e4","c7c6","d2d4","d7d5","b1c3","d5e4","c3e4"],
+    ["e2e4","c7c6","d2d4","d7d5","b1c3","d5e4","c3e4","c8f5"],
+    ["e2e4","c7c6","d2d4","d7d5","b1c3","d5e4","c3e4","b8d7"],
+    ["e2e4","c7c6","d2d4","d7d5","e4e5","c8f5"],
+    ["e2e4","c7c6","d2d4","d7d5","e4d5","c6d5","c2c4"],
+    # Alekhine
+    ["e2e4","g8f6","e4e5","f6d5","d2d4"],
+    ["e2e4","g8f6","e4e5","f6d5","d2d4","d7d6","g1f3"],
+    # Pirc/Modern
+    ["e2e4","d7d6","d2d4","g8f6","b1c3"],
+    ["e2e4","g7g6","d2d4","f8g7","b1c3"],
+    # Queen's Gambit
+    ["d2d4","d7d5","c2c4"],
+    ["d2d4","d7d5","c2c4","e7e6","b1c3"],
+    ["d2d4","d7d5","c2c4","e7e6","b1c3","g8f6","g1f3"],
+    ["d2d4","d7d5","c2c4","e7e6","b1c3","g8f6","c1g5"],
+    ["d2d4","d7d5","c2c4","e7e6","b1c3","g8f6","c1g5","f8e7","e2e3"],
+    ["d2d4","d7d5","c2c4","e7e6","b1c3","f8e7","g1f3","g8f6","c1f4"],
+    # Slav
+    ["d2d4","d7d5","c2c4","c7c6","b1c3","g8f6"],
+    ["d2d4","d7d5","c2c4","c7c6","b1c3","g8f6","g1f3"],
+    ["d2d4","d7d5","c2c4","c7c6","g1f3","g8f6","b1c3","d5c4"],
+    ["d2d4","d7d5","c2c4","c7c6","g1f3","g8f6","b1c3","e7e6"],
+    # QGA
+    ["d2d4","d7d5","c2c4","d5c4","g1f3"],
+    ["d2d4","d7d5","c2c4","d5c4","g1f3","g8f6","e2e3"],
+    # Catalan
+    ["d2d4","d7d5","c2c4","e7e6","g2g3"],
+    ["d2d4","d7d5","c2c4","e7e6","g2g3","g8f6","f1g2"],
+    ["d2d4","d7d5","c2c4","e7e6","g2g3","g8f6","f1g2","f8e7","g1f3"],
+    # King's Indian
+    ["d2d4","g8f6","c2c4"],
+    ["d2d4","g8f6","c2c4","g7g6","b1c3"],
+    ["d2d4","g8f6","c2c4","g7g6","b1c3","f8g7","e2e4"],
+    ["d2d4","g8f6","c2c4","g7g6","b1c3","f8g7","e2e4","d7d6","g1f3"],
+    ["d2d4","g8f6","c2c4","g7g6","b1c3","f8g7","e2e4","d7d6","g1f3","e8g8","f1e2"],
+    ["d2d4","g8f6","c2c4","g7g6","b1c3","f8g7","e2e4","d7d6","f2f3"],
+    # Nimzo-Indian
+    ["d2d4","g8f6","c2c4","e7e6","b1c3"],
+    ["d2d4","g8f6","c2c4","e7e6","b1c3","f8b4"],
+    ["d2d4","g8f6","c2c4","e7e6","b1c3","f8b4","e2e3"],
+    ["d2d4","g8f6","c2c4","e7e6","b1c3","f8b4","d1c2"],
+    ["d2d4","g8f6","c2c4","e7e6","b1c3","f8b4","e2e3","e8g8","f1d3"],
+    ["d2d4","g8f6","c2c4","e7e6","b1c3","f8b4","a2a3","b4c3","b2c3"],
+    # Queen's Indian
+    ["d2d4","g8f6","c2c4","e7e6","g1f3"],
+    ["d2d4","g8f6","c2c4","e7e6","g1f3","b7b6"],
+    ["d2d4","g8f6","c2c4","e7e6","g1f3","b7b6","g2g3"],
+    ["d2d4","g8f6","c2c4","e7e6","g1f3","b7b6","g2g3","c8b7","f1g2"],
+    ["d2d4","g8f6","c2c4","e7e6","g1f3","f8b4"],
+    # Grünfeld
+    ["d2d4","g8f6","c2c4","g7g6","b1c3","d7d5"],
+    ["d2d4","g8f6","c2c4","g7g6","b1c3","d7d5","c4d5","f6d5","e2e4"],
+    ["d2d4","g8f6","c2c4","g7g6","b1c3","d7d5","c4d5","f6d5","e2e4","d5c3","b2c3","f8g7"],
+    # Benoni
+    ["d2d4","g8f6","c2c4","c7c5","d4d5"],
+    ["d2d4","g8f6","c2c4","c7c5","d4d5","e7e6","b1c3","e6d5","c4d5","d7d6"],
+    # Dutch
+    ["d2d4","f7f5","g2g3","g8f6","f1g2"],
+    ["d2d4","f7f5","c2c4","g8f6","g2g3"],
+    # London
+    ["d2d4","d7d5","g1f3","g8f6","c1f4"],
+    ["d2d4","d7d5","g1f3","g8f6","c1f4","e7e6","e2e3"],
+    ["d2d4","d7d5","g1f3","g8f6","c1f4","c7c5","e2e3"],
+    ["d2d4","g8f6","g1f3","d7d5","c1f4","e7e6"],
+    ["d2d4","g8f6","c1f4","d7d5","e2e3","e7e6","g1f3"],
+    # English
+    ["c2c4","e7e5"],
+    ["c2c4","e7e5","b1c3","g8f6"],
+    ["c2c4","e7e5","g2g3","g8f6","f1g2"],
+    ["c2c4","g8f6","b1c3","e7e5"],
+    ["c2c4","c7c5","g1f3","b8c6"],
+    ["c2c4","g8f6","g2g3","g7g6"],
+    # Réti
+    ["g1f3","d7d5","g2g3"],
+    ["g1f3","d7d5","g2g3","g8f6","f1g2"],
+    ["g1f3","d7d5","c2c4"],
+    ["g1f3","g8f6","g2g3","g7g6","f1g2","f8g7"],
+]
+
+
+def _opening_fens() -> list[str]:
+    """Return one FEN per opening line by replaying moves with python-chess."""
+    import chess
+    fens = []
+    for line in _OPENING_LINES:
+        board = chess.Board()
+        ok = True
+        for uci in line:
+            try:
+                board.push_uci(uci)
+            except Exception:
+                ok = False
+                break
+        if ok:
+            fens.append(board.fen())
+    return fens
+
+
 def _selfplay_chunk(selfplay_binary: str, engine_path: str,
                     candidate_npz: str, baseline_npz: str,
-                    games: int, movetime_ms: int, threads_per_engine: int) -> tuple[int, int, int]:
+                    games: int, movetime_ms: int, threads_per_engine: int,
+                    opening_fens_file: str = "") -> tuple[int, int, int]:
     """Run one self_play chunk and return (wins, draws, losses) for engine1 (candidate)."""
-    result = subprocess.run(
-        [selfplay_binary,
+    cmd = [selfplay_binary,
          engine_path, engine_path,
          "--games",        str(games),
          "--movetime",     str(movetime_ms),
@@ -97,9 +304,10 @@ def _selfplay_chunk(selfplay_binary: str, engine_path: str,
          "--engine2-opt",  f"EvalFile={baseline_npz}",
          "--engine2-opt",  "NeuralEval=true",
          "--engine2-opt",  f"Threads={threads_per_engine}",
-         ],
-        capture_output=True, text=True,
-    )
+    ]
+    if opening_fens_file:
+        cmd += ["--opening-fens", opening_fens_file]
+    result = subprocess.run(cmd, capture_output=True, text=True,)
     wins = draws = losses = 0
     for line in result.stdout.splitlines():
         # "  engine1 : 5 wins  (50.0%)"  or  "  Draws   : 3"
@@ -127,6 +335,8 @@ def selfplay_winrate(selfplay_binary: str, engine_path: str,
 
     Returns candidate score (0.0–100.0, draws count 0.5) or -1.0 if unavailable.
     """
+    import tempfile
+
     if not selfplay_binary:
         return -1.0
 
@@ -137,16 +347,26 @@ def selfplay_winrate(selfplay_binary: str, engine_path: str,
     base, remainder = divmod(games, n_workers)
     chunk_sizes = [base + (1 if i < remainder else 0) for i in range(n_workers)]
 
-    # subprocess.run releases the GIL so ThreadPoolExecutor is sufficient.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
-        futures = [
-            ex.submit(_selfplay_chunk,
-                      selfplay_binary, engine_path,
-                      str(candidate_npz), str(baseline_npz),
-                      chunk, movetime_ms, threads_per_engine)
-            for chunk in chunk_sizes
-        ]
-        results = [f.result() for f in futures]
+    # Write opening FENs to a shared temp file that all worker processes can read.
+    fens = _opening_fens()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tf:
+        opening_fens_file = tf.name
+        tf.write("\n".join(fens) + "\n")
+
+    try:
+        # subprocess.run releases the GIL so ThreadPoolExecutor is sufficient.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as ex:
+            futures = [
+                ex.submit(_selfplay_chunk,
+                          selfplay_binary, engine_path,
+                          str(candidate_npz), str(baseline_npz),
+                          chunk, movetime_ms, threads_per_engine,
+                          opening_fens_file)
+                for chunk in chunk_sizes
+            ]
+            results = [f.result() for f in futures]
+    finally:
+        os.unlink(opening_fens_file)
 
     total_wins   = sum(r[0] for r in results)
     total_draws  = sum(r[1] for r in results)
@@ -316,6 +536,10 @@ def main():
                          "Prevents long-term distributional drift as the FIFO pool fills with self-play data.")
     ap.add_argument("--anchor-size", type=int, default=50_000,
                     help="Anchor positions sampled and appended to train set each iteration (default 50000)")
+    # ── Generalisation validation (real-game positions, not self-play) ─────────
+    ap.add_argument("--gen-val-size", type=int, default=10_000,
+                    help="Positions to hold out from anchor data for generalisation validation (default 10000). "
+                         "CP-MAE on this fixed set reveals whether improvements transfer to real-game positions.")
     args = ap.parse_args()
 
     artifacts = Path(args.artifacts_dir)
@@ -328,6 +552,19 @@ def main():
     best_mae = load_val_mae(best_ck)
     print(f"[loop] Starting from {best_ck}  val_cp_mae={best_mae:.1f}")
 
+    # Build (once) a fixed generalisation validation set from the anchor data.
+    # Using a fixed seed means the same positions are held out every run,
+    # so gen_val_mae is comparable across all iterations and restarts.
+    gen_val_file = Path("data/gen_val.jsonl")
+    gen_val_file.parent.mkdir(exist_ok=True)
+    if args.anchor_data and Path(args.anchor_data).exists():
+        if not gen_val_file.exists():
+            sample_gen_val(Path(args.anchor_data), gen_val_file, args.gen_val_size, seed=0)
+        else:
+            print(f"[loop] Reusing existing gen_val set: {gen_val_file} ({gen_val_file.stat().st_size // 1024}KB)")
+    else:
+        gen_val_file = None
+
     # Export initial weights and measure baseline puzzle score.
     best_npz = artifacts / "eval.npz"
     if not best_npz.exists():
@@ -339,6 +576,10 @@ def main():
     )
     if best_puzzle >= 0:
         print(f"[loop] Initial puzzle score: {best_puzzle:.1f}%  (seed={args.puzzle_seed})")
+
+    best_gen_mae = gen_val_mae(best_ck, gen_val_file) if gen_val_file else -1.0
+    if best_gen_mae >= 0:
+        print(f"[loop] Initial gen_val CP-MAE: {best_gen_mae:.2f}cp  (real-game positions, fixed set)")
 
     pool_file = Path("data/selfplay_pool.jsonl")
     pool_file.parent.mkdir(exist_ok=True)
@@ -434,12 +675,17 @@ def main():
                 args.selfplay_eval_games, args.selfplay_eval_movetime,
                 n_workers=args.selfplay_eval_workers,
             )
+            cand_gen_mae = gen_val_mae(candidate_ck, gen_val_file) if gen_val_file else -1.0
 
             print(f"[loop] Iteration {iteration}: candidate mae={candidate_mae:.1f}cp  best mae={best_mae:.1f}cp")
             if cand_puzzle >= 0:
-                print(f"[loop] Puzzle score: candidate={cand_puzzle:.1f}%  best={best_puzzle:.1f}%")
+                print(f"[loop] Puzzle score:   candidate={cand_puzzle:.1f}%  best={best_puzzle:.1f}%")
             if cand_winrate >= 0:
                 print(f"[loop] Self-play win rate (candidate vs best): {cand_winrate:.1f}%")
+            if cand_gen_mae >= 0:
+                delta = cand_gen_mae - best_gen_mae
+                trend = f"{'▲' if delta > 0 else '▼'}{abs(delta):.2f}cp" if best_gen_mae >= 0 else "baseline"
+                print(f"[loop] Gen-val CP-MAE: candidate={cand_gen_mae:.2f}cp  best={best_gen_mae:.2f}cp  ({trend})")
 
             # ── Promotion decision ────────────────────────────────────────
             # val_cp_mae on the self-play pool is a circular signal (model fits
@@ -472,6 +718,8 @@ def main():
                 best_ck = candidate_ck
                 best_mae = candidate_mae
                 best_puzzle = cand_puzzle
+                if cand_gen_mae >= 0:
+                    best_gen_mae = cand_gen_mae
                 shutil.copy(candidate_ck, artifacts / "best_checkpoint.pt")
                 shutil.copy(candidate_npz, best_npz)  # update eval.npz in place
                 candidate_npz.unlink(missing_ok=True)  # no longer needed; eval.npz has the content
