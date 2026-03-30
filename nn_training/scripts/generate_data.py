@@ -256,7 +256,7 @@ def main():
                     help="Positions sampled per self-play game (default 1)")
     args = ap.parse_args()
 
-    random.seed(42)
+    random.seed()  # OS entropy — different openings every run
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
 
