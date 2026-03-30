@@ -21,3 +21,9 @@ web/wasm/snippets/
 arguments_log.txt
 lichess-bot/
 lichess_db_puzzle.csv.zst
+
+# Profiling artifacts
+flamegraph.svg
+perf.data
+perf.data.old
+*.s
