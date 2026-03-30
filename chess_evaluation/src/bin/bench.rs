@@ -19,7 +19,7 @@
 use chess_board::ChessBoard;
 use chess_evaluation::{
     alpha_beta, iterative_deepening_root_with_tt,
-    SearchContext, TranspositionTable, TT_SIZE,
+    RootNoiseConfig, SearchContext, TranspositionTable, TT_SIZE,
 };
 
 /// Weights embedded at compile time — only included when a NN feature is active.
@@ -165,7 +165,7 @@ fn bench_threaded(fen: &str, is_white: bool, depth: i32, num_threads: usize, tt_
         None, // no external stop
         num_threads,
         None,
-        0,
+        RootNoiseConfig::NONE,
     );
 
     let elapsed_ms = t0.elapsed().as_millis();

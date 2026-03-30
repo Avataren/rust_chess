@@ -29,7 +29,7 @@ use rayon::prelude::*;
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
-    iterative_deepening_root_with_tt, SearchContext, TranspositionTable,
+    iterative_deepening_root_with_tt, RootNoiseConfig, SearchContext, TranspositionTable,
 };
 use chess_foundation::{
     chess_move::ChessMove,
@@ -196,7 +196,7 @@ fn solve(
         None, // no stop signal
         1,    // single-threaded for determinism
         None,
-        0,
+        RootNoiseConfig::NONE,
     );
 
     match result.best_move {

@@ -10,7 +10,7 @@ use chess_board::ChessBoard;
 use chess_evaluation::{
     init_neural_eval, is_neural_eval_enabled, is_neural_eval_initialized,
     iterative_deepening_root_with_tt, set_neural_confidence_threshold,
-    set_neural_eval_enabled, OpeningBook, TranspositionTable,
+    set_neural_eval_enabled, OpeningBook, RootNoiseConfig, TranspositionTable,
 };
 
 /// Weights embedded at compile time for direct NN features (nn-full-forward / nn-incremental).
@@ -293,6 +293,7 @@ fn search_and_respond(
     is_white: bool,
     tt: Arc<TranspositionTable>,
     num_threads: usize,
+    noise: RootNoiseConfig,
 ) {
     let search_stop = make_search_stop(&stop, params.hard_deadline);
 
@@ -319,7 +320,7 @@ fn search_and_respond(
             }
             let _ = io::stdout().flush();
         }),
-        0,
+        noise,
     );
     let _ms = t0.elapsed().as_millis();
     let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
@@ -348,6 +349,7 @@ fn ponder_and_respond(
     is_white: bool,
     tt: Arc<TranspositionTable>,
     num_threads: usize,
+    noise: RootNoiseConfig,
 ) {
     let search_stop = Arc::new(AtomicBool::new(false));
 
@@ -420,7 +422,7 @@ fn ponder_and_respond(
             }
             let _ = io::stdout().flush();
         }),
-        0,
+        noise,
     );
 
     let _ms = t0.elapsed().as_millis();
@@ -466,6 +468,11 @@ fn main() {
     // 0 = disabled. Set automatically from tb::max_pieces() when SyzygyPath is loaded.
     let mut syzygy_probe_limit: u32 = 0;
 
+    // Dirichlet root noise: alpha > 0 enables noise (typical: 0.3 for chess).
+    // Amplitude is fixed at 200cp; only alpha is user-configurable.
+    // Disabled by default — 0.0 means no noise.
+    let mut dirichlet_alpha: f32 = 0.0;
+
     let stop_flag = Arc::new(AtomicBool::new(false));
     let ponderhit_flag = Arc::new(AtomicBool::new(false));
     let mut search_handle: Option<thread::JoinHandle<()>> = None;
@@ -489,6 +496,7 @@ fn main() {
                 println!("option name NeuralConfidence type string default 0.0");
                 println!("option name SyzygyPath type string default <empty>");
                 println!("option name SyzygyProbeLimit type spin default 0 min 0 max 7");
+                println!("option name DirichletAlpha type string default 0.0");
                 println!("uciok");
             }
             "setoption" => {
@@ -561,6 +569,16 @@ fn main() {
                                 eprintln!("info string SyzygyProbeLimit set to {syzygy_probe_limit}");
                             }
                         }
+                        "dirichletalpha" => {
+                            if let Ok(a) = value.parse::<f32>() {
+                                dirichlet_alpha = a.max(0.0);
+                                if dirichlet_alpha > 0.0 {
+                                    eprintln!("info string DirichletAlpha set to {dirichlet_alpha:.3} (amplitude 200cp)");
+                                } else {
+                                    eprintln!("info string DirichletAlpha disabled");
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -623,15 +641,20 @@ fn main() {
                 let tt_c        = Arc::clone(&tt);
 
                 let threads = num_threads;
+                let noise = if dirichlet_alpha > 0.0 {
+                    RootNoiseConfig::dirichlet(dirichlet_alpha, 200.0)
+                } else {
+                    RootNoiseConfig::NONE
+                };
                 if is_ponder {
                     ponderhit_flag.store(false, Ordering::Release);
                     let ponder_c = Arc::clone(&ponderhit_flag);
                     search_handle = Some(thread::spawn(move || {
-                        ponder_and_respond(board_c, conductor_c, book_c, params, stop_c, ponder_c, is_white, tt_c, threads);
+                        ponder_and_respond(board_c, conductor_c, book_c, params, stop_c, ponder_c, is_white, tt_c, threads, noise);
                     }));
                 } else {
                     search_handle = Some(thread::spawn(move || {
-                        search_and_respond(board_c, conductor_c, book_c, params, stop_c, is_white, tt_c, threads);
+                        search_and_respond(board_c, conductor_c, book_c, params, stop_c, is_white, tt_c, threads, noise);
                     }));
                 }
             }

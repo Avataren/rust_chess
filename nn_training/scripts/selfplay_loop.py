@@ -521,6 +521,7 @@ def generate_data(
     selfplay_parallel: int,
     opening_fens_file: str = "",
     noise_prob: float = 0.0,
+    dirichlet_alpha: float = 0.0,
 ):
     print(f"[loop] Generating {games} self-play games → {output_path}")
     cmd = [sys.executable, "scripts/generate_data.py",
@@ -541,6 +542,9 @@ def generate_data(
             "--selfplay-engine-opt", f"EvalFile={npz_path}",
             "--selfplay-engine-opt", "NeuralEval=true",
         ]
+    if dirichlet_alpha > 0.0:
+        # Enable Dirichlet noise at the search root for move diversity.
+        cmd += ["--selfplay-engine-opt", f"DirichletAlpha={dirichlet_alpha:.3f}"]
     if opening_fens_file:
         cmd += ["--opening-fens-file", opening_fens_file]
     if noise_prob > 0:
@@ -654,6 +658,9 @@ def main():
     ap.add_argument("--selfplay-noise-prob", type=float, default=0.05,
                     help="Probability of a random move during data-gen self-play (default 0.05). "
                          "Increases position diversity from repeated openings. Not used in eval games.")
+    ap.add_argument("--selfplay-dirichlet-alpha", type=float, default=0.3,
+                    help="Dirichlet α for root noise in the self-play engine (default 0.3). "
+                         "0.0 = disabled. Amplitude is fixed at 200cp. Not used in eval games.")
     ap.add_argument("--eval-depth", type=int, default=14,
                     help="Stockfish depth for labelling")
     ap.add_argument("--workers", type=int, default=32,
@@ -839,6 +846,7 @@ def main():
                 selfplay_parallel=args.selfplay_parallel,
                 opening_fens_file=str(opening_fens_file),
                 noise_prob=args.selfplay_noise_prob,
+                dirichlet_alpha=args.selfplay_dirichlet_alpha,
             )
 
         # 3. Append to replay pool

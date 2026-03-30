@@ -41,6 +41,103 @@ pub use search_context::SearchContext;
 #[cfg(test)]
 use search_context::halfkp_piece_slot;
 
+// ── Root noise configuration ──────────────────────────────────────────────────
+
+/// Configuration for root-level move-selection noise.
+///
+/// Both mechanisms track a separate `noisy_best_move` without affecting
+/// alpha/beta bounds or aspiration windows — real scores are always correct.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RootNoiseConfig {
+    /// Uniform ±cp perturbation per root move (Bevy difficulty system).
+    /// 0 = disabled.
+    pub noise_cp: i32,
+    /// Dirichlet concentration parameter α.  0.0 = disabled.
+    /// Typical value for chess: 0.3.  Higher α → more uniform distribution.
+    pub dirichlet_alpha: f32,
+    /// Noise amplitude in centipawns.  Used only when `dirichlet_alpha > 0`.
+    /// Each move i gets a centred perturbation of
+    /// `(d_i − 1/n) × dirichlet_amplitude_cp` where `d ~ Dir(α, n)`.
+    pub dirichlet_amplitude_cp: f32,
+}
+
+impl RootNoiseConfig {
+    /// No noise — default for UCI, benchmarks, SMP helpers, and tests.
+    pub const NONE: Self = Self {
+        noise_cp: 0,
+        dirichlet_alpha: 0.0,
+        dirichlet_amplitude_cp: 0.0,
+    };
+
+    /// Uniform ±cp perturbation only (Bevy difficulty system).
+    #[inline]
+    pub fn noise_cp(cp: i32) -> Self {
+        Self { noise_cp: cp, dirichlet_alpha: 0.0, dirichlet_amplitude_cp: 0.0 }
+    }
+
+    /// Dirichlet noise only.
+    /// `alpha` = 0.3 is standard for chess; `amplitude_cp` = 200 is a good default.
+    #[inline]
+    pub fn dirichlet(alpha: f32, amplitude_cp: f32) -> Self {
+        Self { noise_cp: 0, dirichlet_alpha: alpha, dirichlet_amplitude_cp: amplitude_cp }
+    }
+
+    #[inline]
+    pub fn is_disabled(&self) -> bool {
+        self.noise_cp == 0 && self.dirichlet_alpha <= 0.0
+    }
+}
+
+// ── Gamma / Dirichlet sampling ────────────────────────────────────────────────
+
+/// Box-Muller standard normal sample from two uniform (0,1] inputs.
+#[inline]
+fn box_muller_normal(u1: f32, u2: f32) -> f32 {
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
+}
+
+/// Marsaglia & Tsang Gamma(α, 1) sample.  α must be > 0.
+/// For α < 1, uses the Gamma(α+1)·U^(1/α) reduction.
+fn sample_gamma(alpha: f32, rng: &mut impl rand::Rng) -> f32 {
+    if alpha < 1.0 {
+        let g = sample_gamma(alpha + 1.0, rng);
+        let u: f32 = rng.gen::<f32>().max(1e-10);
+        return g * u.powf(1.0 / alpha);
+    }
+    let d = alpha - 1.0_f32 / 3.0;
+    let c = 1.0 / (9.0_f32 * d).sqrt();
+    loop {
+        let u1: f32 = rng.gen::<f32>().max(1e-10);
+        let u2: f32 = rng.gen::<f32>().max(1e-10);
+        let x = box_muller_normal(u1, u2);
+        let v = 1.0 + c * x;
+        if v <= 0.0 {
+            continue;
+        }
+        let v3 = v * v * v;
+        let u: f32 = rng.gen::<f32>().max(1e-10);
+        if u < 1.0 - 0.0331 * (x * x) * (x * x) {
+            return d * v3;
+        }
+        if u.ln() < 0.5 * x * x + d * (1.0 - v3 + v3.ln()) {
+            return d * v3;
+        }
+    }
+}
+
+/// Sample Dirichlet(α, n) — returns a Vec of length n summing to ~1.
+fn sample_dirichlet(alpha: f32, n: usize, rng: &mut impl rand::Rng) -> Vec<f32> {
+    let mut gammas: Vec<f32> = (0..n).map(|_| sample_gamma(alpha, rng)).collect();
+    let sum: f32 = gammas.iter().sum();
+    if sum <= 0.0 {
+        return vec![1.0 / n as f32; n];
+    }
+    for g in &mut gammas {
+        *g /= sum;
+    }
+    gammas
+}
+
 /// Accumulator stack size: main search + quiescence depth headroom.
 /// MAX_PLY=64 + 16 headroom handles any quiescence depth (max 12) safely.
 pub(in crate::alpha_beta) const ACC_SIZE: usize = MAX_PLY + 16; // 80
@@ -1092,7 +1189,7 @@ pub fn search_root(
     is_white: bool,
     prev_best: Option<ChessMove>,
     stop: Option<Arc<AtomicBool>>,
-    noise_cp: i32,
+    noise: RootNoiseConfig,
 ) -> (i32, Option<ChessMove>) {
     let stop = stop.as_deref();
     let mut legal_moves = Vec::new();
@@ -1148,6 +1245,7 @@ pub fn search_root(
     );
     ctx.ordering_scratch = scratch;
 
+    let n_moves = legal_moves.len();
     let mut best_move: Option<ChessMove> = legal_moves.first().copied();
 
     // Noise: track the noise-perturbed best move separately so alpha/beta pruning
@@ -1155,11 +1253,23 @@ pub fn search_root(
     // aspiration windows in iterative deepening remain accurate.
     let mut noisy_best_move: Option<ChessMove> = best_move;
     let mut noisy_best_score: i32 = if is_white { i32::MIN + 1 } else { i32::MAX };
-    let mut rng = if noise_cp > 0 {
+    let mut rng = if !noise.is_disabled() {
         Some(rand::thread_rng())
     } else {
         None
     };
+    // Pre-compute centred Dirichlet noise vector (one value per legal move).
+    // Centred means (d_i − 1/n) so the average perturbation is zero.
+    let dirichlet: Option<Vec<f32>> = if noise.dirichlet_alpha > 0.0
+        && noise.dirichlet_amplitude_cp > 0.0
+        && n_moves > 0
+    {
+        let r = rng.as_mut().unwrap();
+        Some(sample_dirichlet(noise.dirichlet_alpha, n_moves, r))
+    } else {
+        None
+    };
+    let dirichlet_mean = if dirichlet.is_some() { 1.0 / n_moves as f32 } else { 0.0 };
 
     let mut alpha = alpha;
     let mut beta = beta;
@@ -1202,7 +1312,16 @@ pub fn search_root(
         chess_board.undo_move();
 
         if let Some(ref mut r) = rng {
-            let noisy = eval + r.gen_range(-noise_cp..=noise_cp);
+            let mut noisy = eval;
+            // Uniform ±noise_cp perturbation (Bevy difficulty).
+            if noise.noise_cp > 0 {
+                noisy += r.gen_range(-noise.noise_cp..=noise.noise_cp);
+            }
+            // Dirichlet: centred noise (mean zero across all root moves).
+            if let Some(ref dir) = dirichlet {
+                let perturbation = (dir[i] - dirichlet_mean) * noise.dirichlet_amplitude_cp;
+                noisy += perturbation as i32;
+            }
             let noisy_better = if is_white { noisy > noisy_best_score } else { noisy < noisy_best_score };
             if noisy_better {
                 noisy_best_score = noisy;
@@ -1225,10 +1344,10 @@ pub fn search_root(
     }
     (
         best_score,
-        if noise_cp > 0 {
-            noisy_best_move
-        } else {
+        if noise.is_disabled() {
             best_move
+        } else {
+            noisy_best_move
         },
     )
 }
@@ -1276,7 +1395,7 @@ pub fn alpha_beta_root(
         is_white,
         None,
         None,
-        0,
+        RootNoiseConfig::NONE,
     )
 }
 
@@ -1615,7 +1734,7 @@ mod tests {
     fn id_returns_a_move_from_starting_position() {
         let mut board = ChessBoard::new();
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 3, true, None, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, 3, true, None, None, RootNoiseConfig::NONE);
         assert!(
             r.best_move.is_some(),
             "ID must return a move from the starting position"
@@ -1631,7 +1750,7 @@ mod tests {
         // White Qd4 can take black Qd5; black king on e8 cannot recapture.
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
-        let id_score = iterative_deepening_root(&mut board, &c, None, 3, true, None, None, 0).score;
+        let id_score = iterative_deepening_root(&mut board, &c, None, 3, true, None, None, RootNoiseConfig::NONE).score;
         assert!(
             id_score > 900,
             "White wins a free queen so score must be > 900, got {id_score}"
@@ -1643,7 +1762,7 @@ mod tests {
         let mut board = ChessBoard::new();
         let hash_before = board.current_hash();
         let c = conductor();
-        let _ = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
+        let _ = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, RootNoiseConfig::NONE);
         assert_eq!(
             board.current_hash(),
             hash_before,
@@ -1657,7 +1776,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 2, true, None, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, 2, true, None, None, RootNoiseConfig::NONE);
         let m = r.best_move.expect("ID must find a move");
         assert_eq!(m.start_square(), 27);
         assert_eq!(m.target_square(), 35);
@@ -1671,7 +1790,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 b - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 2, false, None, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, 2, false, None, None, RootNoiseConfig::NONE);
         let m = r.best_move.expect("ID must find a move for black");
         assert_eq!(m.start_square(), 35);
         assert_eq!(m.target_square(), 27);
@@ -1684,7 +1803,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("6k1/5Q2/6K1/8/8/8/8/8 w - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 2, true, None, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, 2, true, None, None, RootNoiseConfig::NONE);
         let m = r.best_move.expect("ID must find a move");
         let mut board_after = board.clone();
         let mut mv_copy = m;
@@ -1703,7 +1822,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("8/8/8/8/8/1q6/8/K1k5 b - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 2, false, None, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, 2, false, None, None, RootNoiseConfig::NONE);
         let m = r.best_move.expect("ID must find a move");
         let mut board_after = board.clone();
         let mut mv_copy = m;
@@ -1724,7 +1843,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let hash_before = board.current_hash();
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, RootNoiseConfig::NONE);
         assert!(r.best_move.is_some(), "ID must return a move at depth 4");
         assert!(
             r.score > 800,
@@ -1909,7 +2028,7 @@ mod tests {
         let tt = TranspositionTable::new(TT_SIZE);
         let mut ctx = SearchContext::new();
         let (score, mv) = search_root(
-            &mut board, &c, &tt, &mut ctx, 4, -50, 50, false, None, None, 0,
+            &mut board, &c, &tt, &mut ctx, 4, -50, 50, false, None, None, RootNoiseConfig::NONE,
         );
         assert!(
             score < -200 || score <= -50,
@@ -1931,7 +2050,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("3qk3/8/8/8/8/2N5/8/3QK3 w - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, RootNoiseConfig::NONE);
         let m = r.best_move.expect("Must return a move");
         assert!(
             r.score > -200,
@@ -1946,7 +2065,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen("4k3/8/8/8/1b6/8/3N4/4K3 w - - 0 1");
         let c = conductor();
-        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, RootNoiseConfig::NONE);
         let m = r.best_move.expect("Must return a move");
         let mut legal = Vec::new();
         get_all_legal_moves_for_color(&mut board, &c, true, &mut legal, &mut Vec::new());
@@ -1976,13 +2095,13 @@ mod tests {
             true,
             None,
             None,
-            0,
+            RootNoiseConfig::NONE,
         );
 
         let tt2 = TranspositionTable::new(TT_SIZE);
         let mut ctx2 = SearchContext::new();
         let (score_asp, _) = search_root(
-            &mut board, &c, &tt2, &mut ctx2, 4, -50, 50, true, None, None, 0,
+            &mut board, &c, &tt2, &mut ctx2, 4, -50, 50, true, None, None, RootNoiseConfig::NONE,
         );
 
         let m = mv_full.expect("Full window must return a move");
@@ -2046,7 +2165,7 @@ mod tests {
         let c = conductor();
 
         for max_depth in 2..=6 {
-            let r = iterative_deepening_root(&mut board, &c, None, max_depth, true, None, None, 0);
+            let r = iterative_deepening_root(&mut board, &c, None, max_depth, true, None, None, RootNoiseConfig::NONE);
             assert!(
                 r.best_move.is_some(),
                 "ID depth {max_depth}: must return a move"
@@ -2071,11 +2190,11 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
 
-        let r1 = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
+        let r1 = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, RootNoiseConfig::NONE);
         let score_no_flag = r1.score;
 
         let stop = Arc::new(AtomicBool::new(false));
-        let r2 = iterative_deepening_root(&mut board, &c, None, 4, true, None, Some(stop), 0);
+        let r2 = iterative_deepening_root(&mut board, &c, None, 4, true, None, Some(stop), RootNoiseConfig::NONE);
         let score_with_flag = r2.score;
 
         assert_eq!(score_no_flag, score_with_flag,
@@ -2092,11 +2211,11 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let c = conductor();
 
-        let r1 = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
+        let r1 = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, RootNoiseConfig::NONE);
         let score_no_dl = r1.score;
 
         let deadline = Some(Instant::now() + Duration::from_secs(60));
-        let r2 = iterative_deepening_root(&mut board, &c, None, 4, true, deadline, None, 0);
+        let r2 = iterative_deepening_root(&mut board, &c, None, 4, true, deadline, None, RootNoiseConfig::NONE);
         let score_with_dl = r2.score;
 
         assert_eq!(score_no_dl, score_with_dl,
@@ -2117,7 +2236,7 @@ mod tests {
         // With a very tight deadline, the engine should still complete
         // at least depth 1-2 and return a sensible result.
         let deadline = Some(Instant::now() + Duration::from_millis(5));
-        let r = iterative_deepening_root(&mut board, &c, None, 64, true, deadline, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, 64, true, deadline, None, RootNoiseConfig::NONE);
 
         assert!(
             r.best_move.is_some(),
@@ -2189,7 +2308,7 @@ mod tests {
         let c = conductor();
 
         let initial_score = evaluate_board(&board, &c);
-        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, 4, true, None, None, RootNoiseConfig::NONE);
 
         assert!(r.best_move.is_some(), "Engine must return a move");
         assert!(
@@ -2396,7 +2515,7 @@ mod tests {
                 is_white,
                 None,
                 None,
-                0,
+                RootNoiseConfig::NONE,
             );
 
             // Probe TT for root hash and verify the stored best move (if any) is legal.
@@ -2451,7 +2570,7 @@ mod tests {
             true,
             None,
             None,
-            0,
+            RootNoiseConfig::NONE,
         );
 
         // Polluted TT: search a different position first, then age it, then search the target.
@@ -2469,7 +2588,7 @@ mod tests {
             true,
             None,
             None,
-            0,
+            RootNoiseConfig::NONE,
         );
         tt_reused.new_search();
 
@@ -2487,7 +2606,7 @@ mod tests {
             true,
             None,
             None,
-            0,
+            RootNoiseConfig::NONE,
         );
 
         assert_eq!(
@@ -2531,7 +2650,7 @@ mod tests {
                 is_white,
                 None,
                 None,
-                0,
+                RootNoiseConfig::NONE,
             );
         }
 
@@ -2553,7 +2672,7 @@ mod tests {
             true,
             None,
             None,
-            0,
+            RootNoiseConfig::NONE,
         );
         let m = mv.expect("Engine must find a move after TT warm-up");
         assert_eq!(
@@ -2577,7 +2696,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let tt = TranspositionTable::new(TT_SIZE);
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, true, None, None, 1, None, 0,
+            &mut board, &c, None, &tt, 4, true, None, None, 1, None, RootNoiseConfig::NONE,
         );
         assert!(r.best_move.is_some(), "single-thread must return a move");
         let mv = r.best_move.unwrap();
@@ -2591,7 +2710,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let tt = TranspositionTable::new(TT_SIZE);
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, true, None, None, 2, None, 0,
+            &mut board, &c, None, &tt, 4, true, None, None, 2, None, RootNoiseConfig::NONE,
         );
         assert!(
             r.best_move.is_some(),
@@ -2608,7 +2727,7 @@ mod tests {
         board.set_from_fen("4k3/8/8/3q4/3Q4/8/8/4K3 w - - 0 1");
         let tt = TranspositionTable::new(TT_SIZE);
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, true, None, None, 4, None, 0,
+            &mut board, &c, None, &tt, 4, true, None, None, 4, None, RootNoiseConfig::NONE,
         );
         assert!(
             r.best_move.is_some(),
@@ -2627,7 +2746,7 @@ mod tests {
         let tt = TranspositionTable::new(TT_SIZE);
         let deadline = Some(Instant::now() + Duration::from_millis(200));
         let r = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 64, true, deadline, None, 4, None, 0,
+            &mut board, &c, None, &tt, 64, true, deadline, None, 4, None, RootNoiseConfig::NONE,
         );
         assert!(
             r.best_move.is_some(),
@@ -2658,7 +2777,7 @@ mod tests {
             Some(stop),
             4,
             None,
-            0,
+            RootNoiseConfig::NONE,
         );
         assert!(
             r.best_move.is_some(),
@@ -2674,7 +2793,7 @@ mod tests {
         let hash_before = board.current_hash();
         let tt = TranspositionTable::new(TT_SIZE);
         let _ = iterative_deepening_root_with_tt(
-            &mut board, &c, None, &tt, 4, false, None, None, 4, None, 0,
+            &mut board, &c, None, &tt, 4, false, None, None, 4, None, RootNoiseConfig::NONE,
         );
         assert_eq!(
             board.current_hash(),
@@ -3738,7 +3857,7 @@ mod tests {
         let mut board = ChessBoard::new();
         board.set_from_fen(fen);
         let c = PieceConductor::new();
-        let r = iterative_deepening_root(&mut board, &c, None, depth, is_white, None, None, 0);
+        let r = iterative_deepening_root(&mut board, &c, None, depth, is_white, None, None, RootNoiseConfig::NONE);
         let m = r.best_move.expect(&format!("No move found for {fen}"));
         (r.score, m)
     }
@@ -3785,7 +3904,7 @@ mod tests {
         for &(fen, is_white, depth, exp_from, exp_to, desc) in cases {
             let mut board = ChessBoard::new();
             board.set_from_fen(fen);
-            let r = iterative_deepening_root(&mut board, &c, None, depth, is_white, None, None, 0);
+            let r = iterative_deepening_root(&mut board, &c, None, depth, is_white, None, None, RootNoiseConfig::NONE);
             let m = r.best_move.expect(&format!("No move found: {desc}"));
             assert_eq!(
                 (m.start_square(), m.target_square()),
@@ -3845,7 +3964,7 @@ mod tests {
         };
         let r = iterative_deepening_root_with_tt(
             &mut board, &c, None, &tt, 64, false,
-            Some(deadline), None, threads, Some(&on_depth), 0,
+            Some(deadline), None, threads, Some(&on_depth), RootNoiseConfig::NONE,
         );
         crate::neural_eval::set_neural_eval_enabled(was_enabled);
 
@@ -3968,7 +4087,7 @@ mod tests {
         };
         let r = iterative_deepening_root_with_tt(
             &mut board, &c, None, &tt, 64, false,
-            Some(deadline), None, threads, Some(&on_depth), 0,
+            Some(deadline), None, threads, Some(&on_depth), RootNoiseConfig::NONE,
         );
         crate::neural_eval::set_neural_eval_enabled(was_enabled);
 

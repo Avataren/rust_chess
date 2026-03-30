@@ -11,7 +11,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use chess_board::ChessBoard;
-use chess_evaluation::{evaluate_board, iterative_deepening_root, SearchResult};
+use chess_evaluation::{evaluate_board, iterative_deepening_root, RootNoiseConfig, SearchResult};
 
 #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
 static NNUE_WEIGHTS: &[u8] = include_bytes!("../../chess_evaluation/src/eval.npz");
@@ -282,7 +282,7 @@ impl MultiPonder {
                         is_white_next,
                         None, // no deadline — stopped by flag
                         Some(stop_c),
-                        0,
+                        RootNoiseConfig::NONE,
                     )
                 });
 

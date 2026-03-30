@@ -7,7 +7,7 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use std::sync::Mutex;
 use std::task::Poll;
 use chess_board::ChessBoard;
-use chess_evaluation::{evaluate_board, iterative_deepening_root, OpeningBook};
+use chess_evaluation::{evaluate_board, iterative_deepening_root, OpeningBook, RootNoiseConfig};
 // evaluate_board is used in launch_multi_ponder for ranking ponder candidates
 use chess_foundation::ChessMove;
 use move_generator::{
@@ -135,7 +135,7 @@ async fn alpha_beta_task(
     #[cfg(not(target_arch = "wasm32"))]
     {
         let result = iterative_deepening_root(
-            chess_board, &conductor, Some(book), max_depth, is_white, deadline, None, noise_cp,
+            chess_board, &conductor, Some(book), max_depth, is_white, deadline, None, RootNoiseConfig::noise_cp(noise_cp),
         );
         return (result.score, result.best_move, result.ponder_move, false, 0);
     }
@@ -166,7 +166,7 @@ async fn alpha_beta_task(
             rayon::spawn(move || {
                 let r = iterative_deepening_root(
                     &mut board_w, &*conductor_w, Some(&book_w),
-                    max_depth, is_white, None, Some(stop_w), noise_cp,
+                    max_depth, is_white, None, Some(stop_w), RootNoiseConfig::noise_cp(noise_cp),
                 );
                 *res_w.lock().unwrap() = Some((r.score, r.best_move, r.ponder_move));
             });
@@ -200,7 +200,7 @@ async fn ponder_search_task(
     {
         let result = iterative_deepening_root(
             &mut board, &conductor, Some(&book),
-            depth, is_white, None, Some(stop), 0,
+            depth, is_white, None, Some(stop), RootNoiseConfig::NONE,
         );
         return (result.score, result.best_move, result.ponder_move, true, board_hash);
 
@@ -218,7 +218,7 @@ async fn ponder_search_task(
             rayon::spawn(move || {
                 let r = iterative_deepening_root(
                     &mut board, &*conductor_w, Some(&book_w),
-                    depth, is_white, None, Some(stop_w), 0,
+                    depth, is_white, None, Some(stop_w), RootNoiseConfig::NONE,
                 );
                 *res_w.lock().unwrap() = Some((r.score, r.best_move, r.ponder_move));
             });

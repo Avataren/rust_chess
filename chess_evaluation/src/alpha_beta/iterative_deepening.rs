@@ -14,7 +14,7 @@ use crate::{
     opening_book::OpeningBook,
     transposition_table::TranspositionTable,
 };
-use super::{alpha_beta, search_root, SearchContext, ASPIRATION_DELTA, TT_SIZE};
+use super::{alpha_beta, search_root, RootNoiseConfig, SearchContext, ASPIRATION_DELTA, TT_SIZE};
 
 /// Result of an iterative-deepening search.
 pub struct SearchResult {
@@ -111,7 +111,7 @@ pub fn iterative_deepening_root(
     is_white: bool,
     deadline: Option<Instant>,
     stop: Option<Arc<AtomicBool>>,
-    noise_cp: i32,
+    noise: RootNoiseConfig,
 ) -> SearchResult {
     let tt = TranspositionTable::new(TT_SIZE);
     iterative_deepening_root_with_tt(
@@ -125,7 +125,7 @@ pub fn iterative_deepening_root(
         stop,
         1,
         None,
-        noise_cp,
+        noise,
     )
 }
 
@@ -151,7 +151,7 @@ pub fn iterative_deepening_root_with_tt(
     stop: Option<Arc<AtomicBool>>,
     num_threads: usize,
     on_depth: Option<&(dyn Fn(i32, i32, u64, u128) + Sync)>,
-    noise_cp: i32,
+    noise: RootNoiseConfig,
 ) -> SearchResult {
     // Book probe before spawning any threads.
     if let Some(book) = book {
@@ -189,7 +189,7 @@ pub fn iterative_deepening_root_with_tt(
             deadline,
             stop,
             on_depth,
-            noise_cp,
+            noise,
         );
     }
 
@@ -241,7 +241,7 @@ pub fn iterative_deepening_root_with_tt(
             deadline,
             stop.clone(),
             on_depth_smp,
-            noise_cp,
+            noise,
         );
 
         // Main thread done — signal helpers to stop.
@@ -268,7 +268,7 @@ fn id_search_single(
     deadline: Option<Instant>,
     stop: Option<Arc<AtomicBool>>,
     on_depth: Option<&(dyn Fn(i32, i32, u64, u128) + Sync)>,
-    noise_cp: i32,
+    noise: RootNoiseConfig,
 ) -> SearchResult {
     let t0 = Instant::now();
     let mut ctx = SearchContext::new();
@@ -296,7 +296,7 @@ fn id_search_single(
                 is_white,
                 prev_move,
                 stop.clone(),
-                noise_cp,
+                noise,
             )
         } else {
             // Progressive aspiration window: start narrow, multiply delta on failure
@@ -316,7 +316,7 @@ fn id_search_single(
                     is_white,
                     prev_move,
                     stop.clone(),
-                    noise_cp,
+                    noise,
                 );
                 if stop.as_ref().map_or(false, |s| s.load(Ordering::Acquire)) {
                     break result;
@@ -350,7 +350,7 @@ fn id_search_single(
                         is_white,
                         prev_move,
                         stop.clone(),
-                        noise_cp,
+                        noise,
                     );
                 }
             }
@@ -457,7 +457,7 @@ fn smp_helper(
                     is_white,
                     prev_move,
                     stop,
-                    0,
+                    RootNoiseConfig::NONE,
                 )
             } else {
                 let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
@@ -474,7 +474,7 @@ fn smp_helper(
                         is_white,
                         prev_move,
                         Some(Arc::clone(&helper_stop)),
-                        0,
+                        RootNoiseConfig::NONE,
                     );
                     if helper_stop.load(Ordering::Relaxed) {
                         break r;
@@ -498,7 +498,7 @@ fn smp_helper(
                             is_white,
                             prev_move,
                             Some(Arc::clone(&helper_stop)),
-                            0,
+                            RootNoiseConfig::NONE,
                         );
                     }
                 }
