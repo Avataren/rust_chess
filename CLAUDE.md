@@ -68,9 +68,13 @@ Applied to this project: generator = self-play + Stockfish oracle; discriminator
 3. **Data invariants** — CP perspective, pool FIFO ordering, anchor-only-in-train, fixed gen_val seed. Any code touching JSONL files must respect these or training silently degrades.
 
 **Training run commands MUST include a TensorBoard log directory.**
-Always append `--log-dir runs/<descriptive-name>` (or the equivalent flag for the script) to every `train.py` invocation. Never give the user a training command without it — a run that can't be monitored on TensorBoard has to be restarted from scratch. Example:
+Always append `--tb-logdir runs/<descriptive-name>` to every `train.py` invocation. Never give the user a training command without it — a run that can't be monitored on TensorBoard has to be restarted from scratch. Example:
 ```bash
-PYTHONPATH=. python3 scripts/train.py --config configs/halfkp_dual_selfplay_768_64_8b.yaml --log-dir runs/768x64_from_scratch
+PYTHONPATH=. python3 scripts/train.py --config configs/halfkp_dual_selfplay_768_64_8b.yaml --tb-logdir runs/768x64_from_scratch
+```
+To resume with logs without changing training outcome (full state is saved — model, optimizer, scheduler, epoch):
+```bash
+PYTHONPATH=. python3 scripts/train.py --config <cfg> --resume artifacts/checkpoint.pt --tb-logdir runs/<name>
 ```
 
 **Component boundary rules** — bugs in this codebase have repeatedly come from assuming an interface instead of verifying it:
