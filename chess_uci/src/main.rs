@@ -8,6 +8,7 @@ mod tb;
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
+    eval_position_confidence,
     init_neural_eval, is_neural_eval_enabled, is_neural_eval_initialized,
     iterative_deepening_root_with_tt, set_neural_confidence_threshold,
     set_neural_eval_enabled, OpeningBook, RootNoiseConfig, TranspositionTable,
@@ -296,6 +297,11 @@ fn search_and_respond(
     noise: RootNoiseConfig,
 ) {
     let search_stop = make_search_stop(&stop, params.hard_deadline);
+
+    if let Some(conf) = eval_position_confidence(&board) {
+        println!("info string NN confidence {:.3}", conf);
+        let _ = io::stdout().flush();
+    }
 
     let t0 = Instant::now();
     tt.new_search();

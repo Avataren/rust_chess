@@ -14,6 +14,7 @@ pub use neural_eval::{
     init_neural_eval, init_neural_eval_from_bytes,
     set_neural_eval_enabled, is_neural_eval_enabled, is_neural_eval_initialized,
     set_neural_confidence_threshold, get_neural_confidence_threshold,
+    eval_position_confidence,
 };
 pub use alpha_beta::alpha_beta;
 pub use alpha_beta::alpha_beta_root;

@@ -211,13 +211,19 @@ pub fn eval_direct(board: &ChessBoard) -> i32 {
 }
 
 /// Like `eval_direct` but returns `None` if the evaluator has not been
-/// initialized yet.  Used by `evaluate_board` so tests compiled with
-/// `nn-incremental` can fall back to classical eval without loading a model.
+/// initialized yet, or if the WDL confidence is below `CONFIDENCE_THRESHOLD`.
+/// Used by `evaluate_board` so tests compiled with `nn-incremental` can fall
+/// back to classical eval without loading a model, and so that live play can
+/// fall back to HCE on low-confidence positions.
 #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental"))]
 #[inline]
 pub fn try_eval_direct(board: &ChessBoard) -> Option<i32> {
     let e = EVALUATOR.get()?;
-    let (score, _) = e.evaluate_with_confidence(board);
+    let (score, confidence) = e.evaluate_with_confidence(board);
+    let threshold = f32::from_bits(CONFIDENCE_THRESHOLD.load(Ordering::Relaxed));
+    if confidence < threshold {
+        return None;
+    }
     Some(if e.dual_perspective {
         score
     } else {
@@ -225,7 +231,16 @@ pub fn try_eval_direct(board: &ChessBoard) -> Option<i32> {
     })
 }
 
-/// Direct accumulator-based evaluation — no runtime checks.
+/// Returns the WDL confidence (max softmax output) for `board` using a full
+/// forward pass.  `None` if weights are not loaded.  Works regardless of
+/// Cargo feature — intended for UCI diagnostics, not the search hot-path.
+pub fn eval_position_confidence(board: &ChessBoard) -> Option<f32> {
+    let e = EVALUATOR.get()?;
+    let (_, confidence) = e.evaluate_with_confidence(board);
+    Some(confidence)
+}
+
+/// Direct accumulator-based evaluation — no runtime checks, no confidence gate.
 /// Only valid for dual-perspective models (eval.npz).
 #[cfg(feature = "nn-incremental")]
 #[inline]
@@ -238,6 +253,24 @@ pub fn eval_accum_direct(
         .expect("neural eval not loaded — call init_neural_eval_from_bytes at startup");
     let bucket = piece_bucket(board, e.n_output_buckets);
     e.evaluate_from_accumulators(acc_white, acc_black, bucket).0
+}
+
+/// Like `eval_accum_direct` but returns `None` when WDL confidence is below
+/// `CONFIDENCE_THRESHOLD`, allowing the caller to fall back to classical eval.
+/// When threshold is 0.0 (default), behaves identically to `eval_accum_direct`
+/// with negligible overhead (one atomic load + float compare).
+#[cfg(feature = "nn-incremental")]
+#[inline]
+pub fn try_eval_accum_direct(
+    board: &ChessBoard,
+    acc_white: &[i16; HIDDEN1],
+    acc_black: &[i16; HIDDEN1],
+) -> Option<i32> {
+    let e = EVALUATOR.get()?;
+    let bucket = piece_bucket(board, e.n_output_buckets);
+    let (score, confidence) = e.evaluate_from_accumulators(acc_white, acc_black, bucket);
+    let threshold = f32::from_bits(CONFIDENCE_THRESHOLD.load(Ordering::Relaxed));
+    if confidence < threshold { None } else { Some(score) }
 }
 
 /// Initialize accumulators from a board position — no NEURAL_ENABLED check.

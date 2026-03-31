@@ -303,8 +303,11 @@ pub(in crate::alpha_beta) fn eval_node(
     #[cfg(feature = "nn-incremental")]
     let score = if ctx.acc_valid {
         let p = ply.min(ACC_SIZE - 1);
-        // Borrows of acc fields end before the eval_cache write below.
-        crate::neural_eval::eval_accum_direct(board, &ctx.acc_white[p], &ctx.acc_black[p])
+        // try_eval_accum_direct returns None when WDL confidence < threshold,
+        // falling back to HCE.  When threshold == 0.0 (default) this is
+        // equivalent to eval_accum_direct with one extra atomic load.
+        crate::neural_eval::try_eval_accum_direct(board, &ctx.acc_white[p], &ctx.acc_black[p])
+            .unwrap_or_else(|| evaluate_board(board, conductor))
     } else {
         evaluate_board(board, conductor)
     };
