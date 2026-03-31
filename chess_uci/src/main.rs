@@ -298,10 +298,7 @@ fn search_and_respond(
 ) {
     let search_stop = make_search_stop(&stop, params.hard_deadline);
 
-    if let Some(conf) = eval_position_confidence(&board) {
-        println!("info string NN confidence {:.3}", conf);
-        let _ = io::stdout().flush();
-    }
+    let root_confidence = eval_position_confidence(&board);
     reset_hce_fallback_count();
 
     let t0 = Instant::now();
@@ -330,9 +327,17 @@ fn search_and_respond(
         noise,
     );
     let _ms = t0.elapsed().as_millis();
+    // Emit a single info string after the search so python-chess captures it
+    // as result.info["string"] and lichess-bot can display it.
     let fallbacks = get_hce_fallback_count();
-    if fallbacks > 0 {
-        println!("info string HCE fallback {fallbacks} nodes (low NN confidence)");
+    let info_str = match (root_confidence, fallbacks) {
+        (Some(c), 0) => format!("NN conf {:.3}", c),
+        (Some(c), n) => format!("NN conf {:.3} | HCE fallback {n} nodes", c),
+        (None,    0) => String::new(),
+        (None,    n) => format!("HCE fallback {n} nodes"),
+    };
+    if !info_str.is_empty() {
+        println!("info string {info_str}");
     }
     let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
     let ponder_str = result.ponder_move.map(mv_to_uci);
