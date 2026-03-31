@@ -32,8 +32,8 @@ use chess_foundation::bitboard::Bitboard;
 
 // ── Architecture constants ────────────────────────────────────────────────
 
-pub(crate) const HIDDEN1: usize = 512;
-const HIDDEN2: usize = 32;
+pub(crate) const HIDDEN1: usize = 768;
+const HIDDEN2: usize = 64;
 const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 1024
 
 // ── SCReLU activation: clamp(x,0,1)² ──────────────────────────────────────
@@ -537,33 +537,34 @@ fn screlu_deq(acc: &[i16], scale: f32, out: &mut [f32]) {
 // through x once — each input element touches its 32-wide weight column
 // without evicting the accumulator registers.
 //
-// Note: hardcoded for HIDDEN2 == 32 (4 × 8-wide YMM registers).
+// GEMV: acc += w × x  (w is column-major: shape [x.len() × HIDDEN2])
+// Works for any HIDDEN2 that is a multiple of 8.
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2", enable = "fma")]
-unsafe fn gemv_col32_avx2(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
+unsafe fn gemv_col_avx2(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
     use std::arch::x86_64::*;
-    debug_assert_eq!(HIDDEN2, 32);
+    debug_assert_eq!(HIDDEN2 % 8, 0);
     debug_assert_eq!(w.len(), x.len() * HIDDEN2);
-    let mut a0 = _mm256_loadu_ps(acc.as_ptr());
-    let mut a1 = _mm256_loadu_ps(acc.as_ptr().add(8));
-    let mut a2 = _mm256_loadu_ps(acc.as_ptr().add(16));
-    let mut a3 = _mm256_loadu_ps(acc.as_ptr().add(24));
+    // Process HIDDEN2 outputs in 8-wide AVX chunks.  Since HIDDEN2 is a
+    // compile-time constant, LLVM unrolls the inner while-loop and keeps the
+    // acc slices in YMM registers across outer iterations (w and acc can't alias).
     for i in 0..x.len() {
         let xi  = _mm256_set1_ps(*x.get_unchecked(i));
         let col = w.as_ptr().add(i * HIDDEN2);
-        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(col),        xi, a0);
-        a1 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(8)),  xi, a1);
-        a2 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(16)), xi, a2);
-        a3 = _mm256_fmadd_ps(_mm256_loadu_ps(col.add(24)), xi, a3);
+        let mut k = 0;
+        while k < HIDDEN2 {
+            let a = _mm256_loadu_ps(acc.as_ptr().add(k));
+            _mm256_storeu_ps(
+                acc.as_mut_ptr().add(k),
+                _mm256_fmadd_ps(_mm256_loadu_ps(col.add(k)), xi, a),
+            );
+            k += 8;
+        }
     }
-    _mm256_storeu_ps(acc.as_mut_ptr(),        a0);
-    _mm256_storeu_ps(acc.as_mut_ptr().add(8),  a1);
-    _mm256_storeu_ps(acc.as_mut_ptr().add(16), a2);
-    _mm256_storeu_ps(acc.as_mut_ptr().add(24), a3);
 }
 
-fn gemv_col32_scalar(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
+fn gemv_col_scalar(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
     for i in 0..x.len() {
         let xi  = x[i];
         let col = &w[i * HIDDEN2..(i + 1) * HIDDEN2];
@@ -572,11 +573,11 @@ fn gemv_col32_scalar(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
 }
 
 #[inline(always)]
-fn gemv_col32(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
+fn gemv_col(w: &[f32], x: &[f32], acc: &mut [f32; HIDDEN2]) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-    unsafe { return gemv_col32_avx2(w, x, acc); }
+    unsafe { return gemv_col_avx2(w, x, acc); }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
-    gemv_col32_scalar(w, x, acc)
+    gemv_col_scalar(w, x, acc)
 }
 
 // ── Evaluator ─────────────────────────────────────────────────────────────
@@ -785,8 +786,8 @@ impl NeuralEvaluator {
         // w2 is column-major (HIDDEN1_DUAL × HIDDEN2).
         // Split into the h_w half and the h_b half.
         let mut h2 = self.b2[..HIDDEN2].try_into().unwrap();
-        gemv_col32(&self.w2[..HIDDEN1 * HIDDEN2],        h_w, &mut h2);
-        gemv_col32(&self.w2[HIDDEN1 * HIDDEN2..],        h_b, &mut h2);
+        gemv_col(&self.w2[..HIDDEN1 * HIDDEN2],        h_w, &mut h2);
+        gemv_col(&self.w2[HIDDEN1 * HIDDEN2..],        h_b, &mut h2);
         for v in h2.iter_mut() { *v = screlu_f32(*v); }
         self.forward_heads(&h2, bucket)
     }
@@ -795,7 +796,7 @@ impl NeuralEvaluator {
     fn forward_l2_heads_single(&self, h1: &[f32; HIDDEN1], bucket: usize) -> (i32, f32) {
         // w2 is column-major (HIDDEN1 × HIDDEN2).
         let mut h2: [f32; HIDDEN2] = self.b2[..HIDDEN2].try_into().unwrap();
-        gemv_col32(&self.w2, h1, &mut h2);
+        gemv_col(&self.w2, h1, &mut h2);
         for v in h2.iter_mut() { *v = screlu_f32(*v); }
         self.forward_heads(&h2, bucket)
     }
