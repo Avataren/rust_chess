@@ -223,20 +223,15 @@ pub fn eval_direct(board: &ChessBoard) -> i32 {
 }
 
 /// Like `eval_direct` but returns `None` if the evaluator has not been
-/// initialized yet, or if the WDL confidence is below `CONFIDENCE_THRESHOLD`.
-/// Used by `evaluate_board` so tests compiled with `nn-incremental` can fall
-/// back to classical eval without loading a model, and so that live play can
-/// fall back to HCE on low-confidence positions.
+/// initialized yet.  Used by `evaluate_board` so tests compiled with
+/// `nn-incremental` can fall back to classical eval without loading a model.
+/// Does NOT apply the confidence threshold — that would create an inconsistent
+/// evaluation function inside the search tree (some nodes NN, some HCE).
 #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental"))]
 #[inline]
 pub fn try_eval_direct(board: &ChessBoard) -> Option<i32> {
     let e = EVALUATOR.get()?;
-    let (score, confidence) = e.evaluate_with_confidence(board);
-    let threshold = f32::from_bits(CONFIDENCE_THRESHOLD.load(Ordering::Relaxed));
-    if confidence < threshold {
-        HCE_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
-        return None;
-    }
+    let (score, _) = e.evaluate_with_confidence(board);
     Some(if e.dual_perspective {
         score
     } else {
@@ -268,10 +263,10 @@ pub fn eval_accum_direct(
     e.evaluate_from_accumulators(acc_white, acc_black, bucket).0
 }
 
-/// Like `eval_accum_direct` but returns `None` when WDL confidence is below
-/// `CONFIDENCE_THRESHOLD`, allowing the caller to fall back to classical eval.
-/// When threshold is 0.0 (default), behaves identically to `eval_accum_direct`
-/// with negligible overhead (one atomic load + float compare).
+/// Like `eval_accum_direct` but returns `None` if the evaluator is not loaded.
+/// Does NOT apply the confidence threshold — mixing NN and HCE within the same
+/// search tree creates inconsistent evaluations and tactical blunders.
+/// Confidence is tracked separately for display via `eval_position_confidence`.
 #[cfg(feature = "nn-incremental")]
 #[inline]
 pub fn try_eval_accum_direct(
@@ -281,14 +276,7 @@ pub fn try_eval_accum_direct(
 ) -> Option<i32> {
     let e = EVALUATOR.get()?;
     let bucket = piece_bucket(board, e.n_output_buckets);
-    let (score, confidence) = e.evaluate_from_accumulators(acc_white, acc_black, bucket);
-    let threshold = f32::from_bits(CONFIDENCE_THRESHOLD.load(Ordering::Relaxed));
-    if confidence < threshold {
-        HCE_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
-        None
-    } else {
-        Some(score)
-    }
+    Some(e.evaluate_from_accumulators(acc_white, acc_black, bucket).0)
 }
 
 /// Initialize accumulators from a board position — no NEURAL_ENABLED check.
