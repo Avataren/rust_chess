@@ -8,7 +8,7 @@ mod tb;
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
-    eval_position_confidence,
+    eval_position_confidence, get_hce_fallback_count, reset_hce_fallback_count,
     init_neural_eval, is_neural_eval_enabled, is_neural_eval_initialized,
     iterative_deepening_root_with_tt, set_neural_confidence_threshold,
     set_neural_eval_enabled, OpeningBook, RootNoiseConfig, TranspositionTable,
@@ -302,6 +302,7 @@ fn search_and_respond(
         println!("info string NN confidence {:.3}", conf);
         let _ = io::stdout().flush();
     }
+    reset_hce_fallback_count();
 
     let t0 = Instant::now();
     tt.new_search();
@@ -329,6 +330,10 @@ fn search_and_respond(
         noise,
     );
     let _ms = t0.elapsed().as_millis();
+    let fallbacks = get_hce_fallback_count();
+    if fallbacks > 0 {
+        println!("info string HCE fallback {fallbacks} nodes (low NN confidence)");
+    }
     let mv_str = result.best_move.map(mv_to_uci).unwrap_or_else(|| "0000".to_string());
     let ponder_str = result.ponder_move.map(mv_to_uci);
     if let Some(ref p) = ponder_str {

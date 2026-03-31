@@ -24,7 +24,7 @@
 //! (positive = good for white), matching the existing `evaluate_board`.
 
 use std::io::{Read, Seek};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use chess_board::ChessBoard;
@@ -66,6 +66,18 @@ static EVALUATOR: OnceLock<NeuralEvaluator> = OnceLock::new();
 /// Minimum WDL confidence to trust the NN score.
 /// Default 0.0 = always trust NN (no fallback).
 static CONFIDENCE_THRESHOLD: AtomicU32 = AtomicU32::new(0);
+
+/// Number of positions where confidence fell below threshold and HCE was used.
+/// Reset by `reset_hce_fallback_count()` before each search.
+static HCE_FALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
+
+pub fn reset_hce_fallback_count() {
+    HCE_FALLBACK_COUNT.store(0, Ordering::Relaxed);
+}
+
+pub fn get_hce_fallback_count() -> u64 {
+    HCE_FALLBACK_COUNT.load(Ordering::Relaxed)
+}
 
 /// Load weights from an NPZ file path.
 pub fn init_neural_eval(path: &str) -> Result<(), String> {
@@ -222,6 +234,7 @@ pub fn try_eval_direct(board: &ChessBoard) -> Option<i32> {
     let (score, confidence) = e.evaluate_with_confidence(board);
     let threshold = f32::from_bits(CONFIDENCE_THRESHOLD.load(Ordering::Relaxed));
     if confidence < threshold {
+        HCE_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
         return None;
     }
     Some(if e.dual_perspective {
@@ -270,7 +283,12 @@ pub fn try_eval_accum_direct(
     let bucket = piece_bucket(board, e.n_output_buckets);
     let (score, confidence) = e.evaluate_from_accumulators(acc_white, acc_black, bucket);
     let threshold = f32::from_bits(CONFIDENCE_THRESHOLD.load(Ordering::Relaxed));
-    if confidence < threshold { None } else { Some(score) }
+    if confidence < threshold {
+        HCE_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+        None
+    } else {
+        Some(score)
+    }
 }
 
 /// Initialize accumulators from a board position — no NEURAL_ENABLED check.

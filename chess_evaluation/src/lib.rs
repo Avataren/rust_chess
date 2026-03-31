@@ -15,6 +15,7 @@ pub use neural_eval::{
     set_neural_eval_enabled, is_neural_eval_enabled, is_neural_eval_initialized,
     set_neural_confidence_threshold, get_neural_confidence_threshold,
     eval_position_confidence,
+    reset_hce_fallback_count, get_hce_fallback_count,
 };
 pub use alpha_beta::alpha_beta;
 pub use alpha_beta::alpha_beta_root;
