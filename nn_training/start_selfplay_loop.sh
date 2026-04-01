@@ -18,6 +18,7 @@ PYTHONPATH=. python3 scripts/selfplay_loop.py \
   --puzzle-binary       "$BIN_DIR/puzzle_bench" \
   --puzzle-file         "$REPO_DIR/lichess_db_puzzle.csv.zst" \
   --selfplay-binary     "$BIN_DIR/self_play" \
+  --pool-tool           "$BIN_DIR/pool_tool" \
   --anchor-data         data/all_69m/train_all_69m.jsonl \
   --anchor-size         50000 \
   --anchor-min-fraction 0.05 \

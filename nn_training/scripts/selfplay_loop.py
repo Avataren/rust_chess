@@ -602,11 +602,19 @@ def generate_data(
     _run(cmd, check=True)
 
 
-def append_to_pool(new_data: Path, pool_file: Path, pool_size: int):
+def append_to_pool(new_data: Path, pool_file: Path, pool_size: int,
+                   pool_tool: str = ""):
     """Append new_data to pool_file, then trim to pool_size lines (keep newest)."""
+    if pool_tool:
+        _run([pool_tool, "append",
+              "--pool",      str(pool_file),
+              "--new-data",  str(new_data),
+              "--pool-size", str(pool_size)],
+             check=True)
+        return
+    # Python fallback (slow on large pools).
     with pool_file.open("a", encoding="utf-8") as f:
         f.write(new_data.read_text(encoding="utf-8"))
-
     lines = pool_file.read_text(encoding="utf-8").splitlines(keepends=True)
     if len(lines) > pool_size:
         lines = lines[-pool_size:]
@@ -614,7 +622,17 @@ def append_to_pool(new_data: Path, pool_file: Path, pool_size: int):
     print(f"[loop] Pool size: {len(lines)} positions")
 
 
-def split_pool(pool_file: Path, train_file: Path, val_file: Path, val_fraction: float = 0.1):
+def split_pool(pool_file: Path, train_file: Path, val_file: Path,
+               val_fraction: float = 0.1, pool_tool: str = ""):
+    if pool_tool:
+        _run([pool_tool, "split",
+              "--pool",         str(pool_file),
+              "--train",        str(train_file),
+              "--val",          str(val_file),
+              "--val-fraction", str(val_fraction)],
+             check=True)
+        return
+    # Python fallback.
     lines = pool_file.read_text(encoding="utf-8").splitlines(keepends=True)
     random.shuffle(lines)
     n_val = max(1000, int(len(lines) * val_fraction))
@@ -734,6 +752,8 @@ def main():
                     help="Parallel self-play engine instances (default 32)")
     ap.add_argument("--pool-size", type=int, default=750_000,
                     help="Max positions kept in the replay pool (default 750000 — new data is ~6%% per iter)")
+    ap.add_argument("--pool-tool", default="",
+                    help="Path to pool_tool binary for fast pool append/split (falls back to Python if omitted)")
     ap.add_argument("--config", default="configs/finetune.yaml")
     ap.add_argument("--artifacts-dir", default="artifacts")
     # ── Evaluation ────────────────────────────────────────────────────────────
@@ -914,11 +934,12 @@ def main():
             )
 
         # 3. Append to replay pool
-        append_to_pool(new_data, pool_file, args.pool_size)
+        append_to_pool(new_data, pool_file, args.pool_size, pool_tool=args.pool_tool)
         new_data.unlink()  # remove per-iter file, it's in the pool now
 
         # 4. Split pool into train/val
-        split_pool(pool_file, Path("data/train.jsonl"), Path("data/val.jsonl"))
+        split_pool(pool_file, Path("data/train.jsonl"), Path("data/val.jsonl"),
+                   pool_tool=args.pool_tool)
 
         # 4b. Inject anchor positions from original training data (if configured).
         # This prevents the model from drifting into a narrow self-play distribution

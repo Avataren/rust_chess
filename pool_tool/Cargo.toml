@@ -1,0 +1,11 @@
+[package]
+name = "pool_tool"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pool_tool"
+path = "src/main.rs"
+
+[dependencies]
+rand = { version = "0.8", features = ["small_rng"] }
