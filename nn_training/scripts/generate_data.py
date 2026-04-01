@@ -230,7 +230,7 @@ def selfplay_positions(
     out: list[str] = []
     with ProcessPoolExecutor(max_workers=n_parallel) as pool:
         futures = {pool.submit(_selfplay_worker, a): n for a, n in zip(worker_args, batches)}
-        with tqdm(total=games, desc=f"selfplay ({n_parallel} workers)") as pbar:
+        with tqdm(total=games, desc=f"selfplay ({n_parallel} workers)", dynamic_ncols=True) as pbar:
             for fut in as_completed(futures):
                 fens = fut.result()
                 out.extend(fens)
@@ -299,7 +299,7 @@ def main():
     if args.fens:
         print(f"Loading pre-extracted FENs from {args.fens}...")
         with open(args.fens, "r") as f:
-            for line in tqdm(f, desc="loading-fens"):
+            for line in tqdm(f, desc="loading-fens", dynamic_ncols=True):
                 fen = line.strip()
                 if fen:
                     fens.append(fen)
@@ -307,7 +307,7 @@ def main():
                         break
     elif args.pgn and pgn_cap > 0:
         print(f"Scanning PGN for up to {pgn_cap} positions...")
-        pbar = tqdm(total=pgn_cap, desc="pgn-scan")
+        pbar = tqdm(total=pgn_cap, desc="pgn-scan", dynamic_ncols=True)
         for board in _iter_pgn_positions(
             Path(args.pgn), pgn_cap, plies_min=12,
             min_elo=args.min_elo, max_elo=args.max_elo,
@@ -371,6 +371,7 @@ def main():
                 pool.imap_unordered(_label_fen, fens, chunksize=chunksize),
                 total=len(fens),
                 desc="labeling",
+                dynamic_ncols=True,
             ):
                 if result is not None:
                     out_f.write(json.dumps(result) + "\n")

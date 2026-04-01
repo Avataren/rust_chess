@@ -153,7 +153,7 @@ def train_epoch(model, loader, optimizer, scaler, device, cfg):
     bucket_cp_mae_sum = [0.0] * n_buckets
     bucket_count = [0] * n_buckets
 
-    for batch in tqdm(loader, desc="train", leave=False):
+    for batch in tqdm(loader, desc="train", leave=False, dynamic_ncols=True):
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(device_type=device.type, enabled=cfg["training"]["amp"] and device.type == "cuda"):
@@ -220,7 +220,7 @@ def eval_epoch(model, loader, device, cfg):
     eg_cp_mae_sum = 0.0
     eg_count = 0
 
-    for batch in tqdm(loader, desc="val", leave=False):
+    for batch in tqdm(loader, desc="val", leave=False, dynamic_ncols=True):
         cp_pred, wdl_logits, cp, wdl, bucket = _forward_batch(model, batch, device, feature_dim)
         wdl_idx = torch.argmax(wdl, dim=1)
         cp_loss = cp_loss_fn(cp_pred, cp)

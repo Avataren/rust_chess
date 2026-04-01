@@ -52,6 +52,9 @@ Before touching `chess_uci/src/tb.rs`, Syzygy probe logic, or endgame engine beh
 Before writing data generation code, touching dataset loaders, or working with CP values:
 → Read `.claude/data_pipeline.md` first. The CP perspective convention (side-to-move in JSONL, white-absolute in binary) is a silent failure mode — wrong perspective trains on inverted evaluations with no warning.
 
+Before writing any terminal progress bar or status line (tqdm, `\r`, ANSI, etc.):
+→ Read `.claude/terminal_progress.md` first. The `\r` and fixed-width tqdm patterns break on terminal resize. The fixes are: `dynamic_ncols=True` on every tqdm call, and `\r\033[K` + width clamp for manual status lines.
+
 # Reasoning approach
 
 **GAN thinking framework** — use this when analysing complex feedback loops (training pipelines, eval systems, iterative processes):

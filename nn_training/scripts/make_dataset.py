@@ -86,7 +86,9 @@ def run_parallel(jobs: list[tuple[list, str, dict | None]]) -> None:
         elapsed = time.monotonic() - t0
         still_running = [d for p, d, _ in entries if p.poll() is None]
         short = [d.split("(")[-1].rstrip(")") if "(" in d else d for d in still_running]
-        print(f"\r  [{elapsed:5.0f}s]  running: {', '.join(short)}   ", end="", flush=True)
+        width = shutil.get_terminal_size().columns
+        msg = f"  [{elapsed:5.0f}s]  running: {', '.join(short)}"
+        print(f"\r\033[K{msg[:width - 1]}", end="", flush=True)
         time.sleep(2)
 
     print()  # newline after the status line

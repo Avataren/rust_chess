@@ -101,7 +101,7 @@ def main():
     )
 
     with open(input_path, "r", encoding="utf-8") as f:
-        for i, line in enumerate(tqdm(f, total=N, desc="encoding")):
+        for i, line in enumerate(tqdm(f, total=N, desc="encoding", dynamic_ncols=True)):
             if not line.strip():
                 continue
             row = json.loads(line)

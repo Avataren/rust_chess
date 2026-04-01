@@ -37,7 +37,7 @@ Each iteration:
 
 ## Promotion criteria
 
-- **Puzzle score** (`puzzle_bench`, 2000 puzzles, depth 7, seed 42, min_rating 1500): candidate must match or beat best. Tolerance is **0.0** — the benchmark is fully deterministic (fixed seed, fresh TT per puzzle), so any drop is real.
+- **Puzzle score** (`puzzle_bench`, 2000 puzzles, depth 7, min_rating 1500): candidate must match or beat best. Tolerance is **0.0**. The seed is randomised at startup and rotates every 5 iterations (configurable via `--puzzle-seed-rotation-interval`); on rotation the best model is re-scored first so the baseline stays valid. Both models are always scored on the same seed within an iteration.
 - **Self-play winrate** (40 games, candidate vs best): must be ≥ 47%. This is a regression guard only — SE≈7.9% means it cannot detect genuine improvement.
 - **Gen-val MAE** (`data/gen_val.jsonl`): informational only, not a gate. Watch the trend (▲ = generalisation degrading). If it keeps rising while puzzle score rises, the improvements are not transferring to real-game positions.
 - **val_cp_mae on self-play pool**: NOT used for promotion. It's circular — the model is being evaluated on positions it generated.
@@ -56,7 +56,7 @@ Was previously hardcoded, making all self-play games identical across iterations
 `cp` values are **white-absolute** (positive = white winning). The `JsonlDualPositionDataset` converts to side-to-move perspective internally. If you write new data generation code, use white-absolute CP or the training will be silently wrong.
 
 **Puzzle regression tolerance**
-Must stay at `0.0`. The benchmark is deterministic — same seed, same puzzles, same TT state. Any score drop is real, not noise.
+Must stay at `0.0`. The benchmark is deterministic for a given seed — same seed, same puzzles, same TT state. Any score drop on the same seed is real, not noise. On seed rotation the baseline is always re-scored before comparing.
 
 **Self-play eval openings**
 Without the opening book, all eval games start from the initial position → only 2 distinct games repeated N/2 times. The `self_play` binary now accepts `--opening-fens <file>` and `selfplay_winrate()` generates a temp file from `_OPENING_LINES` (copied from `opening_book.rs`). Game pairs share an opening (game N and N+1 play the same FEN, sides swapped).

@@ -90,7 +90,7 @@ def main() -> None:
         print(f"piece_count.npy not found — scanning FENs (slower)...")
         pcs = []
         with inp.open() as f:
-            for line in tqdm(f, desc="scanning"):
+            for line in tqdm(f, desc="scanning", dynamic_ncols=True):
                 try:
                     fen = json.loads(line)["fen"]
                     pcs.append(piece_count_from_fen(fen))
@@ -127,7 +127,7 @@ def main() -> None:
     print(f"\nWriting {out} ...")
     written = 0
     with inp.open() as fin, out.open("w") as fout:
-        for idx, line in enumerate(tqdm(fin, total=n_total, desc="streaming")):
+        for idx, line in enumerate(tqdm(fin, total=n_total, desc="streaming", dynamic_ncols=True)):
             if idx in selected_indices:
                 fout.write(line)
                 written += 1

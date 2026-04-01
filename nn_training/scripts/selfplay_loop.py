@@ -531,7 +531,8 @@ def selfplay_winrate(selfplay_binary: str, engine_path: str,
             total_wins = total_draws = total_losses = 0
             chunk_results = []
             with tqdm(total=games, desc="[loop] self-play eval", unit="game",
-                      bar_format="{l_bar}{bar}| {n}/{total} games  {postfix}") as pbar:
+                      bar_format="{l_bar}{bar}| {n}/{total} games  {postfix}",
+                      dynamic_ncols=True) as pbar:
                 for fut in concurrent.futures.as_completed(future_to_chunk):
                     w, d, l = fut.result()
                     chunk_results.append((w, d, l))
@@ -771,8 +772,12 @@ def main():
                     help="Maximum puzzle rating for eval (default 0 = no limit)")
     ap.add_argument("--puzzle-regression-tolerance", type=float, default=0.0,
                     help="Allow puzzle score to be up to this %% below best before rejecting (default 0.0 — deterministic benchmark, no noise)")
-    ap.add_argument("--puzzle-seed", type=int, default=42,
-                    help="Fixed RNG seed for all puzzle evaluations — same puzzles every iteration (default 42)")
+    ap.add_argument("--puzzle-seed", type=int, default=-1,
+                    help="Initial RNG seed for puzzle evaluations (-1 = random at startup, default -1)")
+    ap.add_argument("--puzzle-seed-rotation-interval", type=int, default=5,
+                    help="Rotate to a new random puzzle seed every N iterations and re-score the baseline "
+                         "(0 = disabled, default 5). Prevents overfitting to a fixed puzzle subset and keeps "
+                         "the gate meaningful as the score approaches 100%%.")
     ap.add_argument("--selfplay-binary", default="",
                     help="Path to self_play binary for head-to-head eval")
     ap.add_argument("--selfplay-eval-games", type=int, default=40,
@@ -803,6 +808,9 @@ def main():
                          "Catches overfitting to the self-play distribution: puzzle score can hold while the model "
                          "degrades on real-game positions. Set 0 to disable this gate.")
     args = ap.parse_args()
+
+    # Resolve initial puzzle seed: -1 means pick one randomly at startup.
+    current_puzzle_seed = args.puzzle_seed if args.puzzle_seed >= 0 else random.randint(0, 2**31 - 1)
 
     artifacts = Path(args.artifacts_dir)
     artifacts.mkdir(exist_ok=True)
@@ -848,12 +856,12 @@ def main():
     baseline_failures_tsv = Path("data/puzzle_failures_iter0.tsv")
     best_puzzle = puzzle_score(
         args.puzzle_binary, args.puzzle_file, best_npz,
-        args.puzzle_count, args.puzzle_depth, seed=args.puzzle_seed,
+        args.puzzle_count, args.puzzle_depth, seed=current_puzzle_seed,
         min_rating=args.puzzle_min_rating, max_rating=args.puzzle_max_rating,
         export_failures_file=str(baseline_failures_tsv) if args.puzzle_binary else "",
     )
     if best_puzzle >= 0:
-        print(f"[loop] Initial puzzle score: {best_puzzle:.1f}%  (seed={args.puzzle_seed})")
+        print(f"[loop] Initial puzzle score: {best_puzzle:.1f}%  (seed={current_puzzle_seed})")
 
     best_gen_mae = gen_val_mae(best_ck, gen_val_file) if gen_val_file else -1.0
     if best_gen_mae >= 0:
@@ -998,14 +1006,36 @@ def main():
             candidate_npz = artifacts / f"candidate_iter{iteration}.npz"
             export_weights(candidate_ck, candidate_npz)
 
+            # ── Puzzle seed rotation ──────────────────────────────────────
+            # Every N iterations rotate to a fresh random seed. This prevents the
+            # model from overfitting to a fixed puzzle subset via the failure-anchor
+            # feedback loop, and keeps the gate meaningful as the score approaches 100%.
+            # Re-score the current best model first so the new baseline is on the
+            # same puzzle set as the candidate that will be scored below.
+            rotation_interval = args.puzzle_seed_rotation_interval
+            if rotation_interval > 0 and iteration % rotation_interval == 0 and best_puzzle >= 0:
+                new_seed = random.randint(0, 2**31 - 1)
+                print(f"[loop] Rotating puzzle seed: {current_puzzle_seed} → {new_seed} "
+                      f"(every {rotation_interval} iterations)")
+                current_puzzle_seed = new_seed
+                new_best_puzzle = puzzle_score(
+                    args.puzzle_binary, args.puzzle_file, best_npz,
+                    args.puzzle_count, args.puzzle_depth, seed=current_puzzle_seed,
+                    min_rating=args.puzzle_min_rating, max_rating=args.puzzle_max_rating,
+                )
+                if new_best_puzzle >= 0:
+                    best_puzzle = new_best_puzzle
+                    print(f"[loop] New baseline (best model, seed={current_puzzle_seed}): {best_puzzle:.1f}%")
+                else:
+                    print(f"[loop] WARNING: Re-scoring best model failed — seed rotation aborted, keeping seed {current_puzzle_seed}")
+
             # ── Evaluate candidate strength ───────────────────────────────
-            # Fixed seed ensures candidate is always scored on the same puzzle set
-            # as the stored best_puzzle — no need to re-run on the best model.
-            # Export failures for feedback: they become anchor training data next iteration.
+            # Both models are always scored with current_puzzle_seed so the
+            # comparison is valid. Export failures for the next iteration's anchor.
             failures_tsv = Path(f"data/puzzle_failures_iter{iteration}.tsv")
             cand_puzzle = puzzle_score(
                 args.puzzle_binary, args.puzzle_file, candidate_npz,
-                args.puzzle_count, args.puzzle_depth, seed=args.puzzle_seed,
+                args.puzzle_count, args.puzzle_depth, seed=current_puzzle_seed,
                 min_rating=args.puzzle_min_rating, max_rating=args.puzzle_max_rating,
                 export_failures_file=str(failures_tsv) if args.puzzle_binary else "",
             )

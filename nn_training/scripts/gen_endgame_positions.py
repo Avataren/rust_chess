@@ -147,7 +147,7 @@ def main() -> None:
     failed = 0
 
     with open(out, "w") as f:
-        pbar = tqdm(total=args.count, desc="generating", unit="pos")
+        pbar = tqdm(total=args.count, desc="generating", unit="pos", dynamic_ncols=True)
         while generated < args.count:
             board = _try_generate_position(args.min_pieces, args.max_pieces, rng)
             if board is None:

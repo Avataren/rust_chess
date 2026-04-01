@@ -30,12 +30,23 @@ import argparse
 import json
 import os
 import random
+import shutil
 import sys
 from multiprocessing import Pool
 from pathlib import Path
 
 import chess
 import chess.engine
+
+
+def _term_print(msg: str) -> None:
+    """Overwrite the current terminal line safely under resize.
+
+    Uses \\r\\033[K (return to col 0, erase to end of line) and clamps the
+    message to the terminal width so it never wraps and breaks future \\r updates.
+    """
+    width = shutil.get_terminal_size().columns
+    print(f"\r\033[K{msg[:width - 1]}", end="", flush=True)
 
 
 # ── Per-worker state ──────────────────────────────────────────────────────────
@@ -135,12 +146,12 @@ def main() -> None:
         for i, line in enumerate(lines):
             all_fens.extend(extract_fens(line))
             if i % 500000 == 0 and i > 0:
-                print(f"\r  {i}/{len(lines)} puzzles processed...", end="", flush=True)
+                _term_print(f"  {i}/{len(lines)} puzzles processed...")
 
         # Deduplicate (same position can appear in multiple puzzles)
         unique_fens = list(dict.fromkeys(all_fens))
         del all_fens
-        print(f"\r  {len(lines)} puzzles → {len(unique_fens)} unique FENs")
+        print(f"\r\033[K  {len(lines)} puzzles → {len(unique_fens)} unique FENs")
 
         fens_cache.write_text("\n".join(unique_fens))
         print(f"  Cached to {fens_cache}")
@@ -179,10 +190,10 @@ def main() -> None:
                 n_labeled += 1
             if n_labeled % 5000 == 0:
                 pct = n_labeled * 100 / total_fens
-                print(f"\r  {n_labeled}/{total_fens} labeled  ({pct:.1f}%)", end="", flush=True)
+                _term_print(f"  {n_labeled}/{total_fens} labeled  ({pct:.1f}%)")
 
     del todo_fens
-    print(f"\r  {n_labeled} positions labeled ({total_fens - n_labeled} skipped)    ")
+    print(f"\r\033[K  {n_labeled} positions labeled ({total_fens - n_labeled} skipped)")
 
     # ── Step 3: Shuffle + split ───────────────────────────────────────────────
 
