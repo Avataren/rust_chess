@@ -60,7 +60,7 @@ def main():
     )
     args = ap.parse_args()
 
-    ckpt = torch.load(args.checkpoint, map_location="cpu")
+    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     state = ckpt["model_state"]
 
     # Prefer config saved inside the checkpoint (always matches the trained weights).
