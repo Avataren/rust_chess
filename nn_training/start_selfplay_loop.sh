@@ -26,4 +26,5 @@ PYTHONPATH=. python3 scripts/selfplay_loop.py \
   --gen-val-max-increase 5.0 \
   --selfplay-noise-prob 0.05 \
   --selfplay-dirichlet-alpha 0.3 \
-  --selfplay-dirichlet-amplitude 100
+  --selfplay-dirichlet-amplitude 100 \
+  --opening-tsv-dir     "$SCRIPT_DIR/chess-openings"

@@ -443,6 +443,73 @@ def _opening_fens(min_ply: int = 6) -> list[str]:
     return fens
 
 
+def _opening_fens_from_tsv(tsv_dir: str, min_ply: int = 6, max_ply: int = 20) -> list[str]:
+    """Generate self-play starting FENs from the lichess-org/chess-openings TSV files.
+
+    Applies the same intermediate-position expansion as _opening_fens(): every
+    position at or after min_ply within each opening line is included, giving far
+    more starting variety than just the endpoint FEN.
+
+    Filters applied:
+    - First move must be one of e4/d4/c4/Nf3 (skips dubious 1.a4, 1.g4, etc.)
+    - Lines shorter than min_ply plies are skipped
+    - Lines longer than max_ply plies are truncated at max_ply
+    - Duplicate FENs (shared prefixes across lines) are deduplicated
+    """
+    import csv
+    import chess
+
+    GOOD_FIRST = {"e2e4", "d2d4", "c2c4", "g1f3"}
+    TSV_FILES  = ["a.tsv", "b.tsv", "c.tsv", "d.tsv", "e.tsv"]
+
+    fens: list[str] = []
+    seen: set[str]  = set()
+
+    for filename in TSV_FILES:
+        path = Path(tsv_dir) / filename
+        if not path.exists():
+            print(f"[loop] WARNING: opening TSV not found: {path} — skipping")
+            continue
+        with path.open(encoding="utf-8") as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                pgn = row.get("pgn", "")
+                tokens = [t for t in pgn.split() if not (t[0].isdigit() and "." in t)]
+                if not tokens:
+                    continue
+
+                board = chess.Board()
+                uci_moves: list[str] = []
+                for token in tokens:
+                    try:
+                        move = board.parse_san(token)
+                        uci_moves.append(move.uci())
+                        board.push(move)
+                    except Exception:
+                        break
+
+                if not uci_moves:
+                    continue
+                if uci_moves[0] not in GOOD_FIRST:
+                    continue
+                if len(uci_moves) < min_ply:
+                    continue
+
+                # Replay from scratch to collect intermediate FENs
+                board2 = chess.Board()
+                for i, uci in enumerate(uci_moves[:max_ply]):
+                    try:
+                        board2.push_uci(uci)
+                    except Exception:
+                        break
+                    if i + 1 >= min_ply:
+                        fen = board2.fen()
+                        if fen not in seen:
+                            seen.add(fen)
+                            fens.append(fen)
+
+    return fens
+
+
 def _selfplay_chunk(selfplay_binary: str, engine_path: str,
                     candidate_npz: str, baseline_npz: str,
                     games: int, movetime_ms: int, threads_per_engine: int,
@@ -731,6 +798,10 @@ def main():
                     help="Number of iterations (0 = run forever)")
     ap.add_argument("--games-per-iter", type=int, default=3000,
                     help="Self-play games per iteration (default 3000)")
+    ap.add_argument("--opening-tsv-dir", default="",
+                    help="Directory containing lichess-org/chess-openings TSV files (a.tsv … e.tsv). "
+                         "When set, self-play starting FENs are drawn from these openings instead of "
+                         "the built-in _OPENING_LINES. Provides ~10-20x more diverse starting positions.")
     ap.add_argument("--positions-per-game", type=int, default=15,
                     help="Positions sampled per self-play game (default 15)")
     ap.add_argument("--movetime-ms", type=int, default=100,
@@ -904,14 +975,20 @@ def main():
         )
         baseline_failures_tsv.unlink(missing_ok=True)
 
-    # Always regenerate the opening FENs file from _OPENING_LINES so that
-    # changes to the opening book take effect on the next restart without
-    # requiring manual deletion of the cached file.
+    # Always regenerate the opening FENs file on startup so that changes to the
+    # opening source take effect immediately without manual cache deletion.
+    # When --opening-tsv-dir is set, FENs are drawn from the full lichess
+    # chess-openings database (~10-20x more starting positions than the built-in
+    # lines). Falls back to _OPENING_LINES when no TSV dir is provided.
     opening_fens_file = Path("data/opening_fens.txt")
     opening_fens_file.parent.mkdir(exist_ok=True)
-    fens = _opening_fens()
+    if args.opening_tsv_dir:
+        fens = _opening_fens_from_tsv(args.opening_tsv_dir)
+        print(f"[loop] Loaded {len(fens)} opening FENs from TSVs in {args.opening_tsv_dir} → {opening_fens_file}")
+    else:
+        fens = _opening_fens()
+        print(f"[loop] Wrote {len(fens)} built-in opening FENs → {opening_fens_file}")
     opening_fens_file.write_text("\n".join(fens) + "\n")
-    print(f"[loop] Wrote {len(fens)} theory opening FENs → {opening_fens_file}")
 
     pool_file = Path("data/selfplay_pool.jsonl")
     pool_file.parent.mkdir(exist_ok=True)
