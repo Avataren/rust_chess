@@ -20,7 +20,7 @@ PYTHONPATH=. python3 scripts/selfplay_loop.py \
   --selfplay-binary     "$BIN_DIR/self_play" \
   --anchor-data         data/all_69m/train_all_69m.jsonl \
   --anchor-size         50000 \
-  --anchor-min-fraction 0.10 \
+  --anchor-min-fraction 0.05 \
   --selfplay-eval-games 150 \
   --gen-val-max-increase 5.0 \
   --selfplay-noise-prob 0.05 \

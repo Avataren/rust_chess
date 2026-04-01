@@ -24,13 +24,61 @@ import json
 import os
 import random
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import torch
 import yaml
 from tqdm import tqdm
+
+
+# ── Child-process tracking & clean shutdown on Ctrl+C ────────────────────────
+# All subprocess calls go through _run() which starts children in a new session
+# (own process group) and registers them here.  SIGINT/SIGTERM kill every tracked
+# process group before exiting so no orphaned chess_uci/stockfish workers linger.
+
+_active_procs: set[subprocess.Popen] = set()
+_active_procs_lock = threading.Lock()
+
+
+def _run(cmd: list, **kwargs) -> subprocess.CompletedProcess:
+    """Drop-in for subprocess.run that tracks children for cleanup on Ctrl+C."""
+    check = kwargs.pop("check", False)
+    if kwargs.pop("capture_output", False):
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kwargs)
+    with _active_procs_lock:
+        _active_procs.add(proc)
+    try:
+        stdout, stderr = proc.communicate()
+    finally:
+        with _active_procs_lock:
+            _active_procs.discard(proc)
+    result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    if check:
+        result.check_returncode()
+    return result
+
+
+def _shutdown(signum, frame):
+    print("\n[loop] Interrupted — terminating child processes...", flush=True)
+    with _active_procs_lock:
+        procs = list(_active_procs)
+    for proc in procs:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except OSError:
+            pass
+    sys.exit(1)
+
+
+signal.signal(signal.SIGINT, _shutdown)
+signal.signal(signal.SIGTERM, _shutdown)
 
 
 # ── Puzzle tolerance tiers ───────────────────────────────────────────────────
@@ -64,7 +112,7 @@ def load_val_mae(checkpoint_path: Path) -> float:
 
 def export_weights(checkpoint_path: Path, npz_path: Path):
     print(f"[loop] Exporting {checkpoint_path} → {npz_path}")
-    subprocess.run(
+    _run(
         [sys.executable, "scripts/export_weights.py",
          "--checkpoint", str(checkpoint_path),
          "--output", str(npz_path)],
@@ -83,7 +131,7 @@ def gen_val_mae(checkpoint_path: Path, gen_val_file: Path) -> float:
         return -1.0
     if not gen_val_file or not gen_val_file.exists():
         return -1.0
-    result = subprocess.run(
+    result = _run(
         [sys.executable, "scripts/eval_mae.py",
          "--checkpoint", str(checkpoint_path),
          "--data",       str(gen_val_file)],
@@ -135,7 +183,7 @@ def puzzle_score(bench_binary: str, puzzle_file: str, npz_path: Path,
         cmd += ["--max-rating", str(max_rating)]
     if export_failures_file:
         cmd += ["--export-failures", export_failures_file]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = _run(cmd, capture_output=True, text=True)
     for line in result.stdout.splitlines():
         if "Overall:" in line:
             # Format: "  Overall:  solved/total  (pct%)"
@@ -167,7 +215,7 @@ def process_puzzle_failures(
     import tempfile
     tmp_dir = Path(tempfile.mkdtemp(prefix="puzzle_ft_"))
     try:
-        result = subprocess.run(
+        result = _run(
             [sys.executable, "scripts/gen_puzzle_finetune_data.py",
              "--input",     str(failures_tsv),
              "--output",    str(tmp_dir),
@@ -413,7 +461,7 @@ def _selfplay_chunk(selfplay_binary: str, engine_path: str,
     ]
     if opening_fens_file:
         cmd += ["--opening-fens", opening_fens_file]
-    result = subprocess.run(cmd, capture_output=True, text=True,)
+    result = _run(cmd, capture_output=True, text=True,)
     wins = draws = losses = 0
     wins_seen = 0
     for line in result.stdout.splitlines():
@@ -551,7 +599,7 @@ def generate_data(
         cmd += ["--opening-fens-file", opening_fens_file]
     if noise_prob > 0:
         cmd += ["--noise-prob", str(noise_prob)]
-    subprocess.run(cmd, check=True)
+    _run(cmd, check=True)
 
 
 def append_to_pool(new_data: Path, pool_file: Path, pool_size: int):
@@ -591,26 +639,36 @@ def inject_anchor_data(anchor_file: Path, train_file: Path, n: int,
     after the anchor sample (e.g. puzzle failure positions for targeted repair).
     exclude_fens: set of FEN strings to skip when sampling (prevents gen_val
     positions from leaking into training and making the gen_val gate optimistic).
+
+    Uses reservoir sampling (Algorithm R) to stream the file in O(n) memory
+    regardless of anchor file size — avoids loading the full 69M-line file.
     """
-    lines = anchor_file.read_text(encoding="utf-8").splitlines(keepends=True)
-    if not lines:
+    reservoir: list[str] = []
+    count = 0
+    excluded = 0
+    with anchor_file.open("r", encoding="utf-8") as f:
+        for line in f:
+            if exclude_fens:
+                try:
+                    if json.loads(line)["fen"] in exclude_fens:
+                        excluded += 1
+                        continue
+                except (json.JSONDecodeError, KeyError):
+                    pass
+            count += 1
+            if len(reservoir) < n:
+                reservoir.append(line)
+            else:
+                j = random.randint(0, count - 1)
+                if j < n:
+                    reservoir[j] = line
+    if excluded:
+        print(f"[loop] Excluded {excluded} gen_val positions from anchor sample")
+    if not reservoir:
         return
-    if exclude_fens:
-        filtered = []
-        for line in lines:
-            try:
-                if json.loads(line)["fen"] not in exclude_fens:
-                    filtered.append(line)
-            except (json.JSONDecodeError, KeyError):
-                filtered.append(line)
-        excluded = len(lines) - len(filtered)
-        if excluded:
-            print(f"[loop] Excluded {excluded} gen_val positions from anchor sample")
-        lines = filtered
-    sample = random.sample(lines, min(n, len(lines)))
     with train_file.open("a", encoding="utf-8") as f:
-        f.writelines(sample)
-    print(f"[loop] Injected {len(sample)} anchor positions into training set")
+        f.writelines(reservoir)
+    print(f"[loop] Injected {len(reservoir)} anchor positions into training set")
 
     if extra_files:
         for extra in extra_files:
@@ -629,7 +687,7 @@ def fine_tune(
     tb_logdir: str,
 ):
     print(f"[loop] Fine-tuning from {checkpoint_path} → {out_checkpoint}")
-    subprocess.run(
+    _run(
         [sys.executable, "scripts/train.py",
          "--config", config,
          "--resume", str(checkpoint_path),
