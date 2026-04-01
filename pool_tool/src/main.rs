@@ -8,7 +8,7 @@
 ///             [--val-fraction 0.1] [--min-val 1000]
 ///             Shuffles pool in memory, writes train / val splits.
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -93,39 +93,44 @@ fn cmd_split(args: &[String]) {
         .parse()
         .expect("--min-val must be an integer");
 
-    // Read all lines.
-    let f = File::open(&pool_path).expect("failed to open pool");
-    let mut lines: Vec<String> = BufReader::new(f)
-        .lines()
-        .map(|l| {
-            let mut s = l.expect("pool read error");
-            s.push('\n');
-            s
-        })
-        .filter(|l| l.len() > 1) // skip blank lines
-        .collect();
+    // Read the entire file into one buffer — one allocation instead of 750k Strings.
+    let buf = fs::read(&pool_path).expect("failed to read pool");
 
-    let total = lines.len();
+    // Collect (start, end) byte spans for each non-empty line.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    for (i, &b) in buf.iter().enumerate() {
+        if b == b'\n' {
+            if i > start {
+                spans.push((start, i + 1)); // include newline
+            }
+            start = i + 1;
+        }
+    }
+    if start < buf.len() {
+        spans.push((start, buf.len())); // last line without trailing newline
+    }
 
-    // Shuffle with OS-seeded RNG (different every call).
+    let total = spans.len();
+
+    // Shuffle the spans (cheap: just 16-byte pairs).
     let mut rng = rand::rngs::SmallRng::from_entropy();
-    lines.shuffle(&mut rng);
+    spans.shuffle(&mut rng);
 
-    let n_val = (total as f64 * val_fraction) as usize;
-    let n_val = n_val.max(min_val).min(total);
+    let n_val = ((total as f64 * val_fraction) as usize).max(min_val).min(total);
     let n_train = total - n_val;
 
-    write_lines(&train_path, &lines[..n_train]);
-    write_lines(&val_path, &lines[n_train..]);
+    write_spans(&train_path, &buf, &spans[..n_train]);
+    write_spans(&val_path,   &buf, &spans[n_train..]);
 
     println!("Split: {n_train} train / {n_val} val");
 }
 
-fn write_lines(path: &str, lines: &[String]) {
+fn write_spans(path: &str, buf: &[u8], spans: &[(usize, usize)]) {
     let f = File::create(path).unwrap_or_else(|e| panic!("failed to create {path}: {e}"));
-    let mut w = BufWriter::new(f);
-    for line in lines {
-        w.write_all(line.as_bytes()).expect("write error");
+    let mut w = BufWriter::with_capacity(1 << 20, f); // 1 MB write buffer
+    for &(s, e) in spans {
+        w.write_all(&buf[s..e]).expect("write error");
     }
 }
 
