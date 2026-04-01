@@ -32,6 +32,7 @@ from pathlib import Path
 
 import torch
 import yaml
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 
@@ -757,6 +758,10 @@ def main():
                     help="Path to pool_tool binary for fast pool append/split (falls back to Python if omitted)")
     ap.add_argument("--config", default="configs/finetune.yaml")
     ap.add_argument("--artifacts-dir", default="artifacts")
+    ap.add_argument("--loop-tb-logdir", default="runs/selfplay_loop",
+                    help="TensorBoard log directory for cross-iteration metrics "
+                         "(gen_val MAE, puzzle score, winrate, promotion). "
+                         "Separate from the per-iteration fine-tune logs. (default: runs/selfplay_loop)")
     # ── Evaluation ────────────────────────────────────────────────────────────
     ap.add_argument("--puzzle-binary", default="",
                     help="Path to puzzle_bench binary for promotion gating")
@@ -811,6 +816,13 @@ def main():
 
     # Resolve initial puzzle seed: -1 means pick one randomly at startup.
     current_puzzle_seed = args.puzzle_seed if args.puzzle_seed >= 0 else random.randint(0, 2**31 - 1)
+
+    # Shared TensorBoard writer for cross-iteration metrics.
+    # Each fine-tune also writes its own per-epoch log under runs/loop_iter{N}.
+    # This writer captures the trends that matter most: gen_val MAE, puzzle score,
+    # winrate, and promotion decisions — all on the same x-axis (iteration number).
+    loop_writer = SummaryWriter(log_dir=args.loop_tb_logdir)
+    print(f"[loop] TensorBoard loop metrics → {args.loop_tb_logdir}")
 
     artifacts = Path(args.artifacts_dir)
     artifacts.mkdir(exist_ok=True)
@@ -907,6 +919,7 @@ def main():
         pool_file.touch()
 
     iteration = 0
+    seed_rotation_count = 0
     while True:
         iteration += 1
         if args.iterations > 0 and iteration > args.iterations:
@@ -1018,6 +1031,7 @@ def main():
                 print(f"[loop] Rotating puzzle seed: {current_puzzle_seed} → {new_seed} "
                       f"(every {rotation_interval} iterations)")
                 current_puzzle_seed = new_seed
+                seed_rotation_count += 1
                 new_best_puzzle = puzzle_score(
                     args.puzzle_binary, args.puzzle_file, best_npz,
                     args.puzzle_count, args.puzzle_depth, seed=current_puzzle_seed,
@@ -1146,6 +1160,27 @@ def main():
                 promoted = False
                 reason = f"{reason} BUT gen_val gate failed ({gen_val_reason})"
 
+            # ── Log cross-iteration metrics to TensorBoard ────────────────
+            # All scalars use `iteration` as the global step so every metric
+            # shares the same x-axis in the TB UI.  best_* values are logged
+            # BEFORE the promotion update so the chart shows what the candidate
+            # was compared against, not the post-promotion state.
+            if cand_puzzle >= 0:
+                loop_writer.add_scalar("puzzle/candidate",  cand_puzzle,  iteration)
+            if best_puzzle >= 0:
+                loop_writer.add_scalar("puzzle/best",       best_puzzle,  iteration)
+            if cand_winrate >= 0:
+                loop_writer.add_scalar("selfplay_winrate",  cand_winrate, iteration)
+            if cand_gen_mae >= 0:
+                loop_writer.add_scalar("gen_val_mae/candidate", cand_gen_mae, iteration)
+            if best_gen_mae >= 0:
+                loop_writer.add_scalar("gen_val_mae/best",     best_gen_mae, iteration)
+            loop_writer.add_scalar("val_cp_mae/candidate", candidate_mae, iteration)
+            loop_writer.add_scalar("val_cp_mae/best",      best_mae,      iteration)
+            loop_writer.add_scalar("promoted",             1.0 if promoted else 0.0, iteration)
+            loop_writer.add_scalar("puzzle_seed_rotations", seed_rotation_count,     iteration)
+            loop_writer.flush()
+
             if promoted:
                 best_ck = candidate_ck
                 best_mae = candidate_mae
@@ -1165,6 +1200,7 @@ def main():
                 # puzzle_anchor_jsonl is kept for the next iteration: it will be
                 # read as prev_puzzle_anchor at the start of iteration N+1.
 
+    loop_writer.close()
     print(f"\n[loop] Done. Best val_cp_mae={best_mae:.1f}  checkpoint={best_ck}")
 
 
