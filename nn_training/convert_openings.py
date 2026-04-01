@@ -54,14 +54,22 @@ def main():
     # Filter book lines:
     # - Only keep lines starting with standard first moves (e4, d4, c4, Nf3)
     #   to avoid polluting the book with dubious openings (1.a4, 1.g4, etc.)
+    # - Skip lines where either king voluntarily walks in the first 6 plies —
+    #   this removes the Bongcloud (1.e4 e5 2.Ke2) and similar joke lines while
+    #   keeping legitimate king moves that occur deep in gambit complications.
     # - Skip single-move lines and truncate at 20 moves
-    GOOD_FIRST_MOVES = {"e2e4", "d2d4", "c2c4", "g1f3"}
+    GOOD_FIRST_MOVES  = {"e2e4", "d2d4", "c2c4", "g1f3"}
+    EARLY_KING_MOVES  = {"e1e2", "e8e7"}  # white/black king walking early
+    EARLY_PLY_CUTOFF  = 6  # plies 0-5 = first 3 full moves
     lines = []
     seen = set()
     for eco, name, uci_moves in entries:
         if len(uci_moves) < 2:
             continue
         if uci_moves[0] not in GOOD_FIRST_MOVES:
+            continue
+        # Reject lines with a king move in the opening phase
+        if any(m in EARLY_KING_MOVES for m in uci_moves[:EARLY_PLY_CUTOFF]):
             continue
         # Truncate very long lines
         uci_moves = uci_moves[:20]

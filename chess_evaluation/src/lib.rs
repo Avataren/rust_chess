@@ -2,6 +2,7 @@ pub mod alpha_beta;
 pub mod board_evaluation;
 pub mod neural_eval;
 pub mod opening_book;
+pub(crate) mod opening_book_data;
 pub mod piece_tables;
 pub mod see;
 pub mod transposition_table;

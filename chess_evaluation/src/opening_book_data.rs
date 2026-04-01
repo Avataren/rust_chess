@@ -1,5 +1,5 @@
 // Auto-generated from lichess-org/chess-openings — do not edit manually.
-// 3415 opening lines, 3641 named openings.
+// 3413 opening lines, 3641 named openings.
 
 /// Opening lines expressed as UCI move strings.
 /// Every position encountered while replaying a line gets the next move
@@ -126,7 +126,6 @@ pub(crate) const OPENING_LINES: &[&[&str]] = &[
     &["e2e4", "c7c5", "c2c4"],
     &["e2e4", "c7c5", "d1g4"],
     &["e2e4", "c7c5", "d2d4"],
-    &["e2e4", "c7c5", "e1e2"],
     &["e2e4", "c7c5", "f1c4"],
     &["e2e4", "c7c5", "f2f4"],
     &["e2e4", "c7c5", "g1e2"],
@@ -159,7 +158,6 @@ pub(crate) const OPENING_LINES: &[&[&str]] = &[
     &["e2e4", "e7e5", "d1h5"],
     &["e2e4", "e7e5", "d2d3"],
     &["e2e4", "e7e5", "d2d4"],
-    &["e2e4", "e7e5", "e1e2"],
     &["e2e4", "e7e5", "f1b5"],
     &["e2e4", "e7e5", "f1c4"],
     &["e2e4", "e7e5", "f1d3"],
