@@ -101,7 +101,7 @@ class BinaryDualPositionDataset(Dataset):
       data/train_10m.piece_count.npy    -- (N,)    uint8    (total pieces on board)
     """
 
-    def __init__(self, path: str, max_cp_abs: int = 1500):
+    def __init__(self, path: str, max_cp_abs: int = 1500, max_positions: int | None = None):
         prefix = str(Path(path).with_suffix(""))
         self.white_indices = np.load(prefix + ".white_indices.npy", mmap_mode="r")
         self.black_indices = np.load(prefix + ".black_indices.npy", mmap_mode="r")
@@ -118,6 +118,13 @@ class BinaryDualPositionDataset(Dataset):
         else:
             # Legacy datasets without piece_count: estimate from active feature count
             self.piece_count = self.counts
+        if max_positions is not None:
+            self.white_indices = self.white_indices[:max_positions]
+            self.black_indices = self.black_indices[:max_positions]
+            self.counts        = self.counts[:max_positions]
+            self.cp_raw        = self.cp_raw[:max_positions]
+            self.cp            = self.cp[:max_positions]
+            self.piece_count   = self.piece_count[:max_positions]
 
     def __len__(self) -> int:
         return len(self.cp)
@@ -162,23 +169,50 @@ class GPUPreloadedDualDataset:
 
     def __init__(
         self,
-        path: str,
+        path: "str | list[str] | list[tuple[str, int | None]]",
         max_cp_abs: int,
         device: torch.device,
         batch_size: int,
         shuffle: bool = True,
     ):
-        prefix = str(Path(path).with_suffix(""))
+        # Normalise path to list of (path_str, max_n_or_None) tuples.
+        if isinstance(path, str):
+            path_specs = [(path, None)]
+        else:
+            path_specs = []
+            for entry in path:
+                if isinstance(entry, str):
+                    path_specs.append((entry, None))
+                else:
+                    path_specs.append(tuple(entry))  # (path, max_n)
+
         SENTINEL = HALFKP_FEATURE_DIM  # 24576 — fits in int16 (max 32767)
 
-        print(f"  GPU preload: {Path(path).name} → {device}")
+        all_white, all_black, all_counts, all_cp_raw, all_pc = [], [], [], [], []
+        for p, max_n in path_specs:
+            prefix = str(Path(p).with_suffix(""))
+            print(f"  GPU preload: {Path(p).name}" +
+                  (f"  [:{max_n:,}]" if max_n else "") + f" → {device}")
 
-        white_np = np.load(prefix + ".white_indices.npy", mmap_mode="r")  # (N, 32) uint16
-        black_np = np.load(prefix + ".black_indices.npy", mmap_mode="r")  # (N, 32) uint16
-        counts_np = np.load(prefix + ".counts.npy",       mmap_mode="r")  # (N,)    uint8
-        cp_raw_np = np.load(prefix + ".cp.npy",           mmap_mode="r")  # (N,)    float32
-        pc_path = prefix + ".piece_count.npy"
-        pc_np = np.load(pc_path, mmap_mode="r") if Path(pc_path).exists() else counts_np
+            w_np  = np.load(prefix + ".white_indices.npy", mmap_mode="r")
+            b_np  = np.load(prefix + ".black_indices.npy", mmap_mode="r")
+            c_np  = np.load(prefix + ".counts.npy",        mmap_mode="r")
+            cp_np = np.load(prefix + ".cp.npy",            mmap_mode="r")
+            pc_path = prefix + ".piece_count.npy"
+            pc_np = np.load(pc_path, mmap_mode="r") if Path(pc_path).exists() else c_np
+
+            if max_n is not None:
+                w_np  = w_np[:max_n];  b_np = b_np[:max_n]
+                c_np  = c_np[:max_n];  cp_np = cp_np[:max_n]; pc_np = pc_np[:max_n]
+
+            all_white.append(w_np);  all_black.append(b_np)
+            all_counts.append(c_np); all_cp_raw.append(cp_np); all_pc.append(pc_np)
+
+        white_np  = np.concatenate(all_white,  axis=0) if len(all_white)  > 1 else all_white[0]
+        black_np  = np.concatenate(all_black,  axis=0) if len(all_black)  > 1 else all_black[0]
+        counts_np = np.concatenate(all_counts, axis=0) if len(all_counts) > 1 else all_counts[0]
+        cp_raw_np = np.concatenate(all_cp_raw, axis=0) if len(all_cp_raw) > 1 else all_cp_raw[0]
+        pc_np     = np.concatenate(all_pc,     axis=0) if len(all_pc)     > 1 else all_pc[0]
 
         N = len(cp_raw_np)
 

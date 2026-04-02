@@ -50,13 +50,15 @@ class StratifiedEndgameSampler(Sampler):
         return self._n_eg + self._n_mg
 
 
-def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool, dual: bool = False):
+def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool, dual: bool = False,
+                 max_positions: int | None = None):
     """Use fast binary dataset if pre-processed files exist, else fall back to JSONL."""
     prefix = str(Path(path).with_suffix(""))
     if dual and all(Path(prefix + ext).exists()
                     for ext in (".white_indices.npy", ".black_indices.npy", ".counts.npy", ".cp.npy")):
-        print(f"  Loading dual binary dataset: {prefix}.*")
-        return BinaryDualPositionDataset(path, max_cp_abs=max_cp_abs)
+        lim = f"  [:{max_positions:,}]" if max_positions else ""
+        print(f"  Loading dual binary dataset: {prefix}.*{lim}")
+        return BinaryDualPositionDataset(path, max_cp_abs=max_cp_abs, max_positions=max_positions)
     if all(Path(prefix + ext).exists() for ext in (".indices.npy", ".counts.npy", ".cp.npy")):
         print(f"  Loading binary dataset: {prefix}.*")
         return BinaryPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
@@ -90,23 +92,33 @@ def detect_device() -> torch.device:
     return torch.device("cpu")
 
 
-def _get_data_paths(cfg_data: dict, split: str) -> list[str]:
+def _get_data_paths(cfg_data: dict, split: str) -> list[tuple[str, int | None]]:
     """Return dataset paths for 'train' or 'val' from config.
 
     Supports both singular (train_file) and plural (train_files) keys.
-    Always returns a list, even when a single path is given.
+    Each entry may be a plain string path or a dict with 'path' and optional
+    'max_positions' (to load only the first N positions from that file).
+    Always returns a list of (path, max_positions_or_None) tuples.
     """
     key_list = f"{split}_files"
     key_single = f"{split}_file"
+
+    def _parse(entry) -> tuple[str, int | None]:
+        if isinstance(entry, str):
+            return (entry, None)
+        return (entry["path"], entry.get("max_positions"))
+
     if key_list in cfg_data:
-        paths = cfg_data[key_list]
-        return list(paths) if isinstance(paths, list) else [paths]
-    return [cfg_data[key_single]]
+        entries = cfg_data[key_list]
+        return [_parse(e) for e in (entries if isinstance(entries, list) else [entries])]
+    return [_parse(cfg_data[key_single])]
 
 
-def _load_multi_dataset(paths: list[str], max_cp_abs: int, use_halfkp: bool, dual: bool):
+def _load_multi_dataset(paths: list[tuple[str, int | None]], max_cp_abs: int,
+                        use_halfkp: bool, dual: bool):
     """Load one or more datasets, returning a ConcatDataset if multiple paths."""
-    datasets = [load_dataset(p, max_cp_abs, use_halfkp, dual=dual) for p in paths]
+    datasets = [load_dataset(p, max_cp_abs, use_halfkp, dual=dual, max_positions=n)
+                for p, n in paths]
     return datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
 
 
@@ -378,9 +390,10 @@ def main():
         endgame_fraction = cfg["training"].get("endgame_fraction", None)
         if endgame_fraction is not None:
             _pc_parts = []
-            for _p in train_paths:
+            for _p, _max_n in train_paths:
                 _prefix = str(Path(_p).with_suffix(""))
-                _pc_parts.append(np.load(_prefix + ".piece_count.npy", mmap_mode="r").astype(np.int32))
+                _arr = np.load(_prefix + ".piece_count.npy", mmap_mode="r").astype(np.int32)
+                _pc_parts.append(_arr[:_max_n] if _max_n is not None else _arr)
             _pc = np.concatenate(_pc_parts) if len(_pc_parts) > 1 else _pc_parts[0]
             _n_eg = int((_pc <= 16).sum())
             print(f"Stratified sampling: endgame_fraction={endgame_fraction:.2f}  "
