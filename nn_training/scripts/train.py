@@ -345,14 +345,14 @@ def main():
             print(f"Warning: preload_to_gpu=true with {len(train_paths)} train files — "
                   "loading all into GPU. Consider preload_to_gpu=false for large combined datasets.")
         train_loader = GPUPreloadedDualDataset(
-            train_paths[0] if len(train_paths) == 1 else train_paths,
+            train_paths,
             max_cp_abs=cfg["data"]["max_cp_abs"],
             device=device,
             batch_size=cfg["training"]["batch_size"],
             shuffle=True,
         )
         val_loader = GPUPreloadedDualDataset(
-            val_paths[0] if len(val_paths) == 1 else val_paths,
+            val_paths,
             max_cp_abs=cfg["data"]["max_cp_abs"],
             device=device,
             batch_size=cfg["training"]["batch_size"],
