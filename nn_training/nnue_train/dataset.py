@@ -225,10 +225,16 @@ class GPUPreloadedDualDataset:
         return (self.N + self.batch_size - 1) // self.batch_size
 
     def __iter__(self):
-        perm = (torch.randperm(self.N, device=self.device)
-                if self.shuffle else torch.arange(self.N, device=self.device))
+        # Generate permutation on CPU (Fisher-Yates, no GPU temp workspace) then
+        # transfer.  torch.randperm on GPU uses a sort-based algorithm that needs
+        # ~2× N int64 = ~1.8 GB extra VRAM for 120M positions — causes OOM when
+        # the preloaded data already occupies most of VRAM.
+        if self.shuffle:
+            perm = torch.randperm(self.N, dtype=torch.int32).to(self.device)
+        else:
+            perm = torch.arange(self.N, dtype=torch.int32, device=self.device)
         for start in range(0, self.N, self.batch_size):
-            idx = perm[start : start + self.batch_size]
+            idx = perm[start : start + self.batch_size].long()
             # Cast int16 → int64 on GPU (EmbeddingBag requires int64 indices)
             yield (
                 self.white_idx[idx].to(torch.int64),

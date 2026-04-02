@@ -42,4 +42,5 @@ export:
 #   PYTHONPATH=. python3 scripts/train.py \
 #     --config configs/halfkp_1024_256_ph4_lichess.yaml \
 #     --resume artifacts/checkpoint.pt \
+#     (on RX 7900 XTX: prefix command with PYTORCH_NO_HIPBLASLT=1) \
 #     --tb-logdir runs/1024x256_ph4_lichess

@@ -36,7 +36,10 @@ export:
 # Phase 1 of 4 — base pre-training on Stockfish self-play (test80-2024 April, 120M positions)
 # Train from scratch. Inference: HIDDEN1=1024, HIDDEN2=256 in neural_eval.rs
 #
+# ROCm note: requires PYTORCH_NO_HIPBLASLT=1 on RX 7900 XTX (gfx1100) to avoid
+# hipBLASLt → hipBLAS fallback ALLOC_FAILED error (PyTorch rocm6.2 / ROCm 7.2 mismatch).
+#
 # Training command:
-#   PYTHONPATH=. python3 scripts/train.py \
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
 #     --config configs/halfkp_1024_256_ph1_t80_apr.yaml \
 #     --tb-logdir runs/1024x256_ph1_t80_apr
