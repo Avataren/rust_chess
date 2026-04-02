@@ -3,16 +3,26 @@
 // Outputs one JSON record per position:
 //   {"fen": "<FEN>", "cp": <score>}
 //
-// Score is side-to-move centipawns (matches the JSONL convention used by
-// generate_data.py and the rest of the training pipeline).
+// By default, score is in Stockfish internal evaluation units (side-to-move).
+// Use --cp-divisor 2.96 --white-absolute to produce centipawns in white-absolute
+// convention, which is what this project's training pipeline expects in JSONL.
+//
+// Flags:
+//   --cp-divisor FLOAT   Divide score by this value (default 1.0).
+//                        Use 2.96 for test80/T60T70 binpacks (SF14/15 era).
+//   --white-absolute     Negate score when black is to move, converting from
+//                        side-to-move to white-absolute perspective.
+//   --max N              Stop after N positions.
+//   --filter-cp N        Drop positions where |cp| > N (applied after divisor).
 //
 // Build (from the nnue-pytorch repo root):
 //   g++ -O2 -std=c++17 -Idata_loader/cpp/lib -Idata_loader/cpp \
 //       /tmp/binpack2jsonl.cpp -o /tmp/binpack2jsonl -lpthread
 //
-// Usage:
-//   /tmp/binpack2jsonl input.binpack [--max N] [--filter-cp N] > output.jsonl
-//   /tmp/binpack2jsonl input.binpack --max 5000000 --filter-cp 3000 | pv > out.jsonl
+// Usage — produce white-absolute centipawns, clamp at 3000, take 50M positions:
+//   /tmp/binpack2jsonl T60T70.binpack \
+//       --cp-divisor 2.96 --white-absolute --filter-cp 3000 --max 50000000 \
+//       > data/t60_t70.jsonl
 
 #include <cstdint>
 #include <cstdlib>
@@ -30,18 +40,23 @@ int main(int argc, char** argv)
 {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0]
-                  << " input.binpack [--max N] [--filter-cp N]\n";
+                  << " input.binpack [--max N] [--filter-cp N]"
+                     " [--cp-divisor F] [--white-absolute]\n";
         return 1;
     }
 
     std::string filename;
     long long max_positions = -1;   // -1 = unlimited
     int filter_cp = 0;              //  0 = disabled
+    float cp_divisor = 1.0f;        //  divide score by this before output
+    bool white_absolute = false;    //  if true, negate score when black to move
 
     for (int i = 1; i < argc; ++i) {
         std::string_view arg(argv[i]);
         if (arg == "--max"  && i + 1 < argc) { max_positions = std::atoll(argv[++i]); }
         else if (arg == "--filter-cp" && i + 1 < argc) { filter_cp = std::atoi(argv[++i]); }
+        else if (arg == "--cp-divisor" && i + 1 < argc) { cp_divisor = std::atof(argv[++i]); }
+        else if (arg == "--white-absolute") { white_absolute = true; }
         else if (arg[0] != '-') { filename = argv[i]; }
     }
 
@@ -69,20 +84,33 @@ int main(int argc, char** argv)
 
         const auto& e = *entry;
 
-        int cp = e.score;
-        if (filter_cp > 0 && std::abs(cp) > filter_cp) {
+        std::string fen = e.pos.fen();
+
+        // Determine side to move from FEN (second field: 'w' or 'b').
+        bool black_to_move = (fen.find(" b ") != std::string::npos);
+
+        // Convert from SF internal units to centipawns, then apply perspective.
+        int cp_stm = e.score;
+        int cp_out;
+        if (cp_divisor != 1.0f)
+            cp_out = static_cast<int>(std::round(cp_stm / cp_divisor));
+        else
+            cp_out = cp_stm;
+
+        // Convert side-to-move → white-absolute if requested.
+        if (white_absolute && black_to_move)
+            cp_out = -cp_out;
+
+        if (filter_cp > 0 && std::abs(cp_out) > filter_cp) {
             ++dropped;
             continue;
         }
 
-        // Escape any backslash or quote in the FEN (FENs shouldn't have them,
-        // but guard against malformed input).
-        std::string fen = e.pos.fen();
         // Emit compact JSON.
         buf += "{\"fen\":\"";
         buf += fen;
         buf += "\",\"cp\":";
-        buf += std::to_string(cp);
+        buf += std::to_string(cp_out);
         buf += "}\n";
 
         ++written;
@@ -104,23 +132,17 @@ int main(int argc, char** argv)
 /*
  * BUILD:
  *   cd /tmp/nnue-pytorch  (git clone https://github.com/official-stockfish/nnue-pytorch)
- *   cmake -S data_loader/cpp/ -B build -DCMAKE_BUILD_TYPE=Release
- *   cmake --build build -j8 --target training_data_loader
  *   g++ -O2 -std=c++20 \
  *       -Idata_loader/cpp/lib -Idata_loader/cpp \
  *       /path/to/binpack2jsonl.cpp -o binpack2jsonl -lpthread
  *
  * NOTE ON UNITS:
- *   Scores in .binpack files are in Stockfish internal evaluation units,
- *   NOT centipawns. 1 pawn ≈ 200-210 internal units ≈ 100 centipawns.
- *   Ratio is approximately 2-3x vs centipawns (varies by Stockfish version).
+ *   Scores in .binpack files are Stockfish internal evaluation units, not
+ *   centipawns. Empirically, 1 cp ≈ 2.96 internal units for SF14/15-era
+ *   datasets (test80, T60T70wIsRightFarseer, data_d9_2021_09_02).
+ *   Use --cp-divisor 2.96 --white-absolute to get centipawns in white-absolute
+ *   convention directly usable by preprocess_dataset.py.
  *
- *   To use with this project's training pipeline (which expects centipawns),
- *   RE-LABEL the extracted FENs with Stockfish via generate_data.py:
- *     ./binpack2jsonl input.binpack | jq -r '.fen' > fens.txt
- *     python3 scripts/generate_data.py --label-engine /usr/bin/stockfish \
- *             --fens fens.txt --output output.jsonl --eval-depth 14 ...
- *
- *   This lets you keep the valuable quiet-position selection from test80
- *   while getting proper centipawn labels in your pipeline's scale.
+ *   WDL calibration in features.py absorbs the ~5% rounding error in the
+ *   divisor, so Stockfish re-labeling is NOT required.
  */
