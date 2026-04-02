@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from torch.utils.data import Sampler
+from torch.utils.data import Sampler, ConcatDataset
 from nnue_train.dataset import BinaryPositionDataset, BinaryDualPositionDataset, JsonlPositionDataset, JsonlDualPositionDataset, GPUPreloadedDualDataset
 from nnue_train.model import EvalNet, EvalNetDual, get_output_bucket
 
@@ -88,6 +88,26 @@ def detect_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
+
+
+def _get_data_paths(cfg_data: dict, split: str) -> list[str]:
+    """Return dataset paths for 'train' or 'val' from config.
+
+    Supports both singular (train_file) and plural (train_files) keys.
+    Always returns a list, even when a single path is given.
+    """
+    key_list = f"{split}_files"
+    key_single = f"{split}_file"
+    if key_list in cfg_data:
+        paths = cfg_data[key_list]
+        return list(paths) if isinstance(paths, list) else [paths]
+    return [cfg_data[key_single]]
+
+
+def _load_multi_dataset(paths: list[str], max_cp_abs: int, use_halfkp: bool, dual: bool):
+    """Load one or more datasets, returning a ConcatDataset if multiple paths."""
+    datasets = [load_dataset(p, max_cp_abs, use_halfkp, dual=dual) for p in paths]
+    return datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
 
 
 def soft_target_cross_entropy(logits: torch.Tensor, target_probs: torch.Tensor) -> torch.Tensor:
@@ -307,15 +327,20 @@ def main():
     if preload_to_gpu:
         if cfg["training"].get("endgame_fraction"):
             print("Warning: preload_to_gpu=true ignores endgame_fraction (not supported together)")
+        train_paths = _get_data_paths(cfg["data"], "train")
+        val_paths   = _get_data_paths(cfg["data"], "val")
+        if len(train_paths) > 1:
+            print(f"Warning: preload_to_gpu=true with {len(train_paths)} train files — "
+                  "loading all into GPU. Consider preload_to_gpu=false for large combined datasets.")
         train_loader = GPUPreloadedDualDataset(
-            cfg["data"]["train_file"],
+            train_paths[0] if len(train_paths) == 1 else train_paths,
             max_cp_abs=cfg["data"]["max_cp_abs"],
             device=device,
             batch_size=cfg["training"]["batch_size"],
             shuffle=True,
         )
         val_loader = GPUPreloadedDualDataset(
-            cfg["data"]["val_file"],
+            val_paths[0] if len(val_paths) == 1 else val_paths,
             max_cp_abs=cfg["data"]["max_cp_abs"],
             device=device,
             batch_size=cfg["training"]["batch_size"],
@@ -328,8 +353,10 @@ def main():
         print(f"GPU preloaded: {train_loader.N:,} train  {val_loader.N:,} val  "
               f"({len(train_loader)} / {len(val_loader)} batches/epoch)")
     else:
-        train_ds = load_dataset(cfg["data"]["train_file"], cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
-        val_ds   = load_dataset(cfg["data"]["val_file"],   cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
+        train_paths = _get_data_paths(cfg["data"], "train")
+        val_paths   = _get_data_paths(cfg["data"], "val")
+        train_ds = _load_multi_dataset(train_paths, cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
+        val_ds   = _load_multi_dataset(val_paths,   cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
 
         if len(train_ds) == 0:
             raise ValueError("Training dataset is empty. Provide at least one training sample.")
@@ -350,9 +377,11 @@ def main():
 
         endgame_fraction = cfg["training"].get("endgame_fraction", None)
         if endgame_fraction is not None:
-            from pathlib import Path as _Path
-            _prefix = str(_Path(cfg["data"]["train_file"]).with_suffix(""))
-            _pc = np.load(_prefix + ".piece_count.npy", mmap_mode="r").astype(np.int32)
+            _pc_parts = []
+            for _p in train_paths:
+                _prefix = str(Path(_p).with_suffix(""))
+                _pc_parts.append(np.load(_prefix + ".piece_count.npy", mmap_mode="r").astype(np.int32))
+            _pc = np.concatenate(_pc_parts) if len(_pc_parts) > 1 else _pc_parts[0]
             _n_eg = int((_pc <= 16).sum())
             print(f"Stratified sampling: endgame_fraction={endgame_fraction:.2f}  "
                   f"endgame={_n_eg:,} ({100*_n_eg/len(_pc):.1f}%)  "

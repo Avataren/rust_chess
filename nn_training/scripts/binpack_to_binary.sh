@@ -129,8 +129,7 @@ for SHARD_JSONL in "$SHARDS_DIR"/shard_*.jsonl; do
         --input "$SHARD_JSONL" \
         --output "$SHARD_OUT" \
         --dual \
-        --use-halfkp \
-        --workers "$WORKERS"
+        --use-halfkp
 
     if [[ "$KEEP_SHARDS" == false ]]; then
         rm "$SHARD_JSONL"

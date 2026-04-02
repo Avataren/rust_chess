@@ -27,3 +27,11 @@ flamegraph.svg
 perf.data
 perf.data.old
 *.s
+scripts/binpack2jsonl
+nn_training/scripts/binpack2jsonl
+
+# Large training data files (not tracked; download with nn_training/datasets/download_t80.py)
+nn_training/datasets/*.binpack
+nn_training/datasets/*.binpack.zst
+nn_training/datasets/*.bin
+nn_training/data/

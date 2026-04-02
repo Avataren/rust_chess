@@ -6,9 +6,9 @@
 //! **Single-perspective (Phase 1):** `12288 → 512 → 32 → 1 (×N output buckets)`
 //!   Weights: `backbone_3_weight` shape (32, 512)
 //!
-//! **Dual-perspective (Phase 2+3):** `[12288|12288] → 512+512 → 32 → 1 (×N output buckets)`
+//! **Dual-perspective (Phase 2+3):** `[12288|12288] → 1024+1024 → 256 → 1 (×N output buckets)`
 //!   Shared EmbeddingBag; two accumulators concat'd before fc2.
-//!   Weights: `backbone_3_weight` shape (32, 1024)
+//!   Weights: `backbone_3_weight` shape (256, 2048)
 //!   CP output is white-absolute (positive = good for white).
 //!   SCReLU activation: `clamp(x,0,1)²` at every activation site.
 //!   Output buckets: separate weights per game phase (2–32 pieces → bucket 0–7).
@@ -32,9 +32,9 @@ use chess_foundation::bitboard::Bitboard;
 
 // ── Architecture constants ────────────────────────────────────────────────
 
-pub(crate) const HIDDEN1: usize = 768;
-const HIDDEN2: usize = 64;
-const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 1024
+pub(crate) const HIDDEN1: usize = 1024;
+const HIDDEN2: usize = 256;
+const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 2048
 
 // ── SCReLU activation: clamp(x,0,1)² ──────────────────────────────────────
 
