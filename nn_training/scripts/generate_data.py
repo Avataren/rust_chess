@@ -15,6 +15,10 @@ import chess.engine
 import chess.pgn
 from tqdm import tqdm
 
+from scripts.color_utils import (
+    clr_cp_std, clr_decisive, clr_pieces, clr_unique_ratio,
+)
+
 
 # ── Per-worker Stockfish state ─────────────────────────────────────────────
 
@@ -422,10 +426,10 @@ def _diversity_report(jsonl_path: Path) -> None:
     pc_std   = math.sqrt(pc_var)
 
     print(
-        f"[diversity]  unique FENs: {len(set(fens))}/{n} ({unique_ratio:.3f})  |  "
-        f"cp std: {cp_std:.0f}  |  "
-        f"decisive (|cp|>300): {decisive:.1f}%  |  "
-        f"pieces: {pc_mean:.1f}±{pc_std:.1f}"
+        f"[diversity]  unique FENs: {len(set(fens))}/{n} ({clr_unique_ratio(unique_ratio)})  |  "
+        f"cp std: {clr_cp_std(cp_std)}  |  "
+        f"decisive (|cp|>300): {clr_decisive(decisive)}  |  "
+        f"pieces: {clr_pieces(pc_mean, pc_std)}"
     )
 
 

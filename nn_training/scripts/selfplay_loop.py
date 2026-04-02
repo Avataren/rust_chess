@@ -35,6 +35,11 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from scripts.color_utils import (
+    clr, clr_gate, clr_gen_mae, clr_gen_mae_trend, clr_promotion,
+    clr_puzzle, clr_val_mae, clr_winrate,
+)
+
 
 # ── Child-process tracking & clean shutdown on Ctrl+C ────────────────────────
 # All subprocess calls go through _run() which starts children in a new session
@@ -954,7 +959,7 @@ def main():
         sys.exit(f"Checkpoint not found: {best_ck}")
 
     best_mae = load_val_mae(best_ck)
-    print(f"[loop] Starting from {best_ck}  val_cp_mae={best_mae:.1f}")
+    print(f"[loop] Starting from {best_ck}  val_cp_mae={clr(f'{best_mae:.1f}', 'blue')}")
 
     # Build (once) a fixed generalisation validation set from the anchor data.
     # Using a fixed seed means the same positions are held out every run,
@@ -995,11 +1000,11 @@ def main():
         export_failures_file=str(baseline_failures_tsv) if args.puzzle_binary else "",
     )
     if best_puzzle >= 0:
-        print(f"[loop] Initial puzzle score: {best_puzzle:.1f}%  (seed={current_puzzle_seed})")
+        print(f"[loop] Initial puzzle score: {clr_puzzle(best_puzzle)}  (seed={current_puzzle_seed})")
 
     best_gen_mae = gen_val_mae(best_ck, gen_val_file) if gen_val_file else -1.0
     if best_gen_mae >= 0:
-        print(f"[loop] Initial gen_val CP-MAE: {best_gen_mae:.2f}cp  (real-game positions, fixed set)")
+        print(f"[loop] Initial gen_val CP-MAE: {clr(f'{best_gen_mae:.2f}cp', 'blue')}  (real-game positions, fixed set)")
 
     # Clean up any stale puzzle-failure JSONL files from previous runs.
     # These are the only per-iteration artifacts that are never deleted during
@@ -1169,7 +1174,7 @@ def main():
                 )
                 if new_best_puzzle >= 0:
                     best_puzzle = new_best_puzzle
-                    print(f"[loop] New baseline (best model, seed={current_puzzle_seed}): {best_puzzle:.1f}%")
+                    print(f"[loop] New baseline (best model, seed={current_puzzle_seed}): {clr_puzzle(best_puzzle)}")
                 else:
                     print(f"[loop] WARNING: Re-scoring best model failed — seed rotation aborted, keeping seed {current_puzzle_seed}")
 
@@ -1210,10 +1215,10 @@ def main():
                     gate_str = "PASSED"
                 else:
                     gate_str = f"BORDERLINE ({regression:.1f}% regression — needs self-play ≥52%)"
-                print(f"[loop] Puzzle score: candidate={cand_puzzle:.1f}%  best={best_puzzle:.1f}%  [{gate_str}]")
+                print(f"[loop] Puzzle score: candidate={clr_puzzle(cand_puzzle)}  best={clr_puzzle(best_puzzle)}  [{clr_gate(gate_str)}]")
 
             if puzzle_ok_early is False:
-                print(f"[loop] Puzzle gate failed ({cand_puzzle:.1f}% < {best_puzzle - _PUZZLE_MAX_TOLERANCE:.1f}%) — skipping self-play eval")
+                print(f"[loop] Puzzle gate failed ({clr_puzzle(cand_puzzle)} < {clr(f'{best_puzzle - _PUZZLE_MAX_TOLERANCE:.1f}%', 'yellow')}) — skipping self-play eval")
                 cand_winrate = -1.0
             else:
                 cand_winrate = selfplay_winrate(
@@ -1224,15 +1229,15 @@ def main():
                 )
             cand_gen_mae = gen_val_mae(candidate_ck, gen_val_file) if gen_val_file else -1.0
 
-            print(f"[loop] Iteration {iteration}: candidate mae={candidate_mae:.1f}cp  best mae={best_mae:.1f}cp")
+            print(f"[loop] Iteration {iteration}: candidate mae={clr_val_mae(candidate_mae, best_mae)}  best mae={clr(f'{best_mae:.1f}cp', 'blue')}")
             if cand_puzzle >= 0:
-                print(f"[loop] Puzzle score:   candidate={cand_puzzle:.1f}%  best={best_puzzle:.1f}%")
+                print(f"[loop] Puzzle score:   candidate={clr_puzzle(cand_puzzle)}  best={clr_puzzle(best_puzzle)}")
             if cand_winrate >= 0:
-                print(f"[loop] Self-play win rate (candidate vs best): {cand_winrate:.1f}%")
+                print(f"[loop] Self-play win rate (candidate vs best): {clr_winrate(cand_winrate)}")
             if cand_gen_mae >= 0:
                 delta = cand_gen_mae - best_gen_mae
-                trend = f"{'▲' if delta > 0 else '▼'}{abs(delta):.2f}cp" if best_gen_mae >= 0 else "baseline"
-                print(f"[loop] Gen-val CP-MAE: candidate={cand_gen_mae:.2f}cp  best={best_gen_mae:.2f}cp  ({trend})")
+                trend = clr_gen_mae_trend(delta) if best_gen_mae >= 0 else clr("baseline", "blue")
+                print(f"[loop] Gen-val CP-MAE: candidate={clr_gen_mae(cand_gen_mae, best_gen_mae)}  best={clr(f'{best_gen_mae:.2f}cp', 'blue')}  ({trend})")
 
             # ── Promotion decision ────────────────────────────────────────
             # val_cp_mae on the self-play pool is a circular signal (model fits
@@ -1266,8 +1271,9 @@ def main():
                     f"({args.gen_val_max_increase:.0f}%% tolerance)"
                 )
                 if not gen_val_ok:
-                    print(f"[loop] gen_val gate FAILED: {cand_gen_mae:.2f}cp > {gen_val_threshold:.2f}cp "
-                          f"(best={best_gen_mae:.2f}cp + {args.gen_val_max_increase:.0f}%%)")
+                    print(f"[loop] {clr('gen_val gate FAILED', 'red')}: "
+                          f"{clr(f'{cand_gen_mae:.2f}cp', 'red')} > {clr(f'{gen_val_threshold:.2f}cp', 'yellow')} "
+                          f"(best={clr(f'{best_gen_mae:.2f}cp', 'blue')} + {args.gen_val_max_increase:.0f}%%)")
 
             if puzzle_ok is not None and winrate_ok is not None:
                 promoted = puzzle_ok and winrate_ok
@@ -1320,10 +1326,10 @@ def main():
                 shutil.copy(candidate_ck, artifacts / "best_checkpoint.pt")
                 shutil.copy(candidate_npz, best_npz)  # update eval.npz in place
                 candidate_npz.unlink(missing_ok=True)  # no longer needed; eval.npz has the content
-                print(f"[loop] Promoted! ({reason}) — exported weights → {artifacts / 'eval.npz'}")
+                print(clr_promotion(True, f"[loop] Promoted! ({reason}) — exported weights → {artifacts / 'eval.npz'}"))
             else:
                 not_reason = reason
-                print(f"[loop] Not promoted ({not_reason}) — keeping current best as training base.")
+                print(clr_promotion(False, f"[loop] Not promoted ({not_reason}) — keeping current best as training base."))
                 # Discard candidate entirely; next iteration fine-tunes from best_ck again.
                 candidate_ck.unlink(missing_ok=True)
                 candidate_npz.unlink(missing_ok=True)
@@ -1331,7 +1337,7 @@ def main():
                 # read as prev_puzzle_anchor at the start of iteration N+1.
 
     loop_writer.close()
-    print(f"\n[loop] Done. Best val_cp_mae={best_mae:.1f}  checkpoint={best_ck}")
+    print(f"\n[loop] Done. Best val_cp_mae={clr(f'{best_mae:.1f}', 'green')}  checkpoint={best_ck}")
 
 
 if __name__ == "__main__":
