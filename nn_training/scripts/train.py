@@ -474,6 +474,7 @@ def main():
 
     best_val = float("inf")
     start_epoch = 1
+    last_epoch = start_epoch - 1  # tracks last completed epoch for finally-block save
     if args.resume:
         ck = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ck["model_state"])
@@ -500,6 +501,7 @@ def main():
         print("Compilation graph ready (first batch will trigger kernel build).")
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    latest_path = out_path.parent / (out_path.stem + "_latest.pt")
 
     if not preload_to_gpu:
         print(f"DataLoader workers: train={train_workers}, val={val_workers}")
@@ -509,6 +511,7 @@ def main():
 
     try:
         for epoch in range(start_epoch, cfg["training"]["epochs"] + 1):
+            last_epoch = epoch
             tr = train_epoch(model, train_loader, optimizer, scaler, device, cfg)
             va = eval_epoch(model, val_loader, device, cfg)
             scheduler.step()
@@ -550,25 +553,43 @@ def main():
             writer.add_scalar("train/lr", scheduler.get_last_lr()[0], epoch)
             writer.flush()
 
+            raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
+            ckpt = {
+                "model_state": raw_model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "scheduler_state": scheduler.state_dict(),
+                "scaler_state": scaler.state_dict(),
+                "config": cfg,
+                "val_loss": va["loss"],
+                "val_cp_mae": va["cp_mae"],
+                "epoch": epoch,
+            }
+            # Always overwrite latest — safe to resume from at any time
+            torch.save(ckpt, latest_path)
+
             if va["loss"] < best_val:
                 best_val = va["loss"]
-                # Unwrap compiled model to save clean state dict without _orig_mod. prefix
-                raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
-                torch.save(
-                    {
-                        "model_state": raw_model.state_dict(),
-                        "optimizer_state": optimizer.state_dict(),
-                        "scheduler_state": scheduler.state_dict(),
-                        "scaler_state": scaler.state_dict(),
-                        "config": cfg,
-                        "val_loss": va["loss"],
-                        "val_cp_mae": va["cp_mae"],
-                        "epoch": epoch,
-                    },
-                    out_path,
-                )
-                print(f"saved checkpoint: {out_path}")
+                torch.save(ckpt, out_path)
+                print(f"saved checkpoint (best val): {out_path}")
     finally:
+        # Save on natural completion or Ctrl+C — never lose a finished epoch
+        try:
+            raw_model = model._orig_mod if hasattr(model, "_orig_mod") else model
+            torch.save(
+                {
+                    "model_state": raw_model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict(),
+                    "scaler_state": scaler.state_dict(),
+                    "config": cfg,
+                    "val_loss": best_val,
+                    "epoch": last_epoch,
+                },
+                latest_path,
+            )
+            print(f"saved latest checkpoint: {latest_path}  (epoch={last_epoch})")
+        except Exception as e:
+            print(f"warning: could not save final checkpoint: {e}")
         writer.close()
 
 
