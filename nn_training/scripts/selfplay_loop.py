@@ -767,6 +767,57 @@ def inject_anchor_data(anchor_file: Path, train_file: Path, n: int,
             print(f"[loop] Injected {len(extra_lines)} puzzle-failure positions from {extra}")
 
 
+def _log_data_diversity(
+    jsonl_path: Path,
+    writer: "SummaryWriter",
+    step: int,
+) -> None:
+    """Compute per-iteration self-play data diversity metrics and log to TensorBoard.
+
+    Metrics:
+      data/unique_fen_ratio  — unique positions / total (< 1.0 = duplicate positions)
+      data/cp_std            — std dev of CP evaluations (wider = more varied game states)
+      data/decisive_pct      — % of positions with |cp| > 300 (lopsided / decided games)
+      data/mean_pieces       — mean piece count per position (game phase indicator)
+      data/piece_std         — std dev of piece count (narrow = stuck in one game phase)
+    """
+    import math
+    cps: list[float] = []
+    fens: list[str] = []
+    piece_counts: list[int] = []
+
+    try:
+        with jsonl_path.open(encoding="utf-8") as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                fens.append(row.get("fen", ""))
+                cps.append(float(row.get("cp", 0)))
+                fen_board = row.get("fen", "").split()[0]
+                piece_counts.append(sum(1 for c in fen_board if c.isalpha()))
+    except OSError:
+        return
+
+    n = len(cps)
+    if n == 0:
+        return
+
+    cp_mean  = sum(cps) / n
+    cp_std   = math.sqrt(sum((c - cp_mean) ** 2 for c in cps) / n)
+    decisive = sum(1 for c in cps if abs(c) > 300) / n * 100
+    pc_mean  = sum(piece_counts) / n
+    pc_std   = math.sqrt(sum((p - pc_mean) ** 2 for p in piece_counts) / n)
+
+    writer.add_scalar("data/unique_fen_ratio", len(set(fens)) / n, step)
+    writer.add_scalar("data/cp_std",           cp_std,             step)
+    writer.add_scalar("data/decisive_pct",     decisive,           step)
+    writer.add_scalar("data/mean_pieces",      pc_mean,            step)
+    writer.add_scalar("data/piece_std",        pc_std,             step)
+    writer.flush()
+
+
 def fine_tune(
     checkpoint_path: Path,
     out_checkpoint: Path,
@@ -1032,6 +1083,8 @@ def main():
             )
 
         # 3. Append to replay pool
+        # Log data diversity metrics to TensorBoard before the file is removed.
+        _log_data_diversity(new_data, loop_writer, iteration)
         append_to_pool(new_data, pool_file, args.pool_size, pool_tool=args.pool_tool)
         new_data.unlink()  # remove per-iter file, it's in the pool now
 

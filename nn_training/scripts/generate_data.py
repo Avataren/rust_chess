@@ -378,6 +378,55 @@ def main():
                     written += 1
 
     print(f"Wrote {written} samples to {output}")
+    _diversity_report(output)
+
+
+def _diversity_report(jsonl_path: Path) -> None:
+    """Print a brief diversity summary for the generated positions.
+
+    Metrics reported:
+      unique_fens  — dedup ratio; < 1.0 means wasted compute
+      cp_std       — std dev of evaluations; wider = more varied game states
+      decisive %   — |cp| > 300 (too high = games were mostly lopsided)
+      piece_count  — mean ± std (narrow range = all in one game phase)
+    """
+    import math
+    cps: list[float] = []
+    fens: list[str] = []
+    piece_counts: list[int] = []
+
+    with jsonl_path.open(encoding="utf-8") as f:
+        for line in f:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            fens.append(row.get("fen", ""))
+            cp = float(row.get("cp", 0))
+            cps.append(cp)
+            # Count pieces from FEN (first field, before the first space)
+            fen_board = row.get("fen", "").split()[0]
+            piece_counts.append(sum(1 for c in fen_board if c.isalpha()))
+
+    n = len(cps)
+    if n == 0:
+        return
+
+    unique_ratio = len(set(fens)) / n
+    cp_mean  = sum(cps) / n
+    cp_var   = sum((c - cp_mean) ** 2 for c in cps) / n
+    cp_std   = math.sqrt(cp_var)
+    decisive = sum(1 for c in cps if abs(c) > 300) / n * 100
+    pc_mean  = sum(piece_counts) / n
+    pc_var   = sum((p - pc_mean) ** 2 for p in piece_counts) / n
+    pc_std   = math.sqrt(pc_var)
+
+    print(
+        f"[diversity]  unique FENs: {len(set(fens))}/{n} ({unique_ratio:.3f})  |  "
+        f"cp std: {cp_std:.0f}  |  "
+        f"decisive (|cp|>300): {decisive:.1f}%  |  "
+        f"pieces: {pc_mean:.1f}±{pc_std:.1f}"
+    )
 
 
 if __name__ == "__main__":
