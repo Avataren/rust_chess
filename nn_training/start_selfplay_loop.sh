@@ -21,10 +21,12 @@ PYTHONPATH=. python3 scripts/selfplay_loop.py \
   --pool-tool           "$BIN_DIR/pool_tool" \
   --anchor-data         data/all_69m/train_all_69m.jsonl \
   --anchor-size         50000 \
-  --anchor-min-fraction 0.05 \
+  --anchor-min-fraction 0.1 \
   --selfplay-eval-games 150 \
   --gen-val-max-increase 5.0 \
   --selfplay-noise-prob 0.05 \
   --selfplay-dirichlet-alpha 0.3 \
   --selfplay-dirichlet-amplitude 100 \
-  --opening-tsv-dir     "$SCRIPT_DIR/chess-openings"
+  --opening-tsv-dir     "$SCRIPT_DIR/chess-openings" \
+  --filter-cp           3000 \
+  --games-per-iter      4200
