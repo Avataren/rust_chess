@@ -566,6 +566,7 @@ def main():
             }
             # Always overwrite latest — safe to resume from at any time
             torch.save(ckpt, latest_path)
+            print(f"saved latest: {latest_path}  (epoch={epoch})")
 
             if va["loss"] < best_val:
                 best_val = va["loss"]
