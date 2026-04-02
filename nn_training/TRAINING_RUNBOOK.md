@@ -40,7 +40,9 @@ PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
 
 - Loads `data/t80_apr2024/merged.*` into GPU (~18 GB VRAM, takes ~30 s)
 - 100 epochs, LR 0.001 with cosine annealing
-- Best checkpoint saved to `artifacts/checkpoint.pt` automatically
+- Saves `artifacts/checkpoint_latest.pt` every epoch (always current)
+- Saves `artifacts/checkpoint.pt` only on val_loss improvement (epoch 1 only — Lichess val diverges from SF train; ignore this file for phases 1–3)
+- **Use `checkpoint_latest.pt` to resume into Phase 2**
 
 ---
 
@@ -49,12 +51,14 @@ PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
 ```bash
 PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
   --config configs/halfkp_1024_256_ph2_t80_mar.yaml \
-  --resume artifacts/checkpoint.pt \
+  --resume artifacts/checkpoint_latest.pt \
+  --out artifacts/checkpoint_ph2.pt \
   --tb-logdir runs/1024x256_ph2_t80_mar
 ```
 
 - Restores **weights only** (optimizer + scheduler restart fresh — `reset_best_val: true`)
 - 50 epochs, LR 0.0003
+- Saves to `checkpoint_ph2.pt` / `checkpoint_ph2_latest.pt` — does not overwrite Phase 1
 
 ---
 
@@ -63,11 +67,13 @@ PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
 ```bash
 PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
   --config configs/halfkp_1024_256_ph3_t80_may.yaml \
-  --resume artifacts/checkpoint.pt \
+  --resume artifacts/checkpoint_ph2_latest.pt \
+  --out artifacts/checkpoint_ph3.pt \
   --tb-logdir runs/1024x256_ph3_t80_may
 ```
 
 - 50 epochs, LR 0.0002
+- Saves to `checkpoint_ph3.pt` / `checkpoint_ph3_latest.pt` — does not overwrite Phase 2
 
 ---
 
@@ -76,28 +82,39 @@ PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
 ```bash
 PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
   --config configs/halfkp_1024_256_ph4_lichess.yaml \
-  --resume artifacts/checkpoint.pt \
+  --resume artifacts/checkpoint_ph3_latest.pt \
+  --out artifacts/checkpoint_ph4.pt \
   --tb-logdir runs/1024x256_ph4_lichess
 ```
 
 - 50 epochs, LR 0.0001
-- Trains on **67M Lichess + 10M SF anchor** (13% SF ratio prevents opening-bucket forgetting)
-- This is where `val_cp_mae` finally becomes a meaningful signal
+- Pure Lichess depth-14 data (67M positions) — no SF anchor
+- `val_cp_mae` is now a meaningful signal (same distribution as train)
+- `checkpoint_ph4.pt` = best val checkpoint = **use this for deployment**
 
 ---
 
 ## Resuming a crashed run (same phase)
 
-If a run crashes mid-epoch, resume it **without** `reset_best_val` (omit from config or use `--resume` only):
+If a run crashes mid-epoch, resume from `_latest.pt` of the current phase.
+The configs already have `reset_best_val: true` for phases 2–4; for phase 1 (no reset_best_val), omit the flag:
 
 ```bash
+# Phase 1 crash recovery — restores full state (optimizer, scheduler, epoch counter)
 PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
   --config configs/halfkp_1024_256_ph1_t80_apr.yaml \
-  --resume artifacts/checkpoint.pt \
+  --resume artifacts/checkpoint_latest.pt \
   --tb-logdir runs/1024x256_ph1_t80_apr
+
+# Phase 2 crash recovery
+PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+  --config configs/halfkp_1024_256_ph2_t80_mar.yaml \
+  --resume artifacts/checkpoint_ph2_latest.pt \
+  --out artifacts/checkpoint_ph2.pt \
+  --tb-logdir runs/1024x256_ph2_t80_mar
 ```
 
-This restores the full training state (optimizer, scheduler, epoch counter).
+(Follow the same `_latest.pt` → `--out` pattern for phases 3 and 4.)
 
 ---
 
@@ -126,14 +143,14 @@ Then open http://localhost:6006.
 
 ## Deploy: export weights to engine
 
-After any phase completes (or when `artifacts/checkpoint.pt` looks good):
+After Phase 4 completes, deploy from `checkpoint_ph4.pt` (best val on Lichess):
 
 ```bash
 # 1. Export checkpoint → artifacts/eval.npz (quantised int16)
 cd nn_training
 PYTHONPATH=. python3 scripts/export_weights.py \
-  --config configs/halfkp_1024_256_ph1_t80_apr.yaml \
-  --checkpoint artifacts/checkpoint.pt \
+  --config configs/halfkp_1024_256_ph4_lichess.yaml \
+  --checkpoint artifacts/checkpoint_ph4.pt \
   --output artifacts/eval.npz
 
 # 2. Rebuild the engine from the rust_chess root
