@@ -81,7 +81,8 @@ PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
 ```
 
 - 50 epochs, LR 0.0001
-- Adapts SF self-play base to Lichess depth-14 evaluation distribution
+- Trains on **67M Lichess + 10M SF anchor** (13% SF ratio prevents opening-bucket forgetting)
+- This is where `val_cp_mae` finally becomes a meaningful signal
 
 ---
 
@@ -107,10 +108,19 @@ cd nn_training
 tensorboard --logdir runs/
 ```
 
-Then open http://localhost:6006. Key metrics to watch:
-- `train/loss` and `val/loss` — should both decrease
-- `val/cp_mae` — centipawn mean absolute error (lower = better)
-- `train/lr` — confirms cosine annealing schedule
+Then open http://localhost:6006.
+
+**What each metric actually means by phase:**
+
+| Metric | Phase 1–3 (SF data) | Phase 4 (Lichess) |
+|--------|---------------------|-------------------|
+| `train/cp_mae` | ✅ primary signal — watch this | ✅ primary signal |
+| `val/cp_mae` | ❌ misleading — val is Lichess, train is SF | ✅ now meaningful |
+| `val/cp_mae[b0]` | ❌ opening bucket diverges fast (SF ≠ human openings) | ✅ should converge |
+| `val/loss` | ⚠️ divergence alarm only — panic if it spikes suddenly | ✅ watch normally |
+| `train/lr` | ✅ confirms cosine schedule | ✅ |
+
+**Phase 1 expected trajectory:** `train_cp_mae` ~70 → ~55–62 over 100 epochs (≈0.3–0.4 CP/epoch drop).
 
 ---
 
