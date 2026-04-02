@@ -11,6 +11,28 @@ from torch.utils.data import Dataset
 from .features import cp_to_wdl_target, cp_to_wdl_batch, encode_board_12x64, encode_board_halfkp, HALFKP_FEATURE_DIM, FEATURE_DIM, encode_board_halfkp_dual
 
 
+def _ply_from_fen(fen: str) -> int:
+    """Extract ply from FEN fullmove counter. Falls back to 40 (middlegame)."""
+    parts = fen.split()
+    try:
+        fullmove = int(parts[5])
+        ply = (fullmove - 1) * 2 + (1 if parts[1] == "b" else 0)
+        return min(max(ply, 0), 240)
+    except (IndexError, ValueError):
+        return 40
+
+
+def _ply_from_piece_count(piece_count: int) -> int:
+    """Approximate ply from piece count for binary datasets that lack FEN.
+
+    32 pieces → ply ≈ 0 (opening)
+    24 pieces → ply ≈ 32 (early middlegame)
+    16 pieces → ply ≈ 64 (middlegame/endgame transition)
+     8 pieces → ply ≈ 96 (endgame)
+    """
+    return min(240, max(0, (32 - int(piece_count)) * 4))
+
+
 class BinaryPositionDataset(Dataset):
     """Fast dataset backed by pre-encoded sparse binary files.
 
@@ -54,7 +76,8 @@ class BinaryPositionDataset(Dataset):
 
         cp_val = float(self.cp[idx])
         cp = np.array([cp_val], dtype=np.float32)
-        wdl = cp_to_wdl_target(float(self.cp_raw[idx]))
+        wdl = cp_to_wdl_target(float(self.cp_raw[idx]),
+                               ply=_ply_from_piece_count(self.piece_count[idx]))
         pc = np.array([int(self.piece_count[idx])], dtype=np.int64)
 
         return (
@@ -111,7 +134,7 @@ class BinaryDualPositionDataset(Dataset):
         cp_val = float(self.cp[idx])          # clipped — for cp regression loss
         cp_raw = float(self.cp_raw[idx])      # unclipped — for WDL target
         cp = np.array([cp_val], dtype=np.float32)
-        wdl = cp_to_wdl_target(cp_raw)
+        wdl = cp_to_wdl_target(cp_raw, ply=_ply_from_piece_count(self.piece_count[idx]))
         pc = np.array([int(self.piece_count[idx])], dtype=np.int64)
 
         return (
@@ -177,7 +200,9 @@ class GPUPreloadedDualDataset:
         # Precompute WDL targets and clip cp
         cp_raw = np.asarray(cp_raw_np, dtype=np.float32)
         cp_clipped = np.clip(cp_raw, -max_cp_abs, max_cp_abs)
-        wdl_np = cp_to_wdl_batch(cp_raw)  # (N, 3) float32
+        # Ply proxy from piece count: (32 - n_pieces) * 4, clamped to [0, 240]
+        ply_est = np.clip((32 - pc_np.astype(np.float32)) * 4, 0.0, 240.0)
+        wdl_np = cp_to_wdl_batch(cp_raw, ply=ply_est)  # (N, 3) float32
 
         # Transfer to GPU
         print(f"  Transferring {N:,} positions to GPU...", flush=True)
@@ -261,7 +286,8 @@ class JsonlDualPositionDataset(Dataset):
         # JSONL stores side-to-move CP; model expects white-absolute.
         sign = 1.0 if board.turn == chess.WHITE else -1.0
         cp = np.array([self.cp_values[idx] * sign], dtype=np.float32)
-        wdl = cp_to_wdl_target(float(self.cp_raw_values[idx]) * sign)
+        wdl = cp_to_wdl_target(float(self.cp_raw_values[idx]) * sign,
+                               ply=_ply_from_fen(row["fen"]))
 
         return (
             torch.from_numpy(w_idx),
@@ -321,7 +347,8 @@ class JsonlPositionDataset(Dataset):
             x = encode_board_12x64(board)
 
         cp = np.array([self.cp_values[idx]], dtype=np.float32)
-        wdl = cp_to_wdl_target(float(self.cp_raw_values[idx]))
+        wdl = cp_to_wdl_target(float(self.cp_raw_values[idx]),
+                               ply=_ply_from_fen(row["fen"]))
 
         return (
             torch.from_numpy(x),
