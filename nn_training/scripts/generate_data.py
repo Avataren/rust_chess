@@ -26,12 +26,19 @@ _engine: chess.engine.SimpleEngine | None = None
 _eval_depth: int = 12
 
 
-def _worker_init(stockfish_path: str, depth: int, syzygy_path: str = "") -> None:
-    global _engine, _eval_depth
+_cp_clamp: float = 3000.0
+_filter_cp: float = 0.0  # 0 = disabled
+
+
+def _worker_init(stockfish_path: str, depth: int, syzygy_path: str = "",
+                 cp_clamp: float = 3000.0, filter_cp: float = 0.0) -> None:
+    global _engine, _eval_depth, _cp_clamp, _filter_cp
     _engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
     if syzygy_path:
         _engine.configure({"SyzygyPath": syzygy_path, "SyzygyProbeDepth": 1})
     _eval_depth = depth
+    _cp_clamp = cp_clamp
+    _filter_cp = filter_cp
 
 
 def _label_fen(fen: str) -> dict | None:
@@ -40,6 +47,12 @@ def _label_fen(fen: str) -> dict | None:
         info = _engine.analyse(board, chess.engine.Limit(depth=_eval_depth))
         score = info["score"].pov(board.turn)
         cp = float(score.score(mate_score=10000))
+        # Drop positions that are already extremely lopsided before clamping.
+        # These add noise without teaching the model to evaluate balanced positions.
+        if _filter_cp > 0 and abs(cp) > _filter_cp:
+            return None
+        if _cp_clamp > 0:
+            cp = max(-_cp_clamp, min(_cp_clamp, cp))
         return {"fen": fen, "cp": cp}
     except Exception:
         return None
@@ -284,6 +297,12 @@ def main():
                     help="Probability [0,1] of playing a random legal move instead of the engine best "
                          "during self-play data generation. Increases positional diversity from repeated "
                          "openings. 0.05 (5%%) is a good starting value. Not used during eval games.")
+    ap.add_argument("--cp-clamp", type=float, default=3000.0,
+                    help="Clamp labeled CP values to ±N (default 3000). Prevents mate/TB scores from "
+                         "dominating training gradients. 0 to disable.")
+    ap.add_argument("--filter-cp", type=float, default=0.0,
+                    help="Drop positions whose raw |cp| exceeds this value before clamping (default 0 = off). "
+                         "E.g. --filter-cp 3000 removes already-decided positions entirely.")
     args = ap.parse_args()
 
     random.seed()  # OS entropy — different openings every run
@@ -369,7 +388,8 @@ def main():
         with Pool(
             processes=args.workers,
             initializer=_worker_init,
-            initargs=(args.label_engine, args.eval_depth, args.syzygy_path),
+            initargs=(args.label_engine, args.eval_depth, args.syzygy_path,
+                      args.cp_clamp, args.filter_cp),
         ) as pool:
             for result in tqdm(
                 pool.imap_unordered(_label_fen, fens, chunksize=chunksize),
