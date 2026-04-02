@@ -12,7 +12,7 @@ training:
   amp: true
   persistent_workers: true
   prefetch_factor: 4
-  preload_to_gpu: true   # 67M × 140 bytes ≈ 9.4 GB VRAM
+  preload_to_gpu: true   # 67M × ~140 bytes ≈ 9.4 GB VRAM
   reset_best_val: true   # restore weights only; restart optimizer + scheduler
 
 model:
@@ -28,13 +28,11 @@ loss:
   wdl_weight: 0.1
 
 data:
-  # 67M Lichess depth-14 + 10M SF self-play anchor (prevents catastrophic forgetting
-  # of SF opening patterns; 13% anchor ratio keeps Lichess distribution dominant)
-  # Total: 77M positions → ~10.8 GB VRAM
-  train_files:
-    - data/all_69m/train_all_69m.jsonl          # 67M Lichess (no limit)
-    - path: data/t80_apr2024/merged             # first 10M of 120M SF Apr anchor
-      max_positions: 10000000
+  # Pure Lichess depth-14 (67M positions, ~9.4 GB VRAM).
+  # No SF anchor: catastrophic forgetting is negligible at LR=0.0001 after 300M-position
+  # SF pre-training, and the anchor was pulling calibration away from the Lichess scale
+  # (Lichess scale is the correct target for the engine's search thresholds).
+  train_file: data/all_69m/train_all_69m.jsonl
   val_file: data/all_69m/val_all_69m.jsonl
   max_cp_abs: 800
 
