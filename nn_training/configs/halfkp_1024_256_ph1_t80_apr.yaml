@@ -1,0 +1,42 @@
+seed: 137
+
+training:
+  batch_size: 32768
+  epochs: 100
+  lr: 0.001
+  warmup_epochs: 5
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  workers: 8
+  pin_memory: true
+  amp: true
+  persistent_workers: true
+  prefetch_factor: 4
+  preload_to_gpu: true   # 120M × 140 bytes ≈ 17.8 GB VRAM — fits in RX 7900 XTX (24 GB)
+
+model:
+  input_dim: 24576
+  hidden_dim: 1024
+  hidden2_dim: 256
+  dropout: 0.05
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  train_file: data/t80_apr2024/merged
+  val_file: data/all_69m/val_all_69m.jsonl
+  max_cp_abs: 800
+
+export:
+  output_path: artifacts/eval.onnx
+# Phase 1 of 4 — base pre-training on Stockfish self-play (test80-2024 April, 120M positions)
+# Train from scratch. Inference: HIDDEN1=1024, HIDDEN2=256 in neural_eval.rs
+#
+# Training command:
+#   PYTHONPATH=. python3 scripts/train.py \
+#     --config configs/halfkp_1024_256_ph1_t80_apr.yaml \
+#     --tb-logdir runs/1024x256_ph1_t80_apr

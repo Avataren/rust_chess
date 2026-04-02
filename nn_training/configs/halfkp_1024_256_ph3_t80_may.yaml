@@ -1,0 +1,44 @@
+seed: 137
+
+training:
+  batch_size: 32768
+  epochs: 50
+  lr: 0.0002
+  warmup_epochs: 3
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  workers: 8
+  pin_memory: true
+  amp: true
+  persistent_workers: true
+  prefetch_factor: 4
+  preload_to_gpu: true   # 90M × 140 bytes ≈ 12.6 GB VRAM
+  reset_best_val: true   # restore weights only; restart optimizer + scheduler
+
+model:
+  input_dim: 24576
+  hidden_dim: 1024
+  hidden2_dim: 256
+  dropout: 0.05
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  train_file: data/t80_may2024/merged
+  val_file: data/all_69m/val_all_69m.jsonl
+  max_cp_abs: 800
+
+export:
+  output_path: artifacts/eval.onnx
+# Phase 3 of 4 — continued pre-training on test80-2024 May (90M positions)
+# Resume from Phase 2 checkpoint with fresh optimizer (slightly lower LR).
+#
+# Training command:
+#   PYTHONPATH=. python3 scripts/train.py \
+#     --config configs/halfkp_1024_256_ph3_t80_may.yaml \
+#     --resume artifacts/checkpoint.pt \
+#     --tb-logdir runs/1024x256_ph3_t80_may
