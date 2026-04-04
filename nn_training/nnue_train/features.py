@@ -167,6 +167,93 @@ def encode_board_halfkp(board: chess.Board) -> np.ndarray:
     return x
 
 
+# ── HalfKAv2 features ─────────────────────────────────────────────────────
+#
+# Feature space: 11 piece types × 64 squares × 64 exact king squares = 45,056
+#
+# Key differences from HalfKP:
+#   - Own king is EXCLUDED from the piece set (11 slots, not 12)
+#   - Opponent king IS included as slot 10
+#   - King square is exact (0-63) rather than a coarse bucket
+#
+# Feature index: slot * 64 * 64 + piece_square * 64 + king_square
+#
+# Horizontal mirroring: same rule as HalfKP — when the king is on files e-h
+# (file index 4-7), both king_sq and piece_sq are file-flipped (XOR 7) so
+# the model sees left-right mirror positions as identical.
+
+HALFKAV2_NUM_PIECE_SLOTS = 11   # all pieces except own king
+HALFKAV2_FEATURE_DIM = HALFKAV2_NUM_PIECE_SLOTS * 64 * 64  # 45,056
+
+# Piece slot (from "own side" perspective after board mirror for black POV).
+# Slots 0–4: own non-king pieces (P, N, B, R, Q).
+# Slots 5–10: their pieces including king (P, N, B, R, Q, K).
+# Own king is intentionally absent — it is not a HalfKAv2 feature.
+_PIECE_SLOT_HALFKAV2 = {
+    (chess.PAWN,   True):  0,   # own pawn
+    (chess.KNIGHT, True):  1,   # own knight
+    (chess.BISHOP, True):  2,   # own bishop
+    (chess.ROOK,   True):  3,   # own rook
+    (chess.QUEEN,  True):  4,   # own queen
+    # (chess.KING,  True): excluded — own king never a feature in HalfKAv2
+    (chess.PAWN,   False): 5,   # their pawn
+    (chess.KNIGHT, False): 6,   # their knight
+    (chess.BISHOP, False): 7,   # their bishop
+    (chess.ROOK,   False): 8,   # their rook
+    (chess.QUEEN,  False): 9,   # their queen
+    (chess.KING,   False): 10,  # their king
+}
+
+
+def encode_board_halfkav2_dual(board: chess.Board) -> tuple[np.ndarray, np.ndarray]:
+    """Encode board using HalfKAv2 dual-perspective features.
+
+    Feature: (piece_slot, piece_square, own_king_square)
+    All pieces EXCEPT own king are encoded; opponent king is slot 10.
+    Feature dim = 11 × 64 × 64 = 45,056.
+    Formula: slot * 64 * 64 + mapped_sq * 64 + king_sq
+
+    Horizontal mirroring: when king is on files e-h, both king_sq and all
+    piece squares are file-flipped (XOR 7) to maintain left-right symmetry.
+
+    Returns (white_indices, black_indices), each int64[32] padded with
+    HALFKAV2_FEATURE_DIM (45,056) as sentinel for unused slots.
+
+    CP targets must be white-absolute (same convention as HalfKP dual).
+    """
+    SENTINEL = HALFKAV2_FEATURE_DIM  # 45,056
+
+    def _encode_white_pov(b: chess.Board) -> np.ndarray:
+        """Encode from white's perspective: white king = 'ours' (excluded)."""
+        king_squares = b.pieces(chess.KING, chess.WHITE)
+        if not king_squares:
+            return np.full(32, SENTINEL, dtype=np.int64)
+        king_sq = next(iter(king_squares))
+        mirror = chess.square_file(king_sq) >= 4
+        if mirror:
+            king_sq = king_sq ^ 7  # flip file bits; rank bits unchanged
+
+        result = np.full(32, SENTINEL, dtype=np.int64)
+        count = 0
+        for square, piece in b.piece_map().items():
+            # Own (white) king: not a feature in HalfKAv2
+            if piece.piece_type == chess.KING and piece.color == chess.WHITE:
+                continue
+            if count >= 32:
+                break
+            slot = _PIECE_SLOT_HALFKAV2[(piece.piece_type, piece.color)]
+            mapped_sq = square ^ 7 if mirror else square
+            result[count] = slot * 64 * 64 + mapped_sq * 64 + king_sq
+            count += 1
+        return result
+
+    # White perspective: board as-is (white king = ours)
+    white_indices = _encode_white_pov(board)
+    # Black perspective: mirror board (black king becomes white king = ours)
+    black_indices = _encode_white_pov(board.mirror())
+    return white_indices, black_indices
+
+
 # ── WDL target ────────────────────────────────────────────────────────────
 
 def cp_to_wdl_target(cp: float, ply: int = 40) -> np.ndarray:

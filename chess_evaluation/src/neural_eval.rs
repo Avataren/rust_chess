@@ -58,6 +58,12 @@ const NUM_PIECE_SLOTS: usize = 12;
 const HALFKP_FEATURE_DIM: usize = NUM_PIECE_SLOTS * 64 * KING_BUCKETS; // 24,576
 const LEGACY_FEATURE_DIM: usize = 768;
 
+// HalfKAv2: 11 piece types (all except own king) × 64 squares × 64 exact king squares.
+// Feature index: slot * 64 * 64 + piece_sq * 64 + king_sq
+// Slots 0-4: own P/N/B/R/Q; slots 5-10: their P/N/B/R/Q/K (own king excluded).
+const HALFKAV2_NUM_PIECE_SLOTS: usize = 11;
+pub(crate) const HALFKAV2_FEATURE_DIM: usize = HALFKAV2_NUM_PIECE_SLOTS * 64 * 64; // 45,056
+
 // ── Global state ──────────────────────────────────────────────────────────
 
 static NEURAL_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -96,6 +102,14 @@ pub fn init_neural_eval_from_bytes(bytes: &[u8]) -> Result<(), String> {
 /// Returns true if weights have been loaded (via EvalFile or embedded bytes).
 pub fn is_neural_eval_initialized() -> bool {
     EVALUATOR.get().is_some()
+}
+
+/// Returns true if the loaded model uses HalfKAv2 features (input_dim = 45,056).
+/// Used by search_context to select the correct incremental accumulator formula.
+pub fn is_halfkav2() -> bool {
+    EVALUATOR.get()
+        .map(|e| e.feature_dim == HALFKAV2_FEATURE_DIM)
+        .unwrap_or(false)
 }
 
 /// Enable or disable neural network evaluation at runtime.
@@ -170,7 +184,11 @@ fn fill_accumulators(
     acc_white: &mut [i16; HIDDEN1],
     acc_black: &mut [i16; HIDDEN1],
 ) {
-    let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(board);
+    let ((w_idx, wc), (b_idx, bc)) = if evaluator.feature_dim == HALFKAV2_FEATURE_DIM {
+        encode_dual_halfkav2(board)
+    } else {
+        encode_dual_halfkp(board)
+    };
     acc_white.copy_from_slice(&evaluator.b1_i16);
     for &i in &w_idx[..wc] {
         add_col(acc_white, &evaluator.w1_t_i16[i * HIDDEN1..(i + 1) * HIDDEN1]);
@@ -652,9 +670,13 @@ impl NeuralEvaluator {
 
         // Detect feature_dim from w1 weight shape
         let feature_dim = w1_raw.len() / HIDDEN1;
-        if feature_dim != LEGACY_FEATURE_DIM && feature_dim != HALFKP_FEATURE_DIM {
+        if feature_dim != LEGACY_FEATURE_DIM
+            && feature_dim != HALFKP_FEATURE_DIM
+            && feature_dim != HALFKAV2_FEATURE_DIM
+        {
             return Err(format!(
-                "Unexpected feature_dim {feature_dim} (expected {LEGACY_FEATURE_DIM} or {HALFKP_FEATURE_DIM})"
+                "Unexpected feature_dim {feature_dim} \
+                 (expected {LEGACY_FEATURE_DIM}, {HALFKP_FEATURE_DIM}, or {HALFKAV2_FEATURE_DIM})"
             ));
         }
 
@@ -721,7 +743,11 @@ impl NeuralEvaluator {
     pub fn evaluate_with_confidence(&self, board: &ChessBoard) -> (i32, f32) {
         let bucket = piece_bucket(board, self.n_output_buckets);
         if self.dual_perspective {
-            let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkp(board);
+            let ((w_idx, wc), (b_idx, bc)) = if self.feature_dim == HALFKAV2_FEATURE_DIM {
+                encode_dual_halfkav2(board)
+            } else {
+                encode_dual_halfkp(board)
+            };
 
             let mut h_w = [0.0f32; HIDDEN1];
             let mut h_b = [0.0f32; HIDDEN1];
@@ -951,6 +977,106 @@ pub(crate) fn encode_dual_halfkp(
     push_black!(white_bb & board.get_rooks(),    9);
     push_black!(white_bb & board.get_queens(),  10);
     push_black!(white_bb & board.get_kings(),   11);
+
+    ((w_indices, wc), (b_indices, bc))
+}
+
+/// Dual HalfKAv2 encoding: returns ((white_indices, white_count), (black_indices, black_count)).
+///
+/// HalfKAv2 uses exact king square (0-63) instead of a coarse bucket.
+/// Own king is EXCLUDED; opponent king is included as slot 10.
+/// Feature index: slot * 64 * 64 + mapped_sq * 64 + king_sq.
+///
+/// Slots 0-4: own P/N/B/R/Q. Slots 5-10: their P/N/B/R/Q/K.
+/// Horizontal mirroring: when king is on files 4-7, both king_sq and piece
+/// squares have their file bits flipped (`sq ^ 7`) so left-right mirror positions
+/// share the same feature space.
+///
+/// Must stay bit-for-bit identical to `encode_board_halfkav2_dual` in features.py.
+pub(crate) fn encode_dual_halfkav2(
+    board: &ChessBoard,
+) -> (([usize; 32], usize), ([usize; 32], usize)) {
+    let white_bb = board.get_white();
+    let black_bb = board.get_black();
+
+    // White perspective: exact white king square with optional file mirror
+    let wk_sq = (white_bb & board.get_kings()).0.trailing_zeros() as usize;
+    let wk_sq = wk_sq.min(63);
+    let mirror_w = (wk_sq % 8) >= 4;
+    let king_w = if mirror_w { wk_sq ^ 7 } else { wk_sq };
+
+    // Black perspective: black king rank-flipped, then optionally file-mirrored
+    let bk_sq_raw = (black_bb & board.get_kings()).0.trailing_zeros() as usize;
+    let bk_sq_raw = bk_sq_raw.min(63);
+    let bk_flipped = bk_sq_raw ^ 56;
+    let mirror_b = (bk_flipped % 8) >= 4;
+    let king_b = if mirror_b { bk_flipped ^ 7 } else { bk_flipped };
+
+    let mut w_indices = [0usize; 32];
+    let mut b_indices = [0usize; 32];
+    let mut wc = 0usize;
+    let mut bc = 0usize;
+
+    macro_rules! push_white_kav2 {
+        ($bb:expr, $slot:expr) => {
+            let mut bb: Bitboard = $bb;
+            while bb.0 != 0 {
+                let sq = bb.0.trailing_zeros() as usize;
+                bb.0 &= bb.0 - 1;
+                if wc < 32 {
+                    let mapped = if mirror_w { sq ^ 7 } else { sq };
+                    w_indices[wc] = $slot * 64 * 64 + mapped * 64 + king_w;
+                    wc += 1;
+                }
+            }
+        };
+    }
+
+    macro_rules! push_black_kav2 {
+        ($bb:expr, $slot:expr) => {
+            let mut bb: Bitboard = $bb;
+            while bb.0 != 0 {
+                let sq = bb.0.trailing_zeros() as usize;
+                bb.0 &= bb.0 - 1;
+                if bc < 32 {
+                    let rank_flipped = sq ^ 56;
+                    let mapped = if mirror_b { rank_flipped ^ 7 } else { rank_flipped };
+                    b_indices[bc] = $slot * 64 * 64 + mapped * 64 + king_b;
+                    bc += 1;
+                }
+            }
+        };
+    }
+
+    // White perspective: own (white) P/N/B/R/Q = slots 0-4 (own king excluded)
+    //                    their (black) P/N/B/R/Q/K = slots 5-10
+    push_white_kav2!(white_bb & board.get_pawns(),   0);
+    push_white_kav2!(white_bb & board.get_knights(), 1);
+    push_white_kav2!(white_bb & board.get_bishops(), 2);
+    push_white_kav2!(white_bb & board.get_rooks(),   3);
+    push_white_kav2!(white_bb & board.get_queens(),  4);
+    // white king: excluded from white perspective
+    push_white_kav2!(black_bb & board.get_pawns(),   5);
+    push_white_kav2!(black_bb & board.get_knights(), 6);
+    push_white_kav2!(black_bb & board.get_bishops(), 7);
+    push_white_kav2!(black_bb & board.get_rooks(),   8);
+    push_white_kav2!(black_bb & board.get_queens(),  9);
+    push_white_kav2!(black_bb & board.get_kings(),  10);
+
+    // Black perspective: own (black) P/N/B/R/Q = slots 0-4 (own king excluded)
+    //                    their (white) P/N/B/R/Q/K = slots 5-10, rank-flipped
+    push_black_kav2!(black_bb & board.get_pawns(),   0);
+    push_black_kav2!(black_bb & board.get_knights(), 1);
+    push_black_kav2!(black_bb & board.get_bishops(), 2);
+    push_black_kav2!(black_bb & board.get_rooks(),   3);
+    push_black_kav2!(black_bb & board.get_queens(),  4);
+    // black king: excluded from black perspective
+    push_black_kav2!(white_bb & board.get_pawns(),   5);
+    push_black_kav2!(white_bb & board.get_knights(), 6);
+    push_black_kav2!(white_bb & board.get_bishops(), 7);
+    push_black_kav2!(white_bb & board.get_rooks(),   8);
+    push_black_kav2!(white_bb & board.get_queens(),  9);
+    push_black_kav2!(white_bb & board.get_kings(),  10);
 
     ((w_indices, wc), (b_indices, bc))
 }
@@ -1547,6 +1673,151 @@ mod tests {
             sorted(&wa, wca),
             sorted(&wh, wch),
             "Mirrored positions (Ka1+Pa2 vs Kh1+Ph2) must produce identical white-pov feature sets"
+        );
+    }
+
+    // ── HalfKAv2 dual-perspective tests ──────────────────────────────────
+
+    #[test]
+    fn test_halfkav2_feature_count_starting() {
+        // 32 pieces total; own king excluded per perspective → 31 active features each
+        let board = ChessBoard::new();
+        let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkav2(&board);
+        assert_eq!(wc, 31, "White perspective should have 31 active features");
+        assert_eq!(bc, 31, "Black perspective should have 31 active features");
+        for &i in &w_idx[..wc] {
+            assert!(i < HALFKAV2_FEATURE_DIM, "White index {i} out of range");
+        }
+        for &i in &b_idx[..bc] {
+            assert!(i < HALFKAV2_FEATURE_DIM, "Black index {i} out of range");
+        }
+    }
+
+    #[test]
+    fn test_halfkav2_symmetric_starting_position() {
+        // Starting position is symmetric: both perspectives must have the same feature set
+        let board = ChessBoard::new();
+        let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkav2(&board);
+        assert_eq!(wc, bc);
+        let mut w_set = w_idx[..wc].to_vec();
+        let mut b_set = b_idx[..bc].to_vec();
+        w_set.sort_unstable();
+        b_set.sort_unstable();
+        assert_eq!(w_set, b_set, "Starting position must be symmetric across perspectives");
+    }
+
+    #[test]
+    fn test_halfkav2_independent_of_side_to_move() {
+        let board_w = ChessBoard::new();
+        let mut board_b = ChessBoard::new();
+        board_b.toggle_turn();
+        let ((ww, wc_w), (wb, bc_w)) = encode_dual_halfkav2(&board_w);
+        let ((bw, wc_b), (bb, bc_b)) = encode_dual_halfkav2(&board_b);
+        assert_eq!(wc_w, wc_b);
+        assert_eq!(bc_w, bc_b);
+        assert_eq!(&ww[..wc_w], &bw[..wc_b], "White perspective must not depend on side to move");
+        assert_eq!(&wb[..bc_w], &bb[..bc_b], "Black perspective must not depend on side to move");
+    }
+
+    #[test]
+    fn test_halfkav2_no_duplicate_indices() {
+        let board = ChessBoard::new();
+        let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkav2(&board);
+        let mut w_sorted = w_idx[..wc].to_vec();
+        w_sorted.sort_unstable();
+        w_sorted.dedup();
+        assert_eq!(w_sorted.len(), wc, "Duplicate indices in white perspective");
+        let mut b_sorted = b_idx[..bc].to_vec();
+        b_sorted.sort_unstable();
+        b_sorted.dedup();
+        assert_eq!(b_sorted.len(), bc, "Duplicate indices in black perspective");
+    }
+
+    #[test]
+    fn test_halfkav2_indices_in_range_various_positions() {
+        let fens = [
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            "r3r1k1/pp3pbp/1qp3p1/2B5/2BP2b1/Q1n2N2/P4PPP/3RR1K1 w - - 0 1",
+            "7k/8/8/8/8/8/P7/K7 w - - 0 1",
+            "k7/8/8/8/8/8/7P/7K w - - 0 1",
+            "8/8/4k3/8/8/4K3/8/8 w - - 0 1",
+        ];
+        for fen in fens {
+            let mut board = ChessBoard::new();
+            board.set_from_fen(fen);
+            let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkav2(&board);
+            for &i in &w_idx[..wc] {
+                assert!(i < HALFKAV2_FEATURE_DIM, "FEN {fen}: white index {i} out of range");
+            }
+            for &i in &b_idx[..bc] {
+                assert!(i < HALFKAV2_FEATURE_DIM, "FEN {fen}: black index {i} out of range");
+            }
+        }
+    }
+
+    #[test]
+    fn test_halfkav2_minimal_kk_position() {
+        // K vs K: each side only has the opponent's king → 1 feature each
+        let mut board = ChessBoard::new();
+        board.set_from_fen("8/8/4k3/8/8/4K3/8/8 w - - 0 1");
+        let ((_, wc), (_, bc)) = encode_dual_halfkav2(&board);
+        assert_eq!(wc, 1, "K vs K: white perspective should have 1 feature");
+        assert_eq!(bc, 1, "K vs K: black perspective should have 1 feature");
+    }
+
+    #[test]
+    fn test_halfkav2_exact_opponent_king_index_starting() {
+        // White king on e1 = sq 4. file=4 >= 4 → mirror=true, king_w = 4^7 = 3.
+        // Black king on e8 = sq 60, slot=10 (their king from white POV).
+        // mapped_sq = 60 ^ 7 = 59 (file-mirrored because mirror=true).
+        // Expected white index = 10 * 64 * 64 + 59 * 64 + 3 = 44739.
+        //
+        // Black perspective (rank-flipped): bk_sq_raw=60, bk_flipped=60^56=4, mirror=true, king_b=3.
+        // Their king (white, sq=4) in black POV: rank_flipped=4^56=60, mapped=60^7=59.
+        // Expected black index = 10 * 64 * 64 + 59 * 64 + 3 = 44739.
+        let board = ChessBoard::new();
+        let ((w_idx, wc), (b_idx, bc)) = encode_dual_halfkav2(&board);
+        let expected: usize = 10 * 64 * 64 + 59 * 64 + 3; // 44739
+        assert!(
+            w_idx[..wc].contains(&expected),
+            "Opponent king index {expected} not found in white perspective"
+        );
+        assert!(
+            b_idx[..bc].contains(&expected),
+            "Opponent king index {expected} not found in black perspective"
+        );
+    }
+
+    #[test]
+    fn test_halfkav2_mirror_symmetry_a1_vs_h1_king() {
+        // King+Pawn on a1/a2 vs King+Pawn on h1/h2 are horizontal mirrors.
+        // Both should produce the same feature set.
+        let mut board_a = ChessBoard::new();
+        let mut board_h = ChessBoard::new();
+        board_a.set_from_fen("7k/8/8/8/8/8/P7/K7 w - - 0 1");
+        board_h.set_from_fen("k7/8/8/8/8/8/7P/7K w - - 0 1");
+        let ((w_a, wc_a), _) = encode_dual_halfkav2(&board_a);
+        let ((w_h, wc_h), _) = encode_dual_halfkav2(&board_h);
+        assert_eq!(wc_a, wc_h, "Feature counts must match for mirrored positions");
+        let mut a_sorted = w_a[..wc_a].to_vec();
+        let mut h_sorted = w_h[..wc_h].to_vec();
+        a_sorted.sort_unstable();
+        h_sorted.sort_unstable();
+        assert_eq!(a_sorted, h_sorted, "Horizontally mirrored positions must produce identical features");
+    }
+
+    #[test]
+    fn test_halfkav2_exact_own_pawn_index_starting() {
+        // White king on e1 = sq 4. mirror=true, king_w = 4^7 = 3.
+        // White pawn on a2 = sq 8, slot=0 (own pawn from white POV).
+        // mapped_sq = 8 ^ 7 = 15 (file-mirrored).
+        // Expected index = 0 * 64 * 64 + 15 * 64 + 3 = 963.
+        let board = ChessBoard::new();
+        let ((w_idx, wc), _) = encode_dual_halfkav2(&board);
+        let expected: usize = 0 * 64 * 64 + 15 * 64 + 3; // 963
+        assert!(
+            w_idx[..wc].contains(&expected),
+            "White pawn a2 index {expected} not found in white perspective features"
         );
     }
 

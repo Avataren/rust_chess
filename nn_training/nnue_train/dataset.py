@@ -8,7 +8,12 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .features import cp_to_wdl_target, cp_to_wdl_batch, encode_board_12x64, encode_board_halfkp, HALFKP_FEATURE_DIM, FEATURE_DIM, encode_board_halfkp_dual
+from .features import (
+    cp_to_wdl_target, cp_to_wdl_batch,
+    encode_board_12x64, encode_board_halfkp, encode_board_halfkp_dual,
+    encode_board_halfkav2_dual,
+    HALFKP_FEATURE_DIM, HALFKAV2_FEATURE_DIM, FEATURE_DIM,
+)
 
 
 def _ply_from_fen(fen: str) -> int:
@@ -279,15 +284,122 @@ class GPUPreloadedDualDataset:
             )
 
 
+class ShardedGPUDataset:
+    """GPU-resident training for datasets larger than VRAM.
+
+    Partitions the training data into small shards that each fit comfortably in
+    GPU memory (~2 GB per shard = ~15M positions).  Each call to __iter__ loads
+    exactly one shard to GPU, yields all batches from it, then frees the VRAM.
+    The training loop's "epoch" therefore equals one shard mini-epoch.
+
+    After cycling through all N shards (one full pass), the shard order is
+    reshuffled so consecutive passes have different orderings.
+
+    Usage in config:
+        training:
+          sharded_gpu: true
+        data:
+          train_shards: data/lichess_hf/shards   # directory of shard_??.*.npy files
+          val_file: data/all_69m/val_all_69m.jsonl
+
+    A training run of 'epochs: 200' with 20 shards = 10 full passes over the dataset.
+    """
+
+    def __init__(
+        self,
+        shard_dirs: "str | list[str]",
+        max_cp_abs: int,
+        device: torch.device,
+        batch_size: int,
+        shuffle: bool = True,
+    ):
+        if isinstance(shard_dirs, str):
+            shard_dirs = [shard_dirs]
+
+        # Discover all shard prefixes by looking for *.cp.npy files in each dir
+        self.shard_prefixes: list[str] = []
+        for d in shard_dirs:
+            cp_files = sorted(Path(d).glob("*.cp.npy"))
+            for cp_file in cp_files:
+                prefix = str(cp_file).replace(".cp.npy", "")
+                wi = Path(prefix + ".white_indices.npy")
+                bi = Path(prefix + ".black_indices.npy")
+                if wi.exists() and bi.exists():
+                    self.shard_prefixes.append(prefix)
+
+        if not self.shard_prefixes:
+            raise ValueError(f"No binary shards found in: {shard_dirs}")
+
+        self.max_cp_abs = max_cp_abs
+        self.device = device
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+
+        # Count total positions across all shards for reporting
+        shard_sizes = [len(np.load(p + ".cp.npy", mmap_mode="r"))
+                       for p in self.shard_prefixes]
+        self._total_N = sum(shard_sizes)
+        self._avg_shard_N = self._total_N // len(self.shard_prefixes)
+
+        # Shuffled queue: which shard to load next
+        self._queue: list[int] = []
+
+        print(f"ShardedGPUDataset: {len(self.shard_prefixes)} shards  "
+              f"{self._total_N:,} total positions  "
+              f"(~{self._avg_shard_N:,}/shard  "
+              f"{len(self.shard_prefixes)} mini-epochs per full pass)")
+
+    # N and len() report per-shard stats so train.py batch-count logging is sensible
+    @property
+    def N(self) -> int:
+        return self._avg_shard_N
+
+    def __len__(self) -> int:
+        return (self._avg_shard_N + self.batch_size - 1) // self.batch_size
+
+    def _next_shard_idx(self) -> int:
+        if not self._queue:
+            order = list(range(len(self.shard_prefixes)))
+            if self.shuffle:
+                np.random.shuffle(order)
+            self._queue = order
+        return self._queue.pop(0)
+
+    def __iter__(self):
+        shard_idx = self._next_shard_idx()
+        prefix = self.shard_prefixes[shard_idx]
+        shard_name = Path(prefix).name
+        pass_n = (len(self.shard_prefixes) - len(self._queue) - 1)
+        print(f"  [shard {shard_idx}/{len(self.shard_prefixes)-1}] "
+              f"Loading {shard_name} ...", flush=True)
+
+        gpu_shard = GPUPreloadedDualDataset(
+            [(prefix, None)],
+            max_cp_abs=self.max_cp_abs,
+            device=self.device,
+            batch_size=self.batch_size,
+            shuffle=self.shuffle,
+        )
+        yield from gpu_shard
+
+        # Explicitly free VRAM before next shard
+        del gpu_shard
+        torch.cuda.empty_cache()
+
+
 class JsonlDualPositionDataset(Dataset):
     """Fallback dual-perspective JSONL dataset (no preprocessing required).
 
     Returns (x_white, x_black, piece_count, cp, wdl) matching BinaryDualPositionDataset.
     Slower than the binary dataset but works directly from JSONL files.
+
+    Set use_halfkav2=True to encode with HalfKAv2 features (45,056-dim) instead
+    of HalfKP (24,576-dim). Must match the model's input_dim.
     """
 
-    def __init__(self, path: str, max_cp_abs: int = 1500):
+    def __init__(self, path: str, max_cp_abs: int = 1500, use_halfkav2: bool = False):
         self.path = path
+        self.use_halfkav2 = use_halfkav2
         offsets = []
         cp_values = []
         cp_raw_values = []
@@ -321,7 +433,10 @@ class JsonlDualPositionDataset(Dataset):
         row = json.loads(line)
         board = chess.Board(row["fen"])
 
-        w_idx, b_idx = encode_board_halfkp_dual(board)
+        if self.use_halfkav2:
+            w_idx, b_idx = encode_board_halfkav2_dual(board)
+        else:
+            w_idx, b_idx = encode_board_halfkp_dual(board)
         piece_count = np.array([len(board.piece_map())], dtype=np.int64)
         # JSONL stores side-to-move CP; model expects white-absolute.
         sign = 1.0 if board.turn == chess.WHITE else -1.0

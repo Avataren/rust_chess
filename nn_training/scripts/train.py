@@ -18,7 +18,9 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from torch.utils.data import Sampler, ConcatDataset
-from nnue_train.dataset import BinaryPositionDataset, BinaryDualPositionDataset, JsonlPositionDataset, JsonlDualPositionDataset, GPUPreloadedDualDataset
+from nnue_train.dataset import (BinaryPositionDataset, BinaryDualPositionDataset,
+                                JsonlPositionDataset, JsonlDualPositionDataset,
+                                GPUPreloadedDualDataset, ShardedGPUDataset)
 from nnue_train.model import EvalNet, EvalNetDual, get_output_bucket
 
 
@@ -51,11 +53,17 @@ class StratifiedEndgameSampler(Sampler):
 
 
 def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool, dual: bool = False,
-                 max_positions: int | None = None):
-    """Use fast binary dataset if pre-processed files exist, else fall back to JSONL."""
+                 max_positions: int | None = None, use_halfkav2: bool = False):
+    """Use fast binary dataset if pre-processed files exist, else fall back to JSONL.
+
+    When use_halfkav2=True, binary detection is skipped for dual datasets
+    (existing binary files are HalfKP-encoded and would produce wrong results);
+    JSONL is used directly with HalfKAv2 encoding.
+    """
     prefix = str(Path(path).with_suffix(""))
-    if dual and all(Path(prefix + ext).exists()
-                    for ext in (".white_indices.npy", ".black_indices.npy", ".counts.npy", ".cp.npy")):
+    if dual and not use_halfkav2 and all(
+            Path(prefix + ext).exists()
+            for ext in (".white_indices.npy", ".black_indices.npy", ".counts.npy", ".cp.npy")):
         lim = f"  [:{max_positions:,}]" if max_positions else ""
         print(f"  Loading dual binary dataset: {prefix}.*{lim}")
         return BinaryDualPositionDataset(path, max_cp_abs=max_cp_abs, max_positions=max_positions)
@@ -63,8 +71,9 @@ def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool, dual: bool = Fals
         print(f"  Loading binary dataset: {prefix}.*")
         return BinaryPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
     if dual:
-        print(f"  Loading dual JSONL dataset: {path}  (run preprocess_dataset.py for faster training)")
-        return JsonlDualPositionDataset(path, max_cp_abs=max_cp_abs)
+        enc = "halfkav2" if use_halfkav2 else "halfkp"
+        print(f"  Loading dual JSONL dataset ({enc}): {path}")
+        return JsonlDualPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkav2=use_halfkav2)
     print(f"  Loading JSONL dataset: {path}  (run preprocess_dataset.py for faster training)")
     return JsonlPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
 
@@ -115,9 +124,10 @@ def _get_data_paths(cfg_data: dict, split: str) -> list[tuple[str, int | None]]:
 
 
 def _load_multi_dataset(paths: list[tuple[str, int | None]], max_cp_abs: int,
-                        use_halfkp: bool, dual: bool):
+                        use_halfkp: bool, dual: bool, use_halfkav2: bool = False):
     """Load one or more datasets, returning a ConcatDataset if multiple paths."""
-    datasets = [load_dataset(p, max_cp_abs, use_halfkp, dual=dual, max_positions=n)
+    datasets = [load_dataset(p, max_cp_abs, use_halfkp, dual=dual,
+                             max_positions=n, use_halfkav2=use_halfkav2)
                 for p, n in paths]
     return datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
 
@@ -333,10 +343,43 @@ def main():
 
     use_halfkp = cfg["model"].get("use_halfkp", False)
     dual = cfg["model"].get("dual_perspective", False)
+    use_halfkav2 = (cfg["model"].get("feature_encoding", "halfkp") == "halfkav2")
     preload_to_gpu = (cfg["training"].get("preload_to_gpu", False)
                       and device.type == "cuda" and dual)
+    sharded_gpu = (cfg["training"].get("sharded_gpu", False)
+                   and device.type == "cuda" and dual)
 
-    if preload_to_gpu:
+    if sharded_gpu:
+        shard_dirs = cfg["data"]["train_shards"]
+        if isinstance(shard_dirs, str):
+            shard_dirs = [shard_dirs]
+        train_loader = ShardedGPUDataset(
+            shard_dirs,
+            max_cp_abs=cfg["data"]["max_cp_abs"],
+            device=device,
+            batch_size=cfg["training"]["batch_size"],
+            shuffle=True,
+        )
+        # Val uses a standard DataLoader — doesn't need to fit in VRAM
+        val_paths = _get_data_paths(cfg["data"], "val")
+        val_ds = _load_multi_dataset(val_paths, cfg["data"]["max_cp_abs"], use_halfkp, dual=dual, use_halfkav2=use_halfkav2)
+        if len(val_ds) == 0:
+            raise ValueError("Validation dataset is empty.")
+        _val_workers = int(cfg["training"].get("val_workers", 4))
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=cfg["training"]["batch_size"],
+            shuffle=False,
+            num_workers=_val_workers,
+            pin_memory=cfg["training"]["pin_memory"],
+            persistent_workers=_val_workers > 0,
+            prefetch_factor=cfg["training"].get("prefetch_factor", 2) if _val_workers > 0 else None,
+        )
+        print(f"Sharded GPU: {len(train_loader.shard_prefixes)} shards  "
+              f"{train_loader._total_N:,} train positions  "
+              f"(~{len(train_loader)} batches/mini-epoch)  "
+              f"{len(val_ds):,} val  ({len(val_loader)} batches/epoch)")
+    elif preload_to_gpu:
         if cfg["training"].get("endgame_fraction"):
             print("Warning: preload_to_gpu=true ignores endgame_fraction (not supported together)")
         train_paths = _get_data_paths(cfg["data"], "train")
@@ -367,8 +410,8 @@ def main():
     else:
         train_paths = _get_data_paths(cfg["data"], "train")
         val_paths   = _get_data_paths(cfg["data"], "val")
-        train_ds = _load_multi_dataset(train_paths, cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
-        val_ds   = _load_multi_dataset(val_paths,   cfg["data"]["max_cp_abs"], use_halfkp, dual=dual)
+        train_ds = _load_multi_dataset(train_paths, cfg["data"]["max_cp_abs"], use_halfkp, dual=dual, use_halfkav2=use_halfkav2)
+        val_ds   = _load_multi_dataset(val_paths,   cfg["data"]["max_cp_abs"], use_halfkp, dual=dual, use_halfkav2=use_halfkav2)
 
         if len(train_ds) == 0:
             raise ValueError("Training dataset is empty. Provide at least one training sample.")
@@ -503,7 +546,7 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     latest_path = out_path.parent / (out_path.stem + "_latest.pt")
 
-    if not preload_to_gpu:
+    if not preload_to_gpu and not sharded_gpu:
         print(f"DataLoader workers: train={train_workers}, val={val_workers}")
 
     writer = SummaryWriter(log_dir=args.tb_logdir)

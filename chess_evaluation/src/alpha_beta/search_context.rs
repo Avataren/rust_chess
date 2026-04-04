@@ -88,6 +88,47 @@ pub(in crate::alpha_beta) fn halfkp_feature_idx(slot: usize, square: usize, buck
     slot * 64 * KING_BUCKETS + square * KING_BUCKETS + bucket
 }
 
+// ── HalfKAv2 piece slot helpers ──────────────────────────────────────────────
+
+/// Map a piece type + ownership flag to a HalfKAv2 slot index (0-10).
+/// Own (is_ours=true): Pawn=0, Knight=1, Bishop=2, Rook=3, Queen=4. King=EXCLUDED (usize::MAX).
+/// Theirs (is_ours=false): Pawn=5, Knight=6, Bishop=7, Rook=8, Queen=9, King=10.
+///
+/// Returns usize::MAX for own king — callers must skip features with this slot.
+#[inline(always)]
+pub(in crate::alpha_beta) fn halfkav2_piece_slot(pt: PieceType, is_ours: bool) -> usize {
+    if is_ours {
+        match pt {
+            PieceType::Pawn   => 0,
+            PieceType::Knight => 1,
+            PieceType::Bishop => 2,
+            PieceType::Rook   => 3,
+            PieceType::Queen  => 4,
+            PieceType::King   => usize::MAX, // own king not a feature in HalfKAv2
+            PieceType::None   => 0,
+        }
+    } else {
+        match pt {
+            PieceType::Pawn   => 5,
+            PieceType::Knight => 6,
+            PieceType::Bishop => 7,
+            PieceType::Rook   => 8,
+            PieceType::Queen  => 9,
+            PieceType::King   => 10,
+            PieceType::None   => 5,
+        }
+    }
+}
+
+/// Compute the HalfKAv2 accumulator feature index.
+///
+/// Layout: `slot * 64 * 64 + square * 64 + king_sq`.
+/// `king_sq` is the exact (possibly file-mirrored) king square, not a bucket.
+#[inline(always)]
+pub(in crate::alpha_beta) fn halfkav2_feature_idx(slot: usize, square: usize, king_sq: usize) -> usize {
+    slot * 64 * 64 + square * 64 + king_sq
+}
+
 // ── Per-context eval cache ────────────────────────────────────────────────────
 
 /// Number of (hash, score) slots in the per-context eval cache.
@@ -216,7 +257,7 @@ impl SearchContext {
 
     /// Push accumulator state to ply+1 with an incremental delta for the given move.
     /// Call BEFORE make_move.  Returns true when the king moved (caller must call
-    /// acc_recompute after make_move since the king bucket changes).
+    /// acc_recompute after make_move since the king bucket/square changes).
     pub fn acc_push(&mut self, ply: usize, mv: &ChessMove, board: &ChessBoard) -> bool {
         if !self.acc_valid {
             return false;
@@ -231,9 +272,6 @@ impl SearchContext {
         self.acc_black[dst] = tmp_b;
 
         // Identify the moving piece.
-        // The move generator does not populate chess_piece, so fall back to
-        // a board lookup.  This avoids triggering a full acc_recompute for
-        // every non-king move.
         let moving_piece = match mv.chess_piece {
             Some(p) => p,
             None => match board.get_piece_at_square(mv.start_square()) {
@@ -246,22 +284,23 @@ impl SearchContext {
         let to_sq = mv.target_square() as usize;
         let piece_is_white = moving_piece.is_white();
 
-        // Current king buckets
+        let use_kav2 = crate::neural_eval::is_halfkav2();
+
+        // Current king squares / buckets
         let wk_sq = (board.get_white() & board.get_kings()).0.trailing_zeros() as usize;
         let bk_sq_raw = (board.get_black() & board.get_kings()).0.trailing_zeros() as usize;
-        let wk_bucket = crate::neural_eval::KING_BUCKET[wk_sq.min(63)];
         let bk_flipped = bk_sq_raw ^ 56;
-        let bk_bucket = crate::neural_eval::KING_BUCKET[bk_flipped.min(63)];
 
-        // King moves: trigger full recompute when the king changes bucket OR
-        // when the horizontal-mirror flag changes.  The mirror flag (king on
-        // files e-h) affects every piece's feature index, so a mirror change
-        // requires updating all features — equivalent to a full recompute.
-        //
-        // Example: e1→d1 keeps bucket 3 but flips mirror (e-file→d-file),
-        // invalidating all non-king feature indices.  Only same-bucket AND
-        // same-mirror moves (e.g. e1→e2, d1→d2) are safe for incremental update.
+        // King move handling
         if moving_piece.piece_type() == PieceType::King {
+            if use_kav2 {
+                // HalfKAv2: exact king_sq appears in EVERY feature index, so any king
+                // move — regardless of distance or direction — requires full recompute.
+                return true;
+            }
+            // HalfKP: full recompute only when bucket or horizontal-mirror flag changes.
+            let wk_bucket = crate::neural_eval::KING_BUCKET[wk_sq.min(63)];
+            let bk_bucket = crate::neural_eval::KING_BUCKET[bk_flipped.min(63)];
             let new_own_bucket = if piece_is_white {
                 crate::neural_eval::KING_BUCKET[to_sq.min(63)]
             } else {
@@ -270,9 +309,8 @@ impl SearchContext {
             };
             let current_own_bucket = if piece_is_white { wk_bucket } else { bk_bucket };
             if new_own_bucket != current_own_bucket {
-                return true; // bucket changed — full recompute
+                return true;
             }
-            // Same bucket: also check whether mirroring changes.
             let old_mirror = if piece_is_white {
                 (wk_sq.min(63) % 8) >= 4
             } else {
@@ -284,9 +322,9 @@ impl SearchContext {
                 ((to_sq ^ 56).min(63) % 8) >= 4
             };
             if old_mirror != new_mirror {
-                return true; // mirror changed — full recompute
+                return true;
             }
-            // Same bucket AND same mirror: fall through to incremental update below.
+            // Same bucket AND same mirror: fall through to incremental update.
         }
 
         // Horizontal mirroring: flip piece file bits when king is on files e-h.
@@ -295,75 +333,95 @@ impl SearchContext {
         let w_sq = |sq: usize| if mirror_w { sq ^ 7 } else { sq };
         let b_sq = |sq: usize| {
             let r = sq ^ 56;
-            if mirror_b {
-                r ^ 7
-            } else {
-                r
-            }
+            if mirror_b { r ^ 7 } else { r }
         };
 
         let acc_w = &mut self.acc_white[dst];
         let acc_b = &mut self.acc_black[dst];
 
-        // Build delta lists preserving original operation order:
-        //   sub from_src  →  add to_dst  →  sub capture
-        // This matches the original per-call sequence exactly, which matters
-        // for saturating i16 arithmetic (intermediate saturation is order-sensitive).
         let orig_pt = moving_piece.piece_type();
-
-        // Determine destination piece type (promotion may change it)
         let to_pt = if mv.is_promotion() {
             mv.promotion_piece_type().unwrap_or(PieceType::Pawn)
         } else {
             orig_pt
         };
 
-        // subs_pre: remove moving piece from source square
-        let slot_w = halfkp_piece_slot(orig_pt, piece_is_white);
-        let slot_b = halfkp_piece_slot(orig_pt, !piece_is_white);
-        let w_sub_pre = halfkp_feature_idx(slot_w, w_sq(from_sq), wk_bucket);
-        let b_sub_pre = halfkp_feature_idx(slot_b, b_sq(from_sq), bk_bucket);
-
-        // adds: moving piece at destination
-        let to_slot_w = halfkp_piece_slot(to_pt, piece_is_white);
-        let to_slot_b = halfkp_piece_slot(to_pt, !piece_is_white);
-        let w_add = halfkp_feature_idx(to_slot_w, w_sq(to_sq), wk_bucket);
-        let b_add = halfkp_feature_idx(to_slot_b, b_sq(to_sq), bk_bucket);
-
-        // subs_post: remove captured piece (applied after the add, matching original order)
         let mut w_cap = [0usize; 1];
         let mut b_cap = [0usize; 1];
         let cap_n;
 
-        if mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
-            let cap_sq = if piece_is_white { to_sq.wrapping_sub(8) } else { to_sq + 8 };
-            let cap_slot_w = halfkp_piece_slot(PieceType::Pawn, !piece_is_white);
-            let cap_slot_b = halfkp_piece_slot(PieceType::Pawn, piece_is_white);
-            w_cap[0] = halfkp_feature_idx(cap_slot_w, w_sq(cap_sq), wk_bucket);
-            b_cap[0] = halfkp_feature_idx(cap_slot_b, b_sq(cap_sq), bk_bucket);
-            cap_n = 1;
-        } else {
-            // mv.capture is never populated by the move generator (same
-            // situation as chess_piece).  Fall back to a board lookup —
-            // acc_push is called before make_move, so the captured piece is
-            // still present at the target square.
-            match board.get_piece_at_square(mv.target_square()) {
-                Some(cap) => {
-                    let cap_pt = cap.piece_type();
-                    let cap_is_white = cap.is_white();
-                    let cap_slot_w = halfkp_piece_slot(cap_pt, cap_is_white);
-                    let cap_slot_b = halfkp_piece_slot(cap_pt, !cap_is_white);
-                    w_cap[0] = halfkp_feature_idx(cap_slot_w, w_sq(to_sq), wk_bucket);
-                    b_cap[0] = halfkp_feature_idx(cap_slot_b, b_sq(to_sq), bk_bucket);
-                    cap_n = 1;
-                }
-                None => cap_n = 0,
-            }
-        }
+        if use_kav2 {
+            // ── HalfKAv2 incremental path ─────────────────────────────────────
+            let king_w = if mirror_w { wk_sq ^ 7 } else { wk_sq };
+            let king_b = if mirror_b { bk_flipped ^ 7 } else { bk_flipped };
 
-        // One EVALUATOR.get() per accumulator; order: sub_pre → add → sub_post
-        crate::neural_eval::acc_apply_deltas(acc_w, &[w_sub_pre], &[w_add], &w_cap[..cap_n]);
-        crate::neural_eval::acc_apply_deltas(acc_b, &[b_sub_pre], &[b_add], &b_cap[..cap_n]);
+            let slot_w = halfkav2_piece_slot(orig_pt, piece_is_white);
+            let slot_b = halfkav2_piece_slot(orig_pt, !piece_is_white);
+            // Own-king slot returns usize::MAX — king moves already returned above.
+            let w_sub_pre = halfkav2_feature_idx(slot_w, w_sq(from_sq), king_w);
+            let b_sub_pre = halfkav2_feature_idx(slot_b, b_sq(from_sq), king_b);
+
+            let to_slot_w = halfkav2_piece_slot(to_pt, piece_is_white);
+            let to_slot_b = halfkav2_piece_slot(to_pt, !piece_is_white);
+            let w_add = halfkav2_feature_idx(to_slot_w, w_sq(to_sq), king_w);
+            let b_add = halfkav2_feature_idx(to_slot_b, b_sq(to_sq), king_b);
+
+            if mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
+                let cap_sq = if piece_is_white { to_sq.wrapping_sub(8) } else { to_sq + 8 };
+                w_cap[0] = halfkav2_feature_idx(halfkav2_piece_slot(PieceType::Pawn, !piece_is_white), w_sq(cap_sq), king_w);
+                b_cap[0] = halfkav2_feature_idx(halfkav2_piece_slot(PieceType::Pawn,  piece_is_white), b_sq(cap_sq), king_b);
+                cap_n = 1;
+            } else {
+                match board.get_piece_at_square(mv.target_square()) {
+                    Some(cap) => {
+                        let cap_slot_w = halfkav2_piece_slot(cap.piece_type(), cap.is_white());
+                        let cap_slot_b = halfkav2_piece_slot(cap.piece_type(), !cap.is_white());
+                        w_cap[0] = halfkav2_feature_idx(cap_slot_w, w_sq(to_sq), king_w);
+                        b_cap[0] = halfkav2_feature_idx(cap_slot_b, b_sq(to_sq), king_b);
+                        cap_n = 1;
+                    }
+                    None => cap_n = 0,
+                }
+            }
+
+            crate::neural_eval::acc_apply_deltas(acc_w, &[w_sub_pre], &[w_add], &w_cap[..cap_n]);
+            crate::neural_eval::acc_apply_deltas(acc_b, &[b_sub_pre], &[b_add], &b_cap[..cap_n]);
+        } else {
+            // ── HalfKP incremental path ───────────────────────────────────────
+            let wk_bucket = crate::neural_eval::KING_BUCKET[wk_sq.min(63)];
+            let bk_bucket = crate::neural_eval::KING_BUCKET[bk_flipped.min(63)];
+
+            let slot_w = halfkp_piece_slot(orig_pt, piece_is_white);
+            let slot_b = halfkp_piece_slot(orig_pt, !piece_is_white);
+            let w_sub_pre = halfkp_feature_idx(slot_w, w_sq(from_sq), wk_bucket);
+            let b_sub_pre = halfkp_feature_idx(slot_b, b_sq(from_sq), bk_bucket);
+
+            let to_slot_w = halfkp_piece_slot(to_pt, piece_is_white);
+            let to_slot_b = halfkp_piece_slot(to_pt, !piece_is_white);
+            let w_add = halfkp_feature_idx(to_slot_w, w_sq(to_sq), wk_bucket);
+            let b_add = halfkp_feature_idx(to_slot_b, b_sq(to_sq), bk_bucket);
+
+            if mv.has_flag(ChessMove::EN_PASSANT_CAPTURE_FLAG) {
+                let cap_sq = if piece_is_white { to_sq.wrapping_sub(8) } else { to_sq + 8 };
+                w_cap[0] = halfkp_feature_idx(halfkp_piece_slot(PieceType::Pawn, !piece_is_white), w_sq(cap_sq), wk_bucket);
+                b_cap[0] = halfkp_feature_idx(halfkp_piece_slot(PieceType::Pawn,  piece_is_white), b_sq(cap_sq), bk_bucket);
+                cap_n = 1;
+            } else {
+                match board.get_piece_at_square(mv.target_square()) {
+                    Some(cap) => {
+                        let cap_slot_w = halfkp_piece_slot(cap.piece_type(), cap.is_white());
+                        let cap_slot_b = halfkp_piece_slot(cap.piece_type(), !cap.is_white());
+                        w_cap[0] = halfkp_feature_idx(cap_slot_w, w_sq(to_sq), wk_bucket);
+                        b_cap[0] = halfkp_feature_idx(cap_slot_b, b_sq(to_sq), bk_bucket);
+                        cap_n = 1;
+                    }
+                    None => cap_n = 0,
+                }
+            }
+
+            crate::neural_eval::acc_apply_deltas(acc_w, &[w_sub_pre], &[w_add], &w_cap[..cap_n]);
+            crate::neural_eval::acc_apply_deltas(acc_b, &[b_sub_pre], &[b_add], &b_cap[..cap_n]);
+        }
 
         false // no full recompute needed
     }

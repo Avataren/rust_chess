@@ -1,0 +1,60 @@
+seed: 137
+
+training:
+  batch_size: 32768
+  epochs: 102        # 17 shards × 6 full passes = 102 mini-epochs
+  lr: 0.001
+  warmup_epochs: 17  # 1 full pass warmup (gentle ramp up while model learns the distribution)
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  workers: 8
+  pin_memory: true
+  amp: true
+  persistent_workers: true
+  prefetch_factor: 4
+  sharded_gpu: true   # load one shard per mini-epoch (~15M pos ≈ 2 GB VRAM), val uses DataLoader
+  reset_best_val: true
+
+model:
+  feature_encoding: halfkav2   # HalfKAv2: 11 slots × 64 × 64 = 45,056 features
+  input_dim: 45056
+  hidden_dim: 1024
+  hidden2_dim: 256
+  dropout: 0.05
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  # 17 shards of ~15M positions (depth >= 20) from Lichess/chess-position-evaluations.
+  # NOTE: data/all_69m binary files are HalfKP-encoded — do NOT add them to train_shards
+  # without first re-encoding to HalfKAv2 via download_lichess_hf.py or preprocess_dataset.py.
+  # The JSONL (all_69m.jsonl) can be used safely as val_file (encoded on-the-fly).
+  train_shards: data/lichess_hf/shards
+  val_file: data/all_69m/val_all_69m.jsonl
+  max_cp_abs: 800
+
+export:
+  output_path: artifacts/eval.onnx
+# From-scratch training on the Lichess/chess-position-evaluations dataset.
+# 17 shards, each loaded to GPU one at a time to stay within 24 GB VRAM.
+# One "epoch" = one shard mini-epoch (~15M positions, ~460 batches).
+# 102 epochs = 6 full passes over all 17 shards ≈ 1.5B positions seen.
+# Beyond 6 passes the model memorises specific position-eval pairs rather than
+# generalising; 5-6 passes is the sweet spot for high-quality depth≥20 data.
+#
+# Training command (from nn_training/):
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config configs/halfkp_1024_256_lichess_sharded.yaml \
+#     --out artifacts/checkpoint_lichess.pt \
+#     --tb-logdir runs/1024x256_lichess_sharded
+#
+# To resume a crash:
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config configs/halfkp_1024_256_lichess_sharded.yaml \
+#     --resume artifacts/checkpoint_lichess_latest.pt \
+#     --out artifacts/checkpoint_lichess.pt \
+#     --tb-logdir runs/1024x256_lichess_sharded
