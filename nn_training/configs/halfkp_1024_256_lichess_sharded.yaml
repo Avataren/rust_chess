@@ -2,9 +2,9 @@ seed: 137
 
 training:
   batch_size: 32768
-  epochs: 108        # 18 shards × 6 full passes = 108 mini-epochs
+  epochs: 102        # 17 shards × 6 full passes = 102 mini-epochs
   lr: 0.001
-  warmup_epochs: 18  # 1 full pass warmup (gentle ramp up while model learns the distribution)
+  warmup_epochs: 17  # 1 full pass warmup (gentle ramp up while model learns the distribution)
   weight_decay: 0.0001
   grad_clip: 1.0
   workers: 8
@@ -13,6 +13,7 @@ training:
   persistent_workers: true
   prefetch_factor: 4
   sharded_gpu: true   # load one shard per mini-epoch (~15M pos ≈ 2 GB VRAM), val uses DataLoader
+  val_workers: 0      # ROCm: pin_memory + worker subprocesses causes GPU page faults; run val in main process
   reset_best_val: true
 
 model:
@@ -30,13 +31,11 @@ loss:
 
 data:
   # 17 shards of ~15M positions (depth >= 20) from Lichess/chess-position-evaluations.
-  # 17 × 15M = 255M Lichess HF positions (HalfKAv2 binary, int32)
-  # + 1 × 67M =  67M existing Lichess positions (HalfKAv2 binary, int32)
-  # = 322M unique positions total; 18 shards per full pass
+  # 17 × 15M = 255M positions; 17 shards per full pass.
+  # all_69m excluded: depth-14 labels introduce noise into depth-20+ training signal.
   train_shards:
-    - data/lichess_hf/shards                 # directory → 17 shards (15M each)
-    - data/all_69m/train_all_69m             # explicit prefix → 1 shard (67M)
-  val_file: data/all_69m/val_all_69m.jsonl
+    - data/lichess_hf/shards                 # directory → 17 shards (15M each, depth ≥ 20)
+  val_file: data/lichess_hf/val_lichess.jsonl   # 2M positions carved from shard_16 (no .jsonl needed; binary auto-detected)
   max_cp_abs: 800
 
 export:

@@ -136,7 +136,7 @@ class BinaryDualPositionDataset(Dataset):
 
     def __getitem__(self, idx: int):
         count = int(self.counts[idx])
-        SENTINEL = HALFKP_FEATURE_DIM  # 24576
+        SENTINEL = HALFKAV2_FEATURE_DIM  # 45056 — must match model's padding_idx
 
         w_idx = np.full(32, SENTINEL, dtype=np.int64)
         b_idx = np.full(32, SENTINEL, dtype=np.int64)

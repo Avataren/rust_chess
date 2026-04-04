@@ -151,30 +151,35 @@ def sparse_to_dense(indices: torch.Tensor, feature_dim: int) -> torch.Tensor:
     return x
 
 
-def _forward_batch(model, batch, device, feature_dim):
-    """Run model forward pass, handling both single and dual perspective models."""
+def _forward_batch(model, batch, device, feature_dim, non_blocking=True):
+    """Run model forward pass, handling both single and dual perspective models.
+
+    non_blocking=False is required on ROCm when tensors are on CPU (val path):
+    ROCm does not guarantee the async H2D transfer is complete before the
+    subsequent kernel launch, causing GPU page faults.
+    """
     raw = model._orig_mod if hasattr(model, "_orig_mod") else model
     if isinstance(raw, EvalNetDual):
         x_white, x_black, piece_count, cp, wdl = _extract_dual_batch(batch)
-        x_white = x_white.to(device, non_blocking=True)
-        x_black = x_black.to(device, non_blocking=True)
-        piece_count = piece_count.to(device, non_blocking=True)
-        cp = cp.to(device, non_blocking=True)
-        wdl = wdl.to(device, non_blocking=True)
+        x_white = x_white.to(device, non_blocking=non_blocking)
+        x_black = x_black.to(device, non_blocking=non_blocking)
+        piece_count = piece_count.to(device, non_blocking=non_blocking)
+        cp = cp.to(device, non_blocking=non_blocking)
+        wdl = wdl.to(device, non_blocking=non_blocking)
         cp_pred, wdl_logits = model(x_white, x_black, piece_count)
     else:
         if len(batch) == 4:
             x, piece_count, cp, wdl = batch
-            piece_count = piece_count.to(device, non_blocking=True)
+            piece_count = piece_count.to(device, non_blocking=non_blocking)
         else:
             # JsonlPositionDataset: no piece_count — use placeholder (max bucket)
             x, cp, wdl = batch
             piece_count = torch.full((x.size(0), 1), 32, dtype=torch.int64, device=device)
-        x = x.to(device, non_blocking=True)
+        x = x.to(device, non_blocking=non_blocking)
         if x.dtype == torch.int64 and not model.sparse_input:
             x = sparse_to_dense(x, feature_dim)
-        cp = cp.to(device, non_blocking=True)
-        wdl = wdl.to(device, non_blocking=True)
+        cp = cp.to(device, non_blocking=non_blocking)
+        wdl = wdl.to(device, non_blocking=non_blocking)
         cp_pred, wdl_logits = model(x, piece_count)
     bucket = get_output_bucket(piece_count, (model._orig_mod if hasattr(model, "_orig_mod") else model).n_output_buckets).long().view(-1)
     return cp_pred, wdl_logits, cp, wdl, bucket
@@ -262,8 +267,10 @@ def eval_epoch(model, loader, device, cfg):
     eg_cp_mae_sum = 0.0
     eg_count = 0
 
+    amp_enabled = cfg["training"]["amp"] and device.type == "cuda"
     for batch in tqdm(loader, desc="val", leave=False, dynamic_ncols=True):
-        cp_pred, wdl_logits, cp, wdl, bucket = _forward_batch(model, batch, device, feature_dim)
+        with torch.autocast(device_type=device.type, enabled=amp_enabled):
+            cp_pred, wdl_logits, cp, wdl, bucket = _forward_batch(model, batch, device, feature_dim, non_blocking=False)
         wdl_idx = torch.argmax(wdl, dim=1)
         cp_loss = cp_loss_fn(cp_pred, cp)
         wdl_loss = soft_target_cross_entropy(wdl_logits, wdl)
@@ -361,25 +368,23 @@ def main():
             shuffle=True,
             feature_dim=cfg["model"]["input_dim"],
         )
-        # Val uses a standard DataLoader — doesn't need to fit in VRAM
+        # Val: preload to GPU (same path as training shards) to avoid ROCm CPU→GPU
+        # EmbeddingBag page faults. At 2M positions ~550 MB — negligible VRAM cost.
         val_paths = _get_data_paths(cfg["data"], "val")
-        val_ds = _load_multi_dataset(val_paths, cfg["data"]["max_cp_abs"], use_halfkp, dual=dual, use_halfkav2=use_halfkav2)
-        if len(val_ds) == 0:
-            raise ValueError("Validation dataset is empty.")
-        _val_workers = int(cfg["training"].get("val_workers", 4))
-        val_loader = DataLoader(
-            val_ds,
+        val_loader = GPUPreloadedDualDataset(
+            val_paths,
+            max_cp_abs=cfg["data"]["max_cp_abs"],
+            device=device,
             batch_size=cfg["training"]["batch_size"],
             shuffle=False,
-            num_workers=_val_workers,
-            pin_memory=cfg["training"]["pin_memory"],
-            persistent_workers=_val_workers > 0,
-            prefetch_factor=cfg["training"].get("prefetch_factor", 2) if _val_workers > 0 else None,
+            feature_dim=cfg["model"]["input_dim"],
         )
+        if val_loader.N == 0:
+            raise ValueError("Validation dataset is empty.")
         print(f"Sharded GPU: {len(train_loader.shard_prefixes)} shards  "
               f"{train_loader._total_N:,} train positions  "
               f"(~{len(train_loader)} batches/mini-epoch)  "
-              f"{len(val_ds):,} val  ({len(val_loader)} batches/epoch)")
+              f"{val_loader.N:,} val  ({len(val_loader)} batches/epoch)")
     elif preload_to_gpu:
         if cfg["training"].get("endgame_fraction"):
             print("Warning: preload_to_gpu=true ignores endgame_fraction (not supported together)")
@@ -557,6 +562,7 @@ def main():
         for epoch in range(start_epoch, cfg["training"]["epochs"] + 1):
             last_epoch = epoch
             tr = train_epoch(model, train_loader, optimizer, scaler, device, cfg)
+            torch.cuda.synchronize()  # ROCm: flush all pending ops before switching to eval
             va = eval_epoch(model, val_loader, device, cfg)
             scheduler.step()
 
