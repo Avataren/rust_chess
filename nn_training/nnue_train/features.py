@@ -268,8 +268,8 @@ def cp_to_wdl_target(cp: float, ply: int = 40) -> np.ndarray:
       - Defaults to ply=40 (early middlegame) when not known
     """
     a, b = _wdl_params(float(ply))
-    win  = 1.0 / (1.0 + np.exp(-(cp - b) / a))
-    loss = 1.0 / (1.0 + np.exp(-(-cp - b) / a))
+    win  = 1.0 / (1.0 + np.exp(np.clip(-(cp - b) / a, -500, 500)))
+    loss = 1.0 / (1.0 + np.exp(np.clip(-(-cp - b) / a, -500, 500)))
     draw = max(0.0, 1.0 - win - loss)
     return np.array([win, draw, loss], dtype=np.float32)
 
@@ -287,8 +287,8 @@ def cp_to_wdl_batch(cp: np.ndarray, ply: np.ndarray | None = None) -> np.ndarray
     else:
         ply_f = np.clip(np.asarray(ply, dtype=np.float32), 0.0, 240.0)
     a, b = _wdl_params(ply_f)
-    win  = 1.0 / (1.0 + np.exp(-(cp - b) / a))
-    loss = 1.0 / (1.0 + np.exp(-(-cp - b) / a))
+    win  = 1.0 / (1.0 + np.exp(np.clip(-(cp - b) / a, -500, 500)))
+    loss = 1.0 / (1.0 + np.exp(np.clip(-(-cp - b) / a, -500, 500)))
     draw = np.clip(1.0 - win - loss, 0.0, None)
     return np.stack([win, draw, loss], axis=1).astype(np.float32)
 
