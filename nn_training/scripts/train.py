@@ -67,7 +67,7 @@ def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool, dual: bool = Fals
         lim = f"  [:{max_positions:,}]" if max_positions else ""
         print(f"  Loading dual binary dataset: {prefix}.*{lim}")
         return BinaryDualPositionDataset(path, max_cp_abs=max_cp_abs, max_positions=max_positions)
-    if all(Path(prefix + ext).exists() for ext in (".indices.npy", ".counts.npy", ".cp.npy")):
+    if not dual and all(Path(prefix + ext).exists() for ext in (".indices.npy", ".counts.npy", ".cp.npy")):
         print(f"  Loading binary dataset: {prefix}.*")
         return BinaryPositionDataset(path, max_cp_abs=max_cp_abs, use_halfkp=use_halfkp)
     if dual:
