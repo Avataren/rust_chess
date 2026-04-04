@@ -15,9 +15,12 @@ Usage:
     PYTHONPATH=. python3 scripts/download_lichess_hf.py \
         --output data/lichess_hf \
         --min-depth 20 \
-        --max-per-shard 20000000 \
+        --max-per-shard 15000000 \
         --cp-clamp 3000 \
         --workers 8
+
+Merge is skipped by default (not needed for sharded_gpu training).
+Pass --merge to produce a single merged dataset (~34 GB RAM required).
 """
 from __future__ import annotations
 
@@ -196,8 +199,10 @@ def main():
                     help="Shard range to process, e.g. '0-16' or '0,1,2'")
     ap.add_argument("--keep-parquet",  action="store_true",
                     help="Don't delete Parquet files after conversion")
-    ap.add_argument("--skip-merge",    action="store_true",
-                    help="Don't merge shards at the end")
+    ap.add_argument("--merge",         action="store_true",
+                    help="Merge shards into a single dataset after encoding "
+                         "(requires ~34 GB RAM for 17×15M shards; not needed "
+                         "for sharded_gpu training which reads shards directly)")
     args = ap.parse_args()
 
     # Parse shard indices
@@ -271,8 +276,8 @@ def main():
     print(f"\n{'='*60}")
     print(f"All shards done. Total positions: {total_positions:,}")
 
-    if args.skip_merge:
-        print("Skipping merge (--skip-merge).")
+    if not args.merge:
+        print("Skipping merge (use --merge to produce a single merged dataset).")
         return
 
     # Collect shard prefixes that were actually written
