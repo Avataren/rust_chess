@@ -12,8 +12,8 @@ training:
 
 model:
   input_dim: 24576
-  hidden_dim: 768
-  hidden2_dim: 64
+  hidden_dim: 1024
+  hidden2_dim: 256
   dropout: 0.05
   dual_perspective: true
   n_output_buckets: 8

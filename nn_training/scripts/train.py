@@ -61,7 +61,7 @@ def load_dataset(path: str, max_cp_abs: int, use_halfkp: bool, dual: bool = Fals
     JSONL is used directly with HalfKAv2 encoding.
     """
     prefix = str(Path(path).with_suffix(""))
-    if dual and not use_halfkav2 and all(
+    if dual and all(
             Path(prefix + ext).exists()
             for ext in (".white_indices.npy", ".black_indices.npy", ".counts.npy", ".cp.npy")):
         lim = f"  [:{max_positions:,}]" if max_positions else ""

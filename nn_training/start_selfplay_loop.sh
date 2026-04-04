@@ -14,7 +14,7 @@ cd "$SCRIPT_DIR"
 PYTHONPATH=. python3 scripts/selfplay_loop.py \
   --engine              "$BIN_DIR/chess_uci" \
   --stockfish           /usr/bin/stockfish \
-  --initial-checkpoint  artifacts/best_checkpoint.pt \
+  --initial-checkpoint  artifacts/checkpoint_ph4_latest.pt \
   --puzzle-binary       "$BIN_DIR/puzzle_bench" \
   --puzzle-file         "$REPO_DIR/lichess_db_puzzle.csv.zst" \
   --selfplay-binary     "$BIN_DIR/self_play" \
