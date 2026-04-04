@@ -26,8 +26,9 @@ from tqdm import tqdm
 import sys, os
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from nnue_train.features import (
-    HALFKP_FEATURE_DIM, FEATURE_DIM,
+    HALFKP_FEATURE_DIM, HALFKAV2_FEATURE_DIM, FEATURE_DIM,
     encode_board_halfkp, encode_board_12x64, encode_board_halfkp_dual,
+    encode_board_halfkav2_dual,
 )
 
 MAX_ACTIVE = 32  # maximum active features per position
@@ -54,6 +55,9 @@ def main():
     ap.add_argument("--dual", action="store_true", default=False,
                     help="Generate dual-perspective files (white_indices + black_indices). "
                          "CP values are converted to white-absolute convention.")
+    ap.add_argument("--halfkav2", action="store_true", default=False,
+                    help="Use HalfKAv2 features (45,056-dim) instead of HalfKP (24,576-dim). "
+                         "Requires --dual. Indices saved as int32.")
     args = ap.parse_args()
 
     input_path = Path(args.input)
@@ -65,7 +69,10 @@ def main():
     print(f"  {N:,} positions")
 
     if args.dual:
-        print(f"  mode=dual (white-absolute cp, two perspective files)")
+        if args.halfkav2:
+            print(f"  mode=dual+halfkav2 (45,056-dim, white-absolute cp, int32 indices)")
+        else:
+            print(f"  mode=dual (24,576-dim halfkp, white-absolute cp)")
     else:
         feature_dim = HALFKP_FEATURE_DIM if args.use_halfkp else FEATURE_DIM
         encode_fn = encode_board_halfkp if args.use_halfkp else encode_board_12x64
@@ -76,13 +83,17 @@ def main():
     piece_count_path = str(out_prefix) + ".piece_count.npy"
 
     if args.dual:
+        # HalfKAv2 indices reach 45,055 which exceeds uint16 max... wait, uint16 goes
+        # to 65,535 so it fits, but int16 does NOT. Use int32 for HalfKAv2 to be safe
+        # and consistent with download_lichess_hf.py output.
+        idx_dtype = np.int32 if args.halfkav2 else np.uint16
         white_indices_path = str(out_prefix) + ".white_indices.npy"
         black_indices_path = str(out_prefix) + ".black_indices.npy"
         white_indices_arr = np.lib.format.open_memmap(
-            white_indices_path, mode="w+", dtype=np.uint16, shape=(N, MAX_ACTIVE)
+            white_indices_path, mode="w+", dtype=idx_dtype, shape=(N, MAX_ACTIVE)
         )
         black_indices_arr = np.lib.format.open_memmap(
-            black_indices_path, mode="w+", dtype=np.uint16, shape=(N, MAX_ACTIVE)
+            black_indices_path, mode="w+", dtype=idx_dtype, shape=(N, MAX_ACTIVE)
         )
     else:
         indices_path = str(out_prefix) + ".indices.npy"
@@ -118,11 +129,16 @@ def main():
                     cp = -cp
                 cp_arr[i] = cp
 
-                w_arr, b_arr = encode_board_halfkp_dual(board)
-                count = min(int(board.piece_map().__len__()), MAX_ACTIVE)
+                if args.halfkav2:
+                    w_arr, b_arr = encode_board_halfkav2_dual(board)
+                    # HalfKAv2: own king excluded → count = pieces - 1
+                    count = min(max(0, len(board.piece_map()) - 1), MAX_ACTIVE)
+                else:
+                    w_arr, b_arr = encode_board_halfkp_dual(board)
+                    count = min(len(board.piece_map()), MAX_ACTIVE)
                 counts_arr[i] = count
-                white_indices_arr[i, :count] = w_arr[:count].astype(np.uint16)
-                black_indices_arr[i, :count] = b_arr[:count].astype(np.uint16)
+                white_indices_arr[i, :count] = w_arr[:count].astype(idx_dtype)
+                black_indices_arr[i, :count] = b_arr[:count].astype(idx_dtype)
             else:
                 cp_arr[i] = cp
                 x = encode_fn(board)

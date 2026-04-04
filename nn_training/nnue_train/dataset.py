@@ -165,8 +165,8 @@ class GPUPreloadedDualDataset:
     from GPU tensors with zero CPU→GPU transfer per batch. Best used when GPU
     utilization is low and VRAM is available (model is too small to saturate GPU).
 
-    Memory: ~136 bytes/position  (indices×2 as int16, cp/wdl/pc as float32/int64).
-    Example: 77M positions ≈ 10.5 GB VRAM.
+    Memory: ~200 bytes/position  (indices×2 as int32, cp/wdl/pc as float32/int64).
+    Example: 77M positions ≈ 15.4 GB VRAM.
 
     Drop-in replacement for DataLoader: supports len() and __iter__,
     yielding (w_idx, b_idx, piece_count, cp, wdl) tuples with all tensors on GPU.
@@ -179,6 +179,7 @@ class GPUPreloadedDualDataset:
         device: torch.device,
         batch_size: int,
         shuffle: bool = True,
+        feature_dim: int = HALFKP_FEATURE_DIM,
     ):
         # Normalise path to list of (path_str, max_n_or_None) tuples.
         if isinstance(path, str):
@@ -191,7 +192,7 @@ class GPUPreloadedDualDataset:
                 else:
                     path_specs.append(tuple(entry))  # (path, max_n)
 
-        SENTINEL = HALFKP_FEATURE_DIM  # 24576 — fits in int16 (max 32767)
+        SENTINEL = feature_dim  # padding value; must match model's padding_idx
 
         all_white, all_black, all_counts, all_cp_raw, all_pc = [], [], [], [], []
         for p, max_n in path_specs:
@@ -221,15 +222,24 @@ class GPUPreloadedDualDataset:
 
         N = len(cp_raw_np)
 
-        # Materialise mmap → RAM as int16 (uint16 values ≤24576 all fit in int16)
-        white_arr = white_np.astype(np.int16)
-        black_arr = black_np.astype(np.int16)
+        # Materialise mmap → RAM as int32.
+        # Files saved by download_lichess_hf.py use int16 storage for compactness,
+        # but HalfKAv2 indices reach 45,055 which exceeds int16 max (32,767).
+        # The values were originally uint16; viewing as uint16 recovers the original
+        # values before casting to int32. HalfKP values (≤24,576) are unaffected.
+        def _load_indices(arr: np.ndarray) -> np.ndarray:
+            if arr.dtype == np.int16:
+                return arr.view(np.uint16).astype(np.int32)
+            return arr.astype(np.int32)
+
+        white_arr  = _load_indices(white_np)
+        black_arr  = _load_indices(black_np)
         counts_arr = counts_np.astype(np.int32)
 
         # Fill padding slots (positions ≥ count) with SENTINEL column by column.
         # preprocess_dataset.py zero-initialises the npy arrays, so unused slots
         # contain 0 — a valid feature index.  We must overwrite them with SENTINEL
-        # so EmbeddingBag (padding_idx=HALFKP_FEATURE_DIM) ignores them correctly.
+        # so EmbeddingBag (padding_idx=feature_dim) ignores them correctly.
         for j in range(32):
             mask = counts_arr <= j  # (N,) bool — rows where column j is padding
             if mask.any():
@@ -245,8 +255,8 @@ class GPUPreloadedDualDataset:
 
         # Transfer to GPU
         print(f"  Transferring {N:,} positions to GPU...", flush=True)
-        self.white_idx = torch.from_numpy(white_arr).to(device)                             # (N, 32) int16
-        self.black_idx = torch.from_numpy(black_arr).to(device)                             # (N, 32) int16
+        self.white_idx = torch.from_numpy(white_arr).to(device)                             # (N, 32) int32
+        self.black_idx = torch.from_numpy(black_arr).to(device)                             # (N, 32) int32
         self.cp  = torch.from_numpy(cp_clipped).unsqueeze(1).to(device)                     # (N, 1)  float32
         self.wdl = torch.from_numpy(wdl_np).to(device)                                     # (N, 3)  float32
         self.pc  = torch.from_numpy(np.asarray(pc_np, dtype=np.int64)).unsqueeze(1).to(device)  # (N, 1) int64
@@ -312,6 +322,7 @@ class ShardedGPUDataset:
         device: torch.device,
         batch_size: int,
         shuffle: bool = True,
+        feature_dim: int = HALFKP_FEATURE_DIM,
     ):
         if isinstance(shard_dirs, str):
             shard_dirs = [shard_dirs]
@@ -334,6 +345,7 @@ class ShardedGPUDataset:
         self.device = device
         self.batch_size = batch_size
         self.shuffle = shuffle
+        self.feature_dim = feature_dim
 
         # Count total positions across all shards for reporting
         shard_sizes = [len(np.load(p + ".cp.npy", mmap_mode="r"))
@@ -379,6 +391,7 @@ class ShardedGPUDataset:
             device=self.device,
             batch_size=self.batch_size,
             shuffle=self.shuffle,
+            feature_dim=self.feature_dim,
         )
         yield from gpu_shard
 

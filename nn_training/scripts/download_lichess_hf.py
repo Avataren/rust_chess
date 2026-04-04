@@ -70,7 +70,7 @@ def _encode_position(fen: str, cp_stm: float, cp_clamp: float):
     cp_white = float(cp_stm) * sign
     cp_white = float(np.clip(cp_white, -cp_clamp, cp_clamp))
 
-    return w.astype(np.int16), b.astype(np.int16), n_pieces, cp_white, n_pieces
+    return w.astype(np.int32), b.astype(np.int32), n_pieces, cp_white, n_pieces
 
 
 _CP_CLAMP_GLOBAL: float = 3000.0  # set before spawning workers
@@ -145,8 +145,8 @@ def process_shard(
             results = [r for r in pool.map(_encode_row, chunk, chunksize=2048) if r is not None]
             if not results:
                 continue
-            white_parts.append(np.array([r[0] for r in results], dtype=np.int16))
-            black_parts.append(np.array([r[1] for r in results], dtype=np.int16))
+            white_parts.append(np.array([r[0] for r in results], dtype=np.int32))
+            black_parts.append(np.array([r[1] for r in results], dtype=np.int32))
             counts_parts.append(np.array([r[2] for r in results], dtype=np.uint8))
             cp_parts.append(np.array([r[3] for r in results], dtype=np.float32))
             pc_parts.append(np.array([r[4] for r in results], dtype=np.uint8))

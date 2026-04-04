@@ -359,6 +359,7 @@ def main():
             device=device,
             batch_size=cfg["training"]["batch_size"],
             shuffle=True,
+            feature_dim=cfg["model"]["input_dim"],
         )
         # Val uses a standard DataLoader — doesn't need to fit in VRAM
         val_paths = _get_data_paths(cfg["data"], "val")

@@ -30,9 +30,15 @@ loss:
 
 data:
   # 17 shards of ~15M positions (depth >= 20) from Lichess/chess-position-evaluations.
-  # NOTE: data/all_69m binary files are HalfKP-encoded — do NOT add them to train_shards
-  # without first re-encoding to HalfKAv2 via download_lichess_hf.py or preprocess_dataset.py.
-  # The JSONL (all_69m.jsonl) can be used safely as val_file (encoded on-the-fly).
+  # After re-encoding the 69M set to HalfKAv2, uncomment the list form below:
+  # train_shards:
+  #   - data/lichess_hf/shards       # 17 × 15M = 255M positions
+  #   - data/all_69m                 # 1 × 67M  =  67M positions (re-encoded)
+  # Re-encode with:
+  #   PYTHONPATH=. .venv/bin/python3 scripts/preprocess_dataset.py \
+  #     --input data/all_69m/train_all_69m.jsonl \
+  #     --output data/all_69m/train_all_69m \
+  #     --dual --halfkav2
   train_shards: data/lichess_hf/shards
   val_file: data/all_69m/val_all_69m.jsonl
   max_cp_abs: 800
