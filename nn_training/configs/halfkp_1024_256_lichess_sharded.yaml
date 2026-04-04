@@ -2,9 +2,9 @@ seed: 137
 
 training:
   batch_size: 32768
-  epochs: 102        # 17 shards × 6 full passes = 102 mini-epochs
+  epochs: 108        # 18 shards × 6 full passes = 108 mini-epochs
   lr: 0.001
-  warmup_epochs: 17  # 1 full pass warmup (gentle ramp up while model learns the distribution)
+  warmup_epochs: 18  # 1 full pass warmup (gentle ramp up while model learns the distribution)
   weight_decay: 0.0001
   grad_clip: 1.0
   workers: 8
@@ -30,16 +30,12 @@ loss:
 
 data:
   # 17 shards of ~15M positions (depth >= 20) from Lichess/chess-position-evaluations.
-  # After re-encoding the 69M set to HalfKAv2, uncomment the list form below:
-  # train_shards:
-  #   - data/lichess_hf/shards       # 17 × 15M = 255M positions
-  #   - data/all_69m                 # 1 × 67M  =  67M positions (re-encoded)
-  # Re-encode with:
-  #   PYTHONPATH=. .venv/bin/python3 scripts/preprocess_dataset.py \
-  #     --input data/all_69m/train_all_69m.jsonl \
-  #     --output data/all_69m/train_all_69m \
-  #     --dual --halfkav2
-  train_shards: data/lichess_hf/shards
+  # 17 × 15M = 255M Lichess HF positions (HalfKAv2 binary, int32)
+  # + 1 × 67M =  67M existing Lichess positions (HalfKAv2 binary, int32)
+  # = 322M unique positions total; 18 shards per full pass
+  train_shards:
+    - data/lichess_hf/shards                 # directory → 17 shards (15M each)
+    - data/all_69m/train_all_69m             # explicit prefix → 1 shard (67M)
   val_file: data/all_69m/val_all_69m.jsonl
   max_cp_abs: 800
 
@@ -48,7 +44,7 @@ export:
 # From-scratch training on the Lichess/chess-position-evaluations dataset.
 # 17 shards, each loaded to GPU one at a time to stay within 24 GB VRAM.
 # One "epoch" = one shard mini-epoch (~15M positions, ~460 batches).
-# 102 epochs = 6 full passes over all 17 shards ≈ 1.5B positions seen.
+# 108 epochs = 6 full passes over 18 shards (255M Lichess HF + 67M existing = 322M).
 # Beyond 6 passes the model memorises specific position-eval pairs rather than
 # generalising; 5-6 passes is the sweet spot for high-quality depth≥20 data.
 #

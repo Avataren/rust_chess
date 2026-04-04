@@ -327,10 +327,18 @@ class ShardedGPUDataset:
         if isinstance(shard_dirs, str):
             shard_dirs = [shard_dirs]
 
-        # Discover all shard prefixes by looking for *.cp.npy files in each dir
+        # Discover all shard prefixes.
+        # Each entry can be a directory (glob for *.cp.npy) or a file prefix
+        # (e.g. "data/all_69m/train_all_69m" → single shard, avoids picking up val files).
         self.shard_prefixes: list[str] = []
         for d in shard_dirs:
-            cp_files = sorted(Path(d).glob("*.cp.npy"))
+            p = Path(d)
+            if p.is_dir():
+                cp_files = sorted(p.glob("*.cp.npy"))
+            elif Path(str(p) + ".cp.npy").exists():
+                cp_files = [Path(str(p) + ".cp.npy")]  # explicit prefix
+            else:
+                raise ValueError(f"Shard path not found as directory or prefix: {d}")
             for cp_file in cp_files:
                 prefix = str(cp_file).replace(".cp.npy", "")
                 wi = Path(prefix + ".white_indices.npy")
