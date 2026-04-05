@@ -194,47 +194,57 @@ class GPUPreloadedDualDataset:
 
         SENTINEL = feature_dim  # padding value; must match model's padding_idx
 
-        all_white, all_black, all_counts, all_cp_raw, all_pc = [], [], [], [], []
+        # ── Pass 1: measure total N and collect small arrays ──────────────────
+        # Index arrays (white/black) are loaded via a preallocated int32 buffer
+        # filled shard-by-shard.  This avoids keeping both the original-dtype
+        # concatenated array AND the int32 conversion in RAM simultaneously,
+        # which would peak at ~17 GB for 3×15M shards (2.88 GB mmap copy +
+        # 5.76 GB int32 copy, ×2 for white+black).  With preallocated buffers
+        # the peak is ~11.5 GB (only the two int32 buffers coexist).
+        shard_ns: list[int] = []
+        all_counts, all_cp_raw, all_pc = [], [], []
         for p, max_n in path_specs:
             prefix = str(Path(p).with_suffix(""))
             print(f"  GPU preload: {Path(p).name}" +
                   (f"  [:{max_n:,}]" if max_n else "") + f" → {device}")
 
-            w_np  = np.load(prefix + ".white_indices.npy", mmap_mode="r")
-            b_np  = np.load(prefix + ".black_indices.npy", mmap_mode="r")
-            c_np  = np.load(prefix + ".counts.npy",        mmap_mode="r")
-            cp_np = np.load(prefix + ".cp.npy",            mmap_mode="r")
+            c_np  = np.load(prefix + ".counts.npy", mmap_mode="r")
+            cp_np = np.load(prefix + ".cp.npy",     mmap_mode="r")
             pc_path = prefix + ".piece_count.npy"
             pc_np = np.load(pc_path, mmap_mode="r") if Path(pc_path).exists() else c_np
 
-            if max_n is not None:
-                w_np  = w_np[:max_n];  b_np = b_np[:max_n]
-                c_np  = c_np[:max_n];  cp_np = cp_np[:max_n]; pc_np = pc_np[:max_n]
+            n = max_n if max_n is not None else len(cp_np)
+            shard_ns.append(n)
+            all_counts.append(c_np[:n])
+            all_cp_raw.append(cp_np[:n])
+            all_pc.append(pc_np[:n])
 
-            all_white.append(w_np);  all_black.append(b_np)
-            all_counts.append(c_np); all_cp_raw.append(cp_np); all_pc.append(pc_np)
-
-        white_np  = np.concatenate(all_white,  axis=0) if len(all_white)  > 1 else all_white[0]
-        black_np  = np.concatenate(all_black,  axis=0) if len(all_black)  > 1 else all_black[0]
+        N = sum(shard_ns)
         counts_np = np.concatenate(all_counts, axis=0) if len(all_counts) > 1 else all_counts[0]
         cp_raw_np = np.concatenate(all_cp_raw, axis=0) if len(all_cp_raw) > 1 else all_cp_raw[0]
         pc_np     = np.concatenate(all_pc,     axis=0) if len(all_pc)     > 1 else all_pc[0]
+        del all_counts, all_cp_raw, all_pc
 
-        N = len(cp_raw_np)
-
-        # Materialise mmap → RAM as int32.
+        # ── Pass 2: preallocate int32 index buffers; fill shard-by-shard ──────
         # Files saved by download_lichess_hf.py use int16 storage for compactness,
         # but HalfKAv2 indices reach 45,055 which exceeds int16 max (32,767).
-        # The values were originally uint16; viewing as uint16 recovers the original
-        # values before casting to int32. HalfKP values (≤24,576) are unaffected.
-        def _load_indices(arr: np.ndarray) -> np.ndarray:
-            if arr.dtype == np.int16:
-                return arr.view(np.uint16).astype(np.int32)
-            return arr.astype(np.int32)
+        # The values were originally uint16; viewing as uint16 recovers them.
+        def _copy_indices(arr: np.ndarray, out: np.ndarray, row: int, n: int) -> None:
+            src = arr[:n]
+            if src.dtype == np.int16:
+                out[row:row + n] = src.view(np.uint16)   # reinterpret bits, widen in-place
+            else:
+                out[row:row + n] = src                   # already int32/uint32
 
-        white_arr  = _load_indices(white_np)
-        black_arr  = _load_indices(black_np)
+        white_arr  = np.empty((N, 32), dtype=np.int32)
+        black_arr  = np.empty((N, 32), dtype=np.int32)
         counts_arr = counts_np.astype(np.int32)
+        row = 0
+        for (p, max_n), n in zip(path_specs, shard_ns):
+            prefix = str(Path(p).with_suffix(""))
+            _copy_indices(np.load(prefix + ".white_indices.npy", mmap_mode="r"), white_arr, row, n)
+            _copy_indices(np.load(prefix + ".black_indices.npy", mmap_mode="r"), black_arr, row, n)
+            row += n
 
         # Fill padding slots (positions ≥ count) with SENTINEL column by column.
         # preprocess_dataset.py zero-initialises the npy arrays, so unused slots
@@ -246,20 +256,21 @@ class GPUPreloadedDualDataset:
                 white_arr[mask, j] = SENTINEL
                 black_arr[mask, j] = SENTINEL
 
-        # Precompute WDL targets and clip cp
-        cp_raw = np.asarray(cp_raw_np, dtype=np.float32)
+        # Precompute WDL targets and clip cp; free source arrays immediately after use
+        cp_raw = np.asarray(cp_raw_np, dtype=np.float32); del cp_raw_np
         cp_clipped = np.clip(cp_raw, -max_cp_abs, max_cp_abs)
-        # Ply proxy from piece count: (32 - n_pieces) * 4, clamped to [0, 240]
-        ply_est = np.clip((32 - pc_np.astype(np.float32)) * 4, 0.0, 240.0)
-        wdl_np = cp_to_wdl_batch(cp_raw, ply=ply_est)  # (N, 3) float32
+        pc_i64 = pc_np.astype(np.int64); del pc_np                              # (N,) int64
+        ply_est = np.clip((32 - pc_i64.astype(np.float32)) * 4, 0.0, 240.0)
+        wdl_np = cp_to_wdl_batch(cp_raw, ply=ply_est)
+        del cp_raw, ply_est, counts_np, counts_arr
 
-        # Transfer to GPU
+        # Transfer to GPU; numpy buffers are freed by CPython refcount after each line
         print(f"  Transferring {N:,} positions to GPU...", flush=True)
-        self.white_idx = torch.from_numpy(white_arr).to(device)                             # (N, 32) int32
-        self.black_idx = torch.from_numpy(black_arr).to(device)                             # (N, 32) int32
-        self.cp  = torch.from_numpy(cp_clipped).unsqueeze(1).to(device)                     # (N, 1)  float32
-        self.wdl = torch.from_numpy(wdl_np).to(device)                                     # (N, 3)  float32
-        self.pc  = torch.from_numpy(np.asarray(pc_np, dtype=np.int64)).unsqueeze(1).to(device)  # (N, 1) int64
+        self.white_idx = torch.from_numpy(white_arr).to(device); del white_arr  # (N, 32) int32
+        self.black_idx = torch.from_numpy(black_arr).to(device); del black_arr  # (N, 32) int32
+        self.cp  = torch.from_numpy(cp_clipped).unsqueeze(1).to(device); del cp_clipped  # (N,1) f32
+        self.wdl = torch.from_numpy(wdl_np).to(device); del wdl_np               # (N, 3) f32
+        self.pc  = torch.from_numpy(pc_i64).unsqueeze(1).to(device); del pc_i64  # (N,1) int64
 
         self.N = N
         self.batch_size = batch_size
