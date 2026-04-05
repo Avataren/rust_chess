@@ -133,7 +133,9 @@ def _load_multi_dataset(paths: list[tuple[str, int | None]], max_cp_abs: int,
 
 
 def soft_target_cross_entropy(logits: torch.Tensor, target_probs: torch.Tensor) -> torch.Tensor:
-    log_probs = torch.log_softmax(logits, dim=1)
+    # Clamp prevents log(0)=-inf when softmax underflows to 0 in float32 for
+    # extreme logit differences (e.g. clearly won/lost positions in the endgame).
+    log_probs = torch.log_softmax(logits, dim=1).clamp(min=-100.0)
     return -(target_probs * log_probs).sum(dim=1).mean()
 
 
@@ -522,6 +524,7 @@ def main():
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
     best_val = float("inf")
+    best_val_cp_mae = float("inf")  # used for best-checkpoint selection
     start_epoch = 1
     last_epoch = start_epoch - 1  # tracks last completed epoch for finally-block save
     if args.resume:
@@ -541,8 +544,9 @@ def main():
             if "scaler_state" in ck:
                 scaler.load_state_dict(ck["scaler_state"])
             best_val = ck.get("val_loss", float("inf"))
+            best_val_cp_mae = ck.get("val_cp_mae", float("inf"))
             start_epoch = ck.get("epoch", 0) + 1
-            print(f"Resumed from {args.resume}  (val_loss={best_val:.4f}, next epoch={start_epoch})")
+            print(f"Resumed from {args.resume}  (val_loss={best_val:.4f}, val_cp_mae={best_val_cp_mae:.2f}, next epoch={start_epoch})")
 
     if cfg["training"].get("compile", False):
         print("Compiling model with torch.compile...")
@@ -618,10 +622,14 @@ def main():
             torch.save(ckpt, latest_path)
             print(f"saved latest: {latest_path}  (epoch={epoch})")
 
-            if va["loss"] < best_val:
+            # Gate on val_cp_mae, not val_loss: val_loss uses WDL cross-entropy
+            # which can be inf when softmax underflows for extreme positions, making
+            # it an unreliable gating signal.  val_cp_mae is always finite.
+            if va["cp_mae"] < best_val_cp_mae:
+                best_val_cp_mae = va["cp_mae"]
                 best_val = va["loss"]
                 torch.save(ckpt, out_path)
-                print(f"saved checkpoint (best val): {out_path}")
+                print(f"saved checkpoint (best val_cp_mae={best_val_cp_mae:.2f}): {out_path}")
     finally:
         # Save on natural completion or Ctrl+C — never lose a finished epoch
         try:

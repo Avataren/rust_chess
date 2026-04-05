@@ -44,11 +44,14 @@ class EvalNetDual(nn.Module):
         self.embedding = nn.EmbeddingBag(
             input_dim + 1, hidden_dim, mode="sum", padding_idx=input_dim
         )
-        # Small init: with ~32 active features summed, default uniform[-1,1] produces
-        # pre-activation magnitudes of ~32*0.5=16, saturating SCReLU hard.
-        # Scaling down ensures most neurons start in the active SCReLU region [0,1].
+        # Small init: with ~20 active features and weights in [-0.1, 0.1],
+        # the pre-activation sum ~ N(0, 0.45).  A zero bias leaves 50% of neurons
+        # dead (pre-act < 0) from the start, and SCReLU's gradient 2x → 0 near
+        # zero means they never recover.  Initialising bias1=0.5 shifts the
+        # distribution to N(0.5, 0.45), putting ~74% of neurons in the active [0,1]
+        # SCReLU region and maintaining healthy gradient flow throughout training.
         nn.init.uniform_(self.embedding.weight, -0.1, 0.1)
-        self.bias1 = nn.Parameter(torch.zeros(hidden_dim))
+        self.bias1 = nn.Parameter(torch.full((hidden_dim,), 0.5))
         self.dropout = nn.Dropout(dropout)
         self.fc2 = nn.Linear(hidden_dim * 2, hidden2_dim)
         # Bucketed output heads: one row per bucket
