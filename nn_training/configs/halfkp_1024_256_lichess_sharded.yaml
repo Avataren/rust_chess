@@ -2,7 +2,7 @@ seed: 137
 
 training:
   batch_size: 32768
-  epochs: 102        # 17 shards × 6 full passes = 102 mini-epochs
+  epochs: 170        # 17 shards × 10 full passes = 170 mini-epochs (green run showed improvement still at epoch 100)
   lr: 0.001
   warmup_epochs: 17  # 1 full pass warmup (gentle ramp up while model learns the distribution)
   weight_decay: 0.0001
