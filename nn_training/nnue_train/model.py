@@ -54,6 +54,10 @@ class EvalNetDual(nn.Module):
         self.bias1 = nn.Parameter(torch.full((hidden_dim,), 0.5))
         self.dropout = nn.Dropout(dropout)
         self.fc2 = nn.Linear(hidden_dim * 2, hidden2_dim)
+        # Same dying-neuron issue as bias1: fc2 input is ~N(0.35, 0.61) after layer 1,
+        # so with default zero bias ~50% of the 256 fc2 neurons start dead under SCReLU.
+        # bias=0.5 shifts pre-activation to N(0.5, 0.61) → ~58% of neurons active.
+        nn.init.constant_(self.fc2.bias, 0.5)
         # Bucketed output heads: one row per bucket
         self.cp_head = nn.Linear(hidden2_dim, n_output_buckets)
         self.wdl_head = nn.Linear(hidden2_dim, n_output_buckets * 3)
