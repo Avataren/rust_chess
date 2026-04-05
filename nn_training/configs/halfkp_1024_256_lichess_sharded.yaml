@@ -20,7 +20,7 @@ model:
   feature_encoding: halfkav2   # HalfKAv2: 11 slots × 64 × 64 = 45,056 features
   input_dim: 45056
   hidden_dim: 1024
-  hidden2_dim: 256
+  hidden2_dim: 64
   dropout: 0.05
   dual_perspective: true
   n_output_buckets: 8
