@@ -2,9 +2,10 @@ seed: 137
 
 training:
   batch_size: 32768
-  epochs: 170        # 17 shards × 10 full passes = 170 mini-epochs (green run showed improvement still at epoch 100)
+  epochs: 90         # 17 shards / 2 per epoch = 8.5 mini-epochs/pass; 90 ≈ 10.6 full passes
   lr: 0.001
-  warmup_epochs: 17  # 1 full pass warmup (gentle ramp up while model learns the distribution)
+  warmup_epochs: 9   # ≈1 full pass warmup (17 shards / 2 per epoch)
+  shards_per_epoch: 2  # load 2 shards per epoch (~30M positions); reduces shard-switching oscillation
   weight_decay: 0.0001
   grad_clip: 1.0
   workers: 8

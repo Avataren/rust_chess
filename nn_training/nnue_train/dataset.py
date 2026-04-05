@@ -323,6 +323,7 @@ class ShardedGPUDataset:
         batch_size: int,
         shuffle: bool = True,
         feature_dim: int = HALFKP_FEATURE_DIM,
+        shards_per_epoch: int = 1,
     ):
         if isinstance(shard_dirs, str):
             shard_dirs = [shard_dirs]
@@ -354,6 +355,7 @@ class ShardedGPUDataset:
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.feature_dim = feature_dim
+        self.shards_per_epoch = max(1, shards_per_epoch)
 
         # Count total positions across all shards for reporting
         shard_sizes = [len(np.load(p + ".cp.npy", mmap_mode="r"))
@@ -364,18 +366,20 @@ class ShardedGPUDataset:
         # Shuffled queue: which shard to load next
         self._queue: list[int] = []
 
+        mini_epochs_per_pass = len(self.shard_prefixes) / self.shards_per_epoch
         print(f"ShardedGPUDataset: {len(self.shard_prefixes)} shards  "
               f"{self._total_N:,} total positions  "
               f"(~{self._avg_shard_N:,}/shard  "
-              f"{len(self.shard_prefixes)} mini-epochs per full pass)")
+              f"shards_per_epoch={self.shards_per_epoch}  "
+              f"{mini_epochs_per_pass:.1f} mini-epochs per full pass)")
 
-    # N and len() report per-shard stats so train.py batch-count logging is sensible
+    # N and len() report per-epoch stats (shards_per_epoch shards combined)
     @property
     def N(self) -> int:
-        return self._avg_shard_N
+        return self._avg_shard_N * self.shards_per_epoch
 
     def __len__(self) -> int:
-        return (self._avg_shard_N + self.batch_size - 1) // self.batch_size
+        return (self.N + self.batch_size - 1) // self.batch_size
 
     def _next_shard_idx(self) -> int:
         if not self._queue:
@@ -386,15 +390,13 @@ class ShardedGPUDataset:
         return self._queue.pop(0)
 
     def __iter__(self):
-        shard_idx = self._next_shard_idx()
-        prefix = self.shard_prefixes[shard_idx]
-        shard_name = Path(prefix).name
-        pass_n = (len(self.shard_prefixes) - len(self._queue) - 1)
-        print(f"  [shard {shard_idx}/{len(self.shard_prefixes)-1}] "
-              f"Loading {shard_name} ...", flush=True)
+        prefixes = [self.shard_prefixes[self._next_shard_idx()]
+                    for _ in range(self.shards_per_epoch)]
+        names = [Path(p).name for p in prefixes]
+        print(f"  Loading shard(s): {', '.join(names)} ...", flush=True)
 
         gpu_shard = GPUPreloadedDualDataset(
-            [(prefix, None)],
+            [(p, None) for p in prefixes],
             max_cp_abs=self.max_cp_abs,
             device=self.device,
             batch_size=self.batch_size,
@@ -403,7 +405,7 @@ class ShardedGPUDataset:
         )
         yield from gpu_shard
 
-        # Explicitly free VRAM before next shard
+        # Explicitly free VRAM before next epoch
         del gpu_shard
         torch.cuda.empty_cache()
 

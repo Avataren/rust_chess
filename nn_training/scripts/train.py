@@ -373,6 +373,7 @@ def main():
             batch_size=cfg["training"]["batch_size"],
             shuffle=True,
             feature_dim=cfg["model"]["input_dim"],
+            shards_per_epoch=cfg["training"].get("shards_per_epoch", 1),
         )
         # Val: preload to GPU (same path as training shards) to avoid ROCm CPU→GPU
         # EmbeddingBag page faults. At 2M positions ~550 MB — negligible VRAM cost.
