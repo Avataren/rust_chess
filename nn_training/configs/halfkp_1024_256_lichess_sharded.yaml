@@ -2,10 +2,10 @@ seed: 137
 
 training:
   batch_size: 32768
-  epochs: 90         # 17 shards / 2 per epoch = 8.5 mini-epochs/pass; 90 ≈ 10.6 full passes
+  epochs: 60         # 16 shards / 3 per epoch = 5.3 mini-epochs/pass; 60 ≈ 11.3 full passes
   lr: 0.001
-  warmup_epochs: 9   # ≈1 full pass warmup (17 shards / 2 per epoch)
-  shards_per_epoch: 2  # load 2 shards per epoch (~30M positions); reduces shard-switching oscillation
+  warmup_epochs: 6   # ≈1 full pass warmup (16 shards / 3 per epoch)
+  shards_per_epoch: 3  # load 3 shards per epoch (~45M positions, ~12.6 GB); 25.8 GB VRAM on RX 7900 XTX
   weight_decay: 0.0001
   grad_clip: 1.0
   workers: 8
@@ -35,7 +35,7 @@ data:
   # 17 × 15M = 255M positions; 17 shards per full pass.
   # all_69m excluded: depth-14 labels introduce noise into depth-20+ training signal.
   train_shards:
-    - data/lichess_hf/shards                 # directory → 17 shards (15M each, depth ≥ 20)
+    - data/lichess_hf/shards                 # directory → 16 shards (15M each, depth ≥ 20; shard_16 moved to val_shard/)
   val_file: data/lichess_hf/val_lichess.jsonl   # 2M positions carved from shard_16 (no .jsonl needed; binary auto-detected)
   max_cp_abs: 800
 
