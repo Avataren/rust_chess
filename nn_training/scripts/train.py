@@ -273,10 +273,14 @@ def eval_epoch(model, loader, device, cfg):
     for batch in tqdm(loader, desc="val", leave=False, dynamic_ncols=True):
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
             cp_pred, wdl_logits, cp, wdl, bucket = _forward_batch(model, batch, device, feature_dim, non_blocking=False)
+            # Keep loss inside autocast: PyTorch promotes log_softmax to float32
+            # automatically (AMP "force float32" list).  Outside autocast, wdl_logits
+            # stays float16 and extreme logit differences cause inf/NaN in log_softmax
+            # that clamp(min=-100) cannot fully neutralise.
+            cp_loss = cp_loss_fn(cp_pred, cp)
+            wdl_loss = soft_target_cross_entropy(wdl_logits, wdl)
+            loss = cfg["loss"]["cp_weight"] * cp_loss + cfg["loss"]["wdl_weight"] * wdl_loss
         wdl_idx = torch.argmax(wdl, dim=1)
-        cp_loss = cp_loss_fn(cp_pred, cp)
-        wdl_loss = soft_target_cross_entropy(wdl_logits, wdl)
-        loss = cfg["loss"]["cp_weight"] * cp_loss + cfg["loss"]["wdl_weight"] * wdl_loss
 
         cp_mae_per = torch.abs(cp_pred.squeeze(1) - cp.squeeze(1))
         wdl_acc = (torch.argmax(wdl_logits, dim=1) == wdl_idx).float().mean()
