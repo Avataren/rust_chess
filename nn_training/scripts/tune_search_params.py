@@ -85,6 +85,7 @@ def run_puzzle_bench(
     min_rating:   int,
     depth:        int,
     seed:         int,
+    threads:      int = 0,
 ) -> float:
     """Write params JSON, run puzzle_bench, return solve rate in [0, 1]."""
     with tempfile.NamedTemporaryFile(
@@ -102,8 +103,8 @@ def run_puzzle_bench(
             "--min-rating", str(min_rating),
             "--depth",      str(depth),
             "--seed",       str(seed),
-            "--threads",    "0",          # all CPUs — fresh TT per puzzle guarantees no cross-pollution
-            "--fresh-tt",                 # fresh TT per puzzle for fair comparison
+            "--threads",    str(threads),
+            "--fresh-tt",
             "--params",     params_path,
         ]
         result = subprocess.run(
@@ -207,6 +208,8 @@ def main() -> None:
                     help="Optuna storage URL, e.g. sqlite:///tuning.db")
     ap.add_argument("--out",          default="best_search_params.json",
                     help="Output file for best params")
+    ap.add_argument("--threads",      type=int, default=0,
+                    help="CPU threads for puzzle_bench (default 0=all)")
     args = ap.parse_args()
 
     try:
@@ -228,6 +231,7 @@ def main() -> None:
         args.min_rating,
         args.depth,
         args.seed,
+        args.threads,
     )
     print(f"Baseline solve rate: {baseline:.3%}  ({int(baseline * args.count)}/{args.count})")
     print()
@@ -250,6 +254,7 @@ def main() -> None:
             args.min_rating,
             args.depth,
             args.seed,
+            args.threads,
         )
         # Print progress inline
         solved = int(rate * args.count)
