@@ -81,7 +81,7 @@ def run_puzzle_bench(
             "--min-rating", str(min_rating),
             "--depth",      str(depth),
             "--seed",       str(seed),
-            "--threads",    "1",          # single-threaded for determinism
+            "--threads",    "0",          # all CPUs — fresh TT per puzzle guarantees no cross-pollution
             "--fresh-tt",                 # fresh TT per puzzle for fair comparison
             "--params",     params_path,
         ]

@@ -454,16 +454,12 @@ fn main() {
     // Per-puzzle result: (solved, band, themes, export_line)
     // Collected in original order so export files are deterministically ordered.
     let need_export = !export_all.is_empty() || !export_failures.is_empty();
-    // When custom params are given, force single-threaded so params take effect
-    // (iterative_deepening_root_with_params is always single-threaded).
-    let effective_parallel = parallel && custom_params.is_none();
-
-    let results: Vec<(bool, usize, Vec<String>, Option<String>)> = if effective_parallel {
+    let results: Vec<(bool, usize, Vec<String>, Option<String>)> = if parallel {
         puzzles.par_iter().map(|puzzle| {
             // Each parallel solver gets its own TT — no cross-puzzle pollution
-            // and no data races.
+            // and no data races.  SearchParams is read-only so safe to share.
             let fresh = TranspositionTable::new(1 << 18);
-            let ok = solve(puzzle, &conductor, &fresh, depth, true, None);
+            let ok = solve(puzzle, &conductor, &fresh, depth, true, custom_params.as_ref());
             let c = dot_counter.fetch_add(1, Ordering::Relaxed);
             if (c + 1) % dot_every == 0 { print!("."); let _ = stdout().flush(); }
             let export_line = need_export
@@ -471,11 +467,10 @@ fn main() {
             (ok, band_index(puzzle.rating), puzzle.themes.clone(), export_line)
         }).collect()
     } else {
-        // Single-threaded: shared TT (or fresh per puzzle if --fresh-tt or custom params).
+        // Single-threaded: shared TT (or fresh per puzzle if --fresh-tt).
         let shared_tt = TranspositionTable::new(1 << 18);
-        let use_fresh = fresh_tt || custom_params.is_some();
         puzzles.iter().enumerate().map(|(i, puzzle)| {
-            let ok = solve(puzzle, &conductor, &shared_tt, depth, use_fresh, custom_params.as_ref());
+            let ok = solve(puzzle, &conductor, &shared_tt, depth, fresh_tt, custom_params.as_ref());
             if (i + 1) % dot_every == 0 { print!("."); let _ = stdout().flush(); }
             let export_line = need_export
                 .then(|| format!("{}\t{}", puzzle.fen, puzzle.moves.join(" ")));
