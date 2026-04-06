@@ -25,11 +25,14 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+use serde_json;
+
 use rayon::prelude::*;
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
-    iterative_deepening_root_with_tt, RootNoiseConfig, SearchContext, TranspositionTable,
+    iterative_deepening_root_with_params, iterative_deepening_root_with_tt,
+    RootNoiseConfig, SearchParams, TranspositionTable,
 };
 use chess_foundation::{
     chess_move::ChessMove,
@@ -165,6 +168,7 @@ fn solve(
     tt:        &TranspositionTable,
     depth:     i32,
     fresh_tt:  bool,
+    params:    Option<&SearchParams>,
 ) -> bool {
     let mut board = ChessBoard::new();
     board.set_from_fen(&puzzle.fen);
@@ -175,8 +179,6 @@ fn solve(
     }
 
     let is_white = board.is_white_active();
-    let mut ctx = SearchContext::new();
-    ctx.init_accumulators(&board);
 
     let local_tt;
     let tt_ref = if fresh_tt {
@@ -185,19 +187,37 @@ fn solve(
     } else {
         tt
     };
-    let result = iterative_deepening_root_with_tt(
-        &mut board,
-        conductor,
-        None,
-        tt_ref,
-        depth,
-        is_white,
-        None, // no time limit
-        None, // no stop signal
-        1,    // single-threaded for determinism
-        None,
-        RootNoiseConfig::NONE,
-    );
+
+    let result = if let Some(p) = params {
+        // Custom params: always single-threaded for full determinism.
+        iterative_deepening_root_with_params(
+            p.clone(),
+            &mut board,
+            conductor,
+            None,
+            tt_ref,
+            depth,
+            is_white,
+            None,
+            None,
+            None,
+            RootNoiseConfig::NONE,
+        )
+    } else {
+        iterative_deepening_root_with_tt(
+            &mut board,
+            conductor,
+            None,
+            tt_ref,
+            depth,
+            is_white,
+            None, // no time limit
+            None, // no stop signal
+            1,    // single-threaded for determinism
+            None,
+            RootNoiseConfig::NONE,
+        )
+    };
 
     match result.best_move {
         Some(mv) => mv_to_uci(mv) == puzzle.moves[1],
@@ -269,9 +289,21 @@ fn main() {
 
     let file             = flag_str!("--file");
     let eval_file        = flag_str!("--eval-file");
+    let params_file      = flag_str!("--params");
 
     #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
     init_nn(eval_file);
+
+    // Load custom search params if --params was given.
+    let custom_params: Option<SearchParams> = if params_file.is_empty() {
+        None
+    } else {
+        let json = std::fs::read_to_string(params_file)
+            .unwrap_or_else(|e| { eprintln!("Cannot read {params_file}: {e}"); std::process::exit(1); });
+        let p: SearchParams = serde_json::from_str(&json)
+            .unwrap_or_else(|e| { eprintln!("Cannot parse {params_file}: {e}"); std::process::exit(1); });
+        Some(p)
+    };
 
     let count:  usize   = arg!("--count",      1000usize);
     // Default rating range is unrestricted for export use cases;
@@ -312,6 +344,7 @@ fn main() {
         eprintln!("    [--seed N]               RNG seed for sampling (default: 42)");
         eprintln!("    [--eval-file FILE]       override embedded NNUE weights (any .npz)");
         eprintln!("    [--threads N]            parallel solvers (default 0=all CPUs; 1=single-threaded)");
+        eprintln!("    [--params FILE]          JSON file with SearchParams for tuning (forces single-threaded)");
         eprintln!("    [--export-failures FILE] write failed puzzle lines for finetune");
         eprintln!("    [--export-all FILE]      write ALL puzzle lines for finetune (recommended)");
         eprintln!("    [--fresh-tt]             fresh TT per puzzle (unbiased A/B; implied by --threads>1)");
@@ -334,6 +367,7 @@ fn main() {
     println!("Threads:      {effective_threads}{}",
         if num_threads == 1 { " (single-threaded)" } else { " (parallel, fresh TT per puzzle)" });
     println!("TT mode:      {}", if num_threads != 1 || fresh_tt { "fresh per puzzle" } else { "shared" });
+    if !params_file.is_empty()      { println!("Params:       {params_file}"); }
     if !export_failures.is_empty() { println!("Export (failures): {export_failures}"); }
     if !export_all.is_empty()      { println!("Export (all):      {export_all}"); }
     println!();
@@ -420,12 +454,16 @@ fn main() {
     // Per-puzzle result: (solved, band, themes, export_line)
     // Collected in original order so export files are deterministically ordered.
     let need_export = !export_all.is_empty() || !export_failures.is_empty();
-    let results: Vec<(bool, usize, Vec<String>, Option<String>)> = if parallel {
+    // When custom params are given, force single-threaded so params take effect
+    // (iterative_deepening_root_with_params is always single-threaded).
+    let effective_parallel = parallel && custom_params.is_none();
+
+    let results: Vec<(bool, usize, Vec<String>, Option<String>)> = if effective_parallel {
         puzzles.par_iter().map(|puzzle| {
             // Each parallel solver gets its own TT — no cross-puzzle pollution
             // and no data races.
             let fresh = TranspositionTable::new(1 << 18);
-            let ok = solve(puzzle, &conductor, &fresh, depth, true);
+            let ok = solve(puzzle, &conductor, &fresh, depth, true, None);
             let c = dot_counter.fetch_add(1, Ordering::Relaxed);
             if (c + 1) % dot_every == 0 { print!("."); let _ = stdout().flush(); }
             let export_line = need_export
@@ -433,10 +471,11 @@ fn main() {
             (ok, band_index(puzzle.rating), puzzle.themes.clone(), export_line)
         }).collect()
     } else {
-        // Single-threaded: shared TT (or fresh per puzzle if --fresh-tt).
+        // Single-threaded: shared TT (or fresh per puzzle if --fresh-tt or custom params).
         let shared_tt = TranspositionTable::new(1 << 18);
+        let use_fresh = fresh_tt || custom_params.is_some();
         puzzles.iter().enumerate().map(|(i, puzzle)| {
-            let ok = solve(puzzle, &conductor, &shared_tt, depth, fresh_tt);
+            let ok = solve(puzzle, &conductor, &shared_tt, depth, use_fresh, custom_params.as_ref());
             if (i + 1) % dot_every == 0 { print!("."); let _ = stdout().flush(); }
             let export_line = need_export
                 .then(|| format!("{}\t{}", puzzle.fen, puzzle.moves.join(" ")));

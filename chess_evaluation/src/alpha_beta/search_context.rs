@@ -1,7 +1,7 @@
 use chess_board::ChessBoard;
 use chess_foundation::{ChessMove, piece::PieceType};
 use crate::neural_eval::{HIDDEN1 as ACCUM_DIM, KING_BUCKETS};
-use super::{MAX_PLY, ACC_SIZE, OrderingScratchBuffers};
+use super::{MAX_PLY, ACC_SIZE, OrderingScratchBuffers, search_params::SearchParams};
 
 // ── Continuation history ──────────────────────────────────────────────────────
 
@@ -199,10 +199,19 @@ pub struct SearchContext {
     /// Avoids redundant NN forward passes for positions revisited within a search
     /// (especially qsearch transpositions).  Cleared in `init_accumulators`.
     pub(in crate::alpha_beta) eval_cache: Vec<(u64, i32)>,
+    /// Tunable pruning parameters. Set via `SearchContext::with_params`; defaults
+    /// reproduce the hardcoded baseline when constructed with `SearchContext::new()`.
+    pub params: SearchParams,
 }
 
 impl SearchContext {
     pub fn new() -> Self {
+        Self::with_params(SearchParams::default())
+    }
+
+    /// Create a context with custom pruning parameters.
+    /// All heuristic tables start zeroed; `params` override the hardcoded defaults.
+    pub fn with_params(params: SearchParams) -> Self {
         Self {
             killers: [[None; 2]; MAX_PLY],
             history: [[0; 64]; 64],
@@ -229,6 +238,7 @@ impl SearchContext {
             tried_captures_buf: Vec::with_capacity(16),
             eval_cache: vec![(0u64, 0i32); EVAL_CACHE_SIZE],
             noisy_move: None,
+            params,
         }
     }
 

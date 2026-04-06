@@ -4,7 +4,7 @@ use move_generator::{
     piece_conductor::PieceConductor,
 };
 use crate::see::see;
-use super::{capture_value, eval_node, SearchContext, MAX_PLY, DELTA_MARGIN, MATE_BASE};
+use super::{capture_value, eval_node, SearchContext, MAX_PLY, MATE_BASE};
 
 // ── Quiescence search ─────────────────────────────────────────────────────────
 
@@ -171,11 +171,11 @@ fn quiescence_inner<const IS_WHITE: bool>(
         // alpha (white) or lower beta (black).  Break because every subsequent
         // capture has see_val ≤ this one (sorted), so the condition holds for all.
         if IS_WHITE {
-            if stand_pat + see_val + DELTA_MARGIN <= alpha {
+            if stand_pat + see_val + ctx.params.delta_margin <= alpha {
                 break;
             }
         } else {
-            if stand_pat - see_val - DELTA_MARGIN >= beta {
+            if stand_pat - see_val - ctx.params.delta_margin >= beta {
                 break;
             }
         }

@@ -14,7 +14,7 @@ use crate::{
     opening_book::OpeningBook,
     transposition_table::TranspositionTable,
 };
-use super::{alpha_beta, search_root, RootNoiseConfig, SearchContext, ASPIRATION_DELTA, TT_SIZE};
+use super::{alpha_beta, search_root, RootNoiseConfig, SearchContext, SearchParams, TT_SIZE};
 
 /// Result of an iterative-deepening search.
 pub struct SearchResult {
@@ -190,6 +190,7 @@ pub fn iterative_deepening_root_with_tt(
             stop,
             on_depth,
             noise,
+            SearchParams::default(),
         );
     }
 
@@ -242,6 +243,7 @@ pub fn iterative_deepening_root_with_tt(
             stop.clone(),
             on_depth_smp,
             noise,
+            SearchParams::default(),
         );
 
         // Main thread done — signal helpers to stop.
@@ -250,6 +252,61 @@ pub fn iterative_deepening_root_with_tt(
 
     result.total_nodes += helper_nodes.load(Ordering::Acquire);
     result
+}
+
+/// Like `iterative_deepening_root_with_tt` but uses custom `SearchParams`.
+///
+/// Intended for automated search-parameter tuning (e.g. Optuna): the caller
+/// builds a `SearchParams` from trial values, runs this function against a
+/// deterministic puzzle set, and returns the solve rate as the objective.
+///
+/// Only single-threaded search is supported (num_threads is always 1); this
+/// guarantees full determinism when the puzzle bench fixes its seed.
+pub fn iterative_deepening_root_with_params(
+    params: SearchParams,
+    chess_board: &mut ChessBoard,
+    conductor: &PieceConductor,
+    book: Option<&crate::opening_book::OpeningBook>,
+    tt: &TranspositionTable,
+    max_depth: i32,
+    is_white: bool,
+    deadline: Option<Instant>,
+    stop: Option<Arc<AtomicBool>>,
+    on_depth: Option<&(dyn Fn(i32, i32, u64, u128) + Sync)>,
+    noise: RootNoiseConfig,
+) -> SearchResult {
+    // Book probe (same as iterative_deepening_root_with_tt).
+    if let Some(book) = book {
+        use move_generator::move_generator::get_all_legal_moves_for_color;
+        if let Some((from, to)) = book.probe(chess_board) {
+            let mut legal = Vec::new();
+            get_all_legal_moves_for_color(chess_board, conductor, is_white, &mut legal, &mut Vec::new());
+            if let Some(book_move) = legal
+                .into_iter()
+                .find(|m| m.start_square() == from && m.target_square() == to)
+            {
+                return SearchResult {
+                    score: 0,
+                    best_move: Some(book_move),
+                    ponder_move: None,
+                    total_nodes: 0,
+                };
+            }
+        }
+    }
+
+    id_search_single(
+        chess_board,
+        conductor,
+        tt,
+        max_depth,
+        is_white,
+        deadline,
+        stop,
+        on_depth,
+        noise,
+        params,
+    )
 }
 
 // ── Lazy SMP internals ───────────────────────────────────────────────────────
@@ -269,9 +326,10 @@ fn id_search_single(
     stop: Option<Arc<AtomicBool>>,
     on_depth: Option<&(dyn Fn(i32, i32, u64, u128) + Sync)>,
     noise: RootNoiseConfig,
+    params: SearchParams,
 ) -> SearchResult {
     let t0 = Instant::now();
-    let mut ctx = SearchContext::new();
+    let mut ctx = SearchContext::with_params(params);
     // Initialize incremental accumulators for the dual-perspective neural model.
     // If no dual model is loaded, this is a no-op (acc_valid stays false).
     ctx.init_accumulators(chess_board);
@@ -289,7 +347,7 @@ fn id_search_single(
             ctx.age_history();
         }
 
-        let result = if depth <= 2 {
+        let result = if depth < ctx.params.aspiration_min_depth {
             search_root(
                 chess_board,
                 conductor,
@@ -306,7 +364,7 @@ fn id_search_single(
         } else {
             // Progressive aspiration window: start narrow, multiply delta on failure
             // instead of opening directly to full window.  Saves re-searches.
-            let mut delta = ASPIRATION_DELTA;
+            let mut delta = ctx.params.aspiration_delta;
             let mut lo = prev_score.saturating_sub(delta);
             let mut hi = prev_score.saturating_add(delta);
             loop {
@@ -458,9 +516,9 @@ fn smp_helper(
                 ctx.age_history();
             }
 
-            // Use aspiration windows (same as main thread) at depth >= 3.
+            // Use aspiration windows (same as main thread) at depth >= aspiration_min_depth.
             let stop = Some(Arc::clone(&helper_stop));
-            let result = if depth <= 2 {
+            let result = if depth < ctx.params.aspiration_min_depth {
                 search_root(
                     chess_board,
                     conductor,
@@ -475,8 +533,9 @@ fn smp_helper(
                     RootNoiseConfig::NONE,
                 )
             } else {
-                let mut lo = prev_score.saturating_sub(ASPIRATION_DELTA);
-                let mut hi = prev_score.saturating_add(ASPIRATION_DELTA);
+                let asp_delta = ctx.params.aspiration_delta;
+                let mut lo = prev_score.saturating_sub(asp_delta);
+                let mut hi = prev_score.saturating_add(asp_delta);
                 loop {
                     let r = search_root(
                         chess_board,

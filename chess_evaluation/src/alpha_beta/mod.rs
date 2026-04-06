@@ -27,6 +27,7 @@ mod iterative_deepening;
 pub use iterative_deepening::{
     SearchResult, extract_ponder_move, available_threads,
     iterative_deepening_root, iterative_deepening_root_with_tt,
+    iterative_deepening_root_with_params,
 };
 
 mod quiescence;
@@ -34,6 +35,9 @@ use quiescence::quiescence;
 
 mod move_ordering;
 use move_ordering::{MoveOrderingHeuristics, OrderingScratchBuffers, order_moves};
+
+mod search_params;
+pub use search_params::SearchParams;
 
 mod search_context;
 use search_context::{ContHistTable, piece_idx};
@@ -189,13 +193,8 @@ pub(in crate::alpha_beta) fn capture_value(board: &ChessBoard, mv: &ChessMove) -
     }
 }
 
-/// ProbCut margin: if a capture SEE exceeds beta by this much, do a shallow verify.
-const PROBCUT_MARGIN: i32 = 200;
-
-
-/// Delta pruning margin in quiescence: skip captures that can't raise alpha even
-/// with an extra DELTA_MARGIN bonus on top of the captured-piece value.
-pub(in crate::alpha_beta) const DELTA_MARGIN: i32 = 250;
+// Default values for these pruning constants are now in SearchParams::default().
+// They are kept here only as documentation references.
 
 /// Default TT size: 4M entries × 24 B = 96 MB.
 /// Large enough for excellent single-threaded hit rates at classical time controls.
@@ -273,10 +272,7 @@ fn score_from_tt(score: i32, ply: usize, halfmove_clock: u32) -> i32 {
 /// the full bound and we retry.
 pub const ASPIRATION_DELTA: i32 = 50;
 
-/// Late Move Pruning thresholds: after trying this many quiet moves at depth D,
-/// skip the rest entirely.  Indexed by depth (depth 0 unused).
-/// Formula: 3 + depth² approximates Stockfish's LMP table.
-const LMP_THRESHOLD: [usize; 5] = [0, 4, 8, 13, 20];
+// LMP thresholds default: [0, 4, 8, 13, 20] — see SearchParams::lmp_base.
 
 /// Maximum ply depth tracked by the search context.
 pub const MAX_PLY: usize = 64;
@@ -570,8 +566,12 @@ pub fn alpha_beta(
     // play wrong moves.  Limiting to depth ≤ 7 keeps the savings where they
     // are empirically reliable while always searching endgame nodes fully.
     if let Some(se) = static_eval {
-        if depth <= 7 && null_move_allowed && ply > 0 {
-            let margin = if improving { 65 * depth } else { 85 * depth };
+        if depth <= ctx.params.rfp_max_depth && null_move_allowed && ply > 0 {
+            let margin = if improving {
+                ctx.params.rfp_improving_margin * depth
+            } else {
+                ctx.params.rfp_not_improving_margin * depth
+            };
             if is_white && se - margin >= beta {
                 return (se, None);
             }
@@ -586,10 +586,11 @@ pub fn alpha_beta(
         // Adaptive R: larger when static eval is far above beta (we're clearly winning),
         // allowing more aggressive pruning of already-dominant positions.
         let excess = if let Some(se) = static_eval {
+            let div = ctx.params.nmp_excess_divisor.max(1);
             if is_white {
-                se.saturating_sub(beta) / 200
+                se.saturating_sub(beta) / div
             } else {
-                alpha.saturating_sub(se) / 200
+                alpha.saturating_sub(se) / div
             }
         } else {
             0
@@ -644,11 +645,11 @@ pub fn alpha_beta(
     // If a capture is very likely to fail high (white) or low (black) at this node,
     // confirm with a shallow reduced search.  Avoids spending full depth on obvious
     // wins/losses.  Only at depth >= 5, not in check, not in a singular extension.
-    if depth >= 5 && !in_check && null_move_allowed && ctx.excluded_move[p].is_none() {
+    if depth >= ctx.params.probcut_min_depth && !in_check && null_move_allowed && ctx.excluded_move[p].is_none() {
         let pc_threshold = if is_white {
-            beta.saturating_add(PROBCUT_MARGIN)
+            beta.saturating_add(ctx.params.probcut_margin)
         } else {
-            alpha.saturating_sub(PROBCUT_MARGIN)
+            alpha.saturating_sub(ctx.params.probcut_margin)
         };
         // Quick guard: only enter if static eval suggests a capture MIGHT reach the threshold.
         let pc_feasible = pc_threshold.saturating_abs() < MATE_SCORE_THRESHOLD
@@ -796,7 +797,7 @@ pub fn alpha_beta(
                 && matches!(entry.flag, TtFlag::LowerBound | TtFlag::Exact)
                 && tt_score.abs() < MATE_SCORE_THRESHOLD
             {
-                let se_margin = 50; // same as before; double ext uses se_singular_score gap
+                let se_margin = ctx.params.se_margin;
                 let se_beta = tt_score - se_margin;
                 ctx.excluded_move[p] = tt_move;
                 let (se_score, _) = alpha_beta(
@@ -944,7 +945,11 @@ pub fn alpha_beta(
         // Margin scales with depth: d1=200, d2=400, d3=600.
         if move_index > 0 && is_quiet && !in_check {
             if let Some(se) = static_eval {
-                let margin = if depth <= 3 { 200 * depth } else { 0 };
+                let margin = if depth <= ctx.params.futility_max_depth {
+                    ctx.params.futility_margin * depth
+                } else {
+                    0
+                };
                 if margin > 0 {
                     if is_white && se + margin <= alpha { continue; }
                     if !is_white && se - margin >= beta  { continue; }
@@ -963,11 +968,8 @@ pub fn alpha_beta(
         // history ordering to be permanently skipped at deep nodes.
         if is_quiet && !in_check && ply > 0 && depth <= 8 {
             let thresh_depth = depth.min(4) as usize;
-            let lmp_thresh = if improving {
-                LMP_THRESHOLD[thresh_depth] + LMP_THRESHOLD[thresh_depth] / 2
-            } else {
-                LMP_THRESHOLD[thresh_depth]
-            };
+            let base = ctx.params.lmp_base[thresh_depth];
+            let lmp_thresh = if improving { base + base / 2 } else { base };
             if quiet_count >= lmp_thresh {
                 continue;
             }
@@ -984,11 +986,11 @@ pub fn alpha_beta(
         // Threshold scales with depth so deeper nodes are pruned less eagerly.
         // Guards: not in check (forced moves must always be searched), and
         // move_index > 0 (always search the first/TT move fully).
-        if is_quiet && !in_check && move_index > 0 && ply > 0 && depth <= 3 {
+        if is_quiet && !in_check && move_index > 0 && ply > 0 && depth <= ctx.params.history_pruning_max_depth {
             let from = chess_move.start_square() as usize;
             let to   = chess_move.target_square() as usize;
             let hist = ctx.history[from][to];
-            if hist < -256 * depth {
+            if hist < -ctx.params.history_pruning_threshold * depth {
                 continue;
             }
         }
