@@ -63,21 +63,47 @@ pub struct SearchParams {
 }
 
 impl Default for SearchParams {
+    /// Tuned via Optuna (200 trials, depth 7, 2000 Lichess puzzles ≥1500,
+    /// HalfKAv2 1024×64 epoch-300 model). Verified at +4.5pp over baseline.
     fn default() -> Self {
         Self {
-            rfp_improving_margin:     65,
-            rfp_not_improving_margin: 85,
-            rfp_max_depth:            7,
-            futility_margin:          200,
-            futility_max_depth:       3,
-            delta_margin:             250,
-            probcut_margin:           200,
-            probcut_min_depth:        5,
-            nmp_excess_divisor:       200,
-            lmp_base:                 [0, 4, 8, 13, 20],
-            aspiration_delta:         50,
-            aspiration_min_depth:     3,
-            se_margin:                50,
+            rfp_improving_margin:      46,
+            rfp_not_improving_margin:  147,
+            rfp_max_depth:             4,
+            futility_margin:           141,
+            futility_max_depth:        1,
+            delta_margin:              350,
+            probcut_margin:            339,
+            probcut_min_depth:         3,
+            nmp_excess_divisor:        283,
+            lmp_base:                  [0, 4, 15, 22, 39],
+            aspiration_delta:          139,
+            aspiration_min_depth:      4,
+            se_margin:                 81,
+            history_pruning_threshold: 722,
+            history_pruning_max_depth: 4,
+        }
+    }
+}
+
+impl SearchParams {
+    /// Original hardcoded baseline — preserved for reference and A/B testing.
+    /// These were the values before Optuna tuning on the HalfKAv2 1024×64 model.
+    pub fn baseline() -> Self {
+        Self {
+            rfp_improving_margin:      65,
+            rfp_not_improving_margin:  85,
+            rfp_max_depth:             7,
+            futility_margin:           200,
+            futility_max_depth:        3,
+            delta_margin:              250,
+            probcut_margin:            200,
+            probcut_min_depth:         5,
+            nmp_excess_divisor:        200,
+            lmp_base:                  [0, 4, 8, 13, 20],
+            aspiration_delta:          50,
+            aspiration_min_depth:      3,
+            se_margin:                 50,
             history_pruning_threshold: 256,
             history_pruning_max_depth: 3,
         }
