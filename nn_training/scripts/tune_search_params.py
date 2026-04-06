@@ -35,7 +35,28 @@ from pathlib import Path
 
 
 def build_default_params() -> dict:
-    """Default values matching SearchParams::default() in Rust."""
+    """Current SearchParams::default() in Rust — keep in sync with search_params.rs."""
+    return {
+        "rfp_improving_margin":      46,
+        "rfp_not_improving_margin":  147,
+        "rfp_max_depth":             4,
+        "futility_margin":           141,
+        "futility_max_depth":        1,
+        "delta_margin":              350,
+        "probcut_margin":            339,
+        "probcut_min_depth":         3,
+        "nmp_excess_divisor":        283,
+        "lmp_base":                  [0, 4, 15, 22, 39],
+        "aspiration_delta":          139,
+        "aspiration_min_depth":      4,
+        "se_margin":                 81,
+        "history_pruning_threshold": 722,
+        "history_pruning_max_depth": 4,
+    }
+
+
+def build_baseline_params() -> dict:
+    """Original hardcoded baseline before Optuna tuning — matches SearchParams::baseline()."""
     return {
         "rfp_improving_margin":      65,
         "rfp_not_improving_margin":  85,
