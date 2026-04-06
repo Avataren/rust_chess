@@ -161,6 +161,51 @@ Warning patterns:
 
 ---
 
+## Search parameter tuning (Optuna)
+
+All search pruning constants (RFP, futility, delta, ProbCut, NMP, LMP, aspiration, SE, history)
+are now in `SearchParams` and can be loaded via `puzzle_bench --params params.json`.
+Use `tune_search_params.py` to find better values via Bayesian optimisation.
+
+```bash
+cd nn_training
+pip install optuna       # one-time
+python3 scripts/tune_search_params.py \
+  --puzzle-file  /path/to/lichess_db_puzzle.csv.zst \
+  --eval-file    artifacts/eval_tactical_v2_test.npz \
+  --puzzle-bench ../target/release/puzzle_bench \
+  --trials 200 \
+  --count 500 \
+  --min-rating 1500 \
+  --depth 12 \
+  --seed 42 \
+  --storage sqlite:///tuning.db   # enables resume
+```
+
+Each trial: ~16s (500 puzzles × 32ms). 200 trials ≈ 53 min. The study is resumable —
+re-run with the same `--study-name` and `--storage` to continue from where it left off.
+
+After the run, verify the winner on the full benchmark:
+
+```bash
+target/release/puzzle_bench \
+  --file /path/to/lichess_db_puzzle.csv.zst \
+  --eval-file nn_training/artifacts/eval_tactical_v2_test.npz \
+  --count 2000 --min-rating 1500 --depth 12 --seed 42 \
+  --threads 32 --fresh-tt \
+  --params best_search_params.json
+```
+
+**To use the best params permanently:** copy `best_search_params.json` to a committed path
+(e.g. `chess_evaluation/search_params.json`) and load it at engine startup via a new UCI
+`setoption name SearchParams` option — or hard-code the values back as the new
+`SearchParams::default()` once they're confirmed better.
+
+**Design note:** `--params` always forces single-threaded search inside the bench to ensure
+full determinism. The parallel-per-puzzle path (`--threads N` without `--params`) is unaffected.
+
+---
+
 ## Before running any benchmark
 
 - Check if the self-play loop is running (`ps aux | grep selfplay_loop`). The loop already runs `puzzle_bench` internally during evaluation — running it concurrently wastes CPU and can interfere with the loop's timing.
