@@ -18,8 +18,8 @@
 
 use chess_board::ChessBoard;
 use chess_evaluation::{
-    alpha_beta, iterative_deepening_root_with_tt,
-    RootNoiseConfig, SearchContext, TranspositionTable, TT_SIZE,
+    alpha_beta, iterative_deepening_root_with_tt, set_active_search_params,
+    RootNoiseConfig, SearchContext, SearchParams, TranspositionTable, TT_SIZE,
 };
 
 /// Weights embedded at compile time — only included when a NN feature is active.
@@ -276,6 +276,22 @@ fn main() {
         .map(|w| w[1].as_str())
         .unwrap_or("");
 
+    let params_file = args.windows(2)
+        .find(|w| w[0] == "--params")
+        .map(|w| w[1].as_str())
+        .unwrap_or("");
+    let custom_params: Option<SearchParams> = if !params_file.is_empty() {
+        match std::fs::read_to_string(params_file) {
+            Ok(json) => match serde_json::from_str::<SearchParams>(&json) {
+                Ok(p) => { eprintln!("SearchParams loaded from {params_file}"); Some(p) }
+                Err(e) => { eprintln!("warn: SearchParams parse error: {e}"); None }
+            },
+            Err(e) => { eprintln!("warn: cannot read {params_file}: {e}"); None }
+        }
+    } else {
+        None
+    };
+
     #[cfg(any(feature = "nn-full-forward", feature = "nn-incremental", feature = "runtime-switch"))]
     init_nn(eval_file);
 
@@ -322,12 +338,21 @@ fn main() {
         || thread_counts.len() > 1
         || hash_sizes.iter().any(|&h| h > 0);
 
+    // Apply custom search params globally before any search runs.
+    if let Some(p) = custom_params {
+        set_active_search_params(p);
+        eprintln!("SearchParams applied from {params_file}");
+    }
+
     let total_runs = hash_sizes.len() * thread_counts.len();
     if total_runs > 1 {
         println!("Hash × thread sweep: {} configurations  depth={}",
                  total_runs, depth);
         println!("Hash sizes (MB): {hash_sizes:?}");
         println!("Thread counts:   {thread_counts:?}");
+        if !params_file.is_empty() {
+            println!("Params:          {params_file}");
+        }
     }
 
     let mut all_results: Vec<BenchResult> = Vec::with_capacity(total_runs);

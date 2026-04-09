@@ -6,8 +6,31 @@ use move_generator::{
 };
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex, OnceLock,
 };
+
+// ── Runtime-configurable search parameters ───────────────────────────────────
+//
+// Set once per engine startup via the `SearchParamsFile` UCI option.  Defaults
+// to `SearchParams::default()` if never set.  Thread-safe: multiple SMP helper
+// threads all read the same snapshot.
+
+static ACTIVE_SEARCH_PARAMS: OnceLock<Mutex<SearchParams>> = OnceLock::new();
+
+fn active_search_params() -> SearchParams {
+    ACTIVE_SEARCH_PARAMS
+        .get_or_init(|| Mutex::new(SearchParams::default()))
+        .lock()
+        .unwrap()
+        .clone()
+}
+
+/// Override the engine's search parameters at runtime.
+/// Called from the UCI `setoption name SearchParamsFile` handler.
+pub fn set_active_search_params(params: SearchParams) {
+    let lock = ACTIVE_SEARCH_PARAMS.get_or_init(|| Mutex::new(SearchParams::default()));
+    *lock.lock().unwrap() = params;
+}
 use web_time::Instant;
 
 use crate::{
@@ -190,7 +213,7 @@ pub fn iterative_deepening_root_with_tt(
             stop,
             on_depth,
             noise,
-            SearchParams::default(),
+            active_search_params(),
         );
     }
 
@@ -243,7 +266,7 @@ pub fn iterative_deepening_root_with_tt(
             stop.clone(),
             on_depth_smp,
             noise,
-            SearchParams::default(),
+            active_search_params(),
         );
 
         // Main thread done — signal helpers to stop.

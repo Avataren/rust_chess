@@ -1,0 +1,77 @@
+seed: 137
+
+# ── HalfKAv2 768×256 — full-distribution shuffle ─────────────────────────────
+#
+# decisive_v1 post-mortem:
+#   - Filtered to |cp| >= 200 → model never trained on balanced positions
+#   - Val set is unfiltered → high MAE on the positions the engine actually sees
+#   - Result: plateaued at ~273 CP MAE from epoch ~80, never improved
+#
+# Root cause of original 35.8% (tactical_v2_scratch) was shard-level time
+# correlation, not the near-equal position distribution. The global shuffle
+# alone should have been the fix.
+#
+# Fix applied here:
+#   - No cp filter (--min-cp-abs 0): full distribution including balanced positions
+#   - Same global shuffle: all 536M positions redistributed across 17 shards
+#     (469M tactical_v2 depth-20  +  67M all_69m depth-14)
+#   - shards_per_epoch: 2  (shards are now ~31.5M each, up from ~14.2M)
+#
+# Data prep (one-time, ~90 min):
+#   rm -rf data/lichess_hf/tactical_v2/decisive_shuffled   # frees 67 GB
+#   python3 scripts/filter_shuffle_shards.py \
+#       --input-dir  data/lichess_hf/tactical_v2/shards \
+#                    data/all_69m/shards \
+#       --output-dir data/lichess_hf/tactical_v2/full_shuffled \
+#       --min-cp-abs 0 \
+#       --n-shards   17 \
+#       --seed       42
+#
+# Training command (from scratch):
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_768x256_full_v1.yaml \
+#     --out     artifacts/checkpoint_full_v1.pt \
+#     --tb-logdir runs/halfkav2_768x256_full_v1
+#
+# To resume:
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_768x256_full_v1.yaml \
+#     --resume  artifacts/checkpoint_full_v1_latest.pt \
+#     --out     artifacts/checkpoint_full_v1.pt \
+#     --tb-logdir runs/halfkav2_768x256_full_v1
+
+training:
+  batch_size: 32768
+  epochs: 300         # fine-tune phase: 300 epochs from checkpoint_full_v1.pt
+                      # ~17.6 full passes over 536M positions
+  lr: 0.001
+  warmup_epochs: 18   # ~1 full pass of warmup (17 shards / 1 per epoch ≈ 17 epochs)
+  shards_per_epoch: 1 # 1 × ~35M = ~35M positions/epoch → ~9 GB GPU load
+                      # (was 2, but shards are ~34.8M each → 2 shards = ~17.8 GB index
+                      #  tensors + model causes fragmentation OOM on 7900 XTX 24 GB)
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  amp: true
+  sharded_gpu: true
+  val_workers: 0      # ROCm: pin_memory + worker subprocesses → GPU page faults
+
+model:
+  feature_encoding: halfkav2
+  input_dim: 45056    # HalfKAv2: 11 slots × 64 × 64
+  hidden_dim: 768
+  hidden2_dim: 256
+  dropout: 0.1
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  train_shards:
+    - data/lichess_hf/tactical_v2/full_shuffled   # 17 globally shuffled shards, no cp filter
+
+  val_file: data/lichess_hf/val_lichess.jsonl
+
+  max_cp_abs: 800

@@ -1,0 +1,56 @@
+seed: 137
+
+# ── HalfKAv2 768×256 — fine-tune v1 ──────────────────────────────────────────
+#
+# Fine-tunes from checkpoint_normalized_v1.pt (best val_cp_mae, epoch 300).
+# Fine-tunes on all 6 normalized_hf shards only (~316M positions).
+# The depth-20 self-labeled dataset was dropped: its endgame label distribution
+# is incompatible with normalized_hf, causing catastrophic b0 bucket spikes.
+#
+# Training command:
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_768x256_finetune_v1.yaml \
+#     --resume  artifacts/checkpoint_normalized_v1.pt \
+#     --out     artifacts/checkpoint_finetune_v1.pt \
+#     --reset-best-val \
+#     --tb-logdir runs/halfkav2_768x256_finetune_v1
+#
+# To resume if interrupted:
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_768x256_finetune_v1.yaml \
+#     --resume  artifacts/checkpoint_finetune_v1_latest.pt \
+#     --out     artifacts/checkpoint_finetune_v1.pt \
+#     --tb-logdir runs/halfkav2_768x256_finetune_v1
+
+training:
+  batch_size: 32768
+  epochs: 150
+  lr: 0.0002            # 5× lower than original (0.001) — stable fine-tune LR
+  warmup_epochs: 0      # already well-trained, no warmup needed
+  shards_per_epoch: 1   # 1 shard/epoch; 6 shards total → full pass every 6 epochs (~25 passes)
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  amp: true
+  sharded_gpu: true
+  val_workers: 0        # ROCm: pin_memory + worker subprocesses → GPU page faults
+
+model:
+  feature_encoding: halfkav2
+  input_dim: 45056      # HalfKAv2: 11 slots × 64 × 64
+  hidden_dim: 768
+  hidden2_dim: 256
+  dropout: 0.1
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  train_shards:
+    - data/normalized_hf/shards_6        # 6 shards × ~52.7M = ~316M positions
+
+  val_file: data/normalized_hf/val_normalized
+
+  max_cp_abs: 800

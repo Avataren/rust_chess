@@ -27,7 +27,7 @@ mod iterative_deepening;
 pub use iterative_deepening::{
     SearchResult, extract_ponder_move, available_threads,
     iterative_deepening_root, iterative_deepening_root_with_tt,
-    iterative_deepening_root_with_params,
+    iterative_deepening_root_with_params, set_active_search_params,
 };
 
 mod quiescence;

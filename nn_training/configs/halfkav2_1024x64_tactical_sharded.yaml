@@ -1,0 +1,88 @@
+seed: 137
+
+# ── Mixed tactical training ───────────────────────────────────────────────────
+#
+# Goal: recover tactical sharpness (puzzle rate) while keeping the depth-20+
+# label quality of the Lichess HF data.
+#
+# Root cause of the 36% → 77% puzzle gap: the original Lichess HF shards were
+# 58% opening positions (≥25 pieces). Opening positions are near-equal and
+# depth-20+ labels on them teach fine positional sensitivity but not tactics.
+#
+# Fix: filter shards to ≤24 pieces (middlegame/endgame) so the model trains on
+# positions where tactical patterns actually matter.
+#
+# TWO PHASES:
+#
+#   Phase A — immediate (no download): filter existing shards with
+#     filter_shards_tactical.py → data/lichess_hf/tactical/
+#     146M positions, depth-20+, no mate scores (cp clipped at ±3000 in the
+#     original download). Use this config as-is.
+#
+#   Phase B — proper run (after re-download): re-download with
+#     --max-pieces 24 --cp-clamp 10000 → data/lichess_hf/tactical_v2/
+#     ~120M positions, depth-20+, mate scores preserved (cp up to ±10000).
+#     Change train_shards below to point at tactical_v2/.
+#     This adds the mate-position tactical signal on top of Phase A.
+#
+# Preparation (run before training):
+#
+#   # 1. Filter existing shards (fast, ~5 min):
+#   cd nn_training
+#   python3 scripts/filter_shards_tactical.py \
+#     --input-dir  data/lichess_hf/shards \
+#     --output-dir data/lichess_hf/tactical \
+#     --max-pieces 24
+#
+#   # 2. Re-download with mates for Phase B (slow, ~39 GB download):
+#   python3 scripts/download_lichess_hf.py \
+#     --output     data/lichess_hf/tactical_v2 \
+#     --max-pieces 24 \
+#     --cp-clamp   10000 \
+#     --min-depth  20
+#
+# Training command (Phase A or B — same config, different shard dir):
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_1024x64_tactical_sharded.yaml \
+#     --resume  artifacts/checkpoint_lichess.pt \
+#     --out     artifacts/checkpoint_tactical.pt \
+#     --tb-logdir runs/1024x64_halfkav2_tactical
+
+training:
+  batch_size: 32768
+  epochs: 200         # 16 tactical shards / 3 per epoch = 5.3 mini-epochs per full pass;
+                      # 200 epochs ≈ 37 full passes over the tactical data
+  lr: 0.0003          # Lower LR for fine-tune from Lichess checkpoint
+  warmup_epochs: 6    # ≈1 full pass warmup
+  shards_per_epoch: 3 # ~3 × 8M = 24M positions/epoch; ~2 GB GPU load per epoch
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  amp: true
+  sharded_gpu: true
+  val_workers: 0      # ROCm: pin_memory + worker subprocesses → GPU page faults
+  reset_best_val: true  # switching from Lichess HF val to all_69m val
+
+model:
+  feature_encoding: halfkav2
+  input_dim: 45056
+  hidden_dim: 1024
+  hidden2_dim: 64
+  dropout: 0.05
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  # Phase A: filtered existing shards (depth-20+, no mates, ≤24 pieces)
+  # Change to data/lichess_hf/tactical_v2 for Phase B (depth-20+, mates, ≤24 pieces)
+  train_shards:
+    - data/lichess_hf/tactical
+
+  # Val on all_69m: has mates + full game-phase coverage — better signal for
+  # tracking tactical improvement than the Lichess HF val set.
+  val_file: data/all_69m/val_all_69m.jsonl
+
+  max_cp_abs: 800

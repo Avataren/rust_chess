@@ -384,6 +384,14 @@ impl SearchContext {
             } else {
                 match board.get_piece_at_square(mv.target_square()) {
                     Some(cap) => {
+                        // King captures are pseudo-legal (shouldn't occur in
+                        // legal play). halfkav2_piece_slot returns usize::MAX
+                        // for the own-king side, which overflows in the
+                        // feature-index multiply. Trigger a full recompute
+                        // instead — the position is a decisive win/loss anyway.
+                        if cap.piece_type() == PieceType::King {
+                            return true;
+                        }
                         let cap_slot_w = halfkav2_piece_slot(cap.piece_type(), cap.is_white());
                         let cap_slot_b = halfkav2_piece_slot(cap.piece_type(), !cap.is_white());
                         w_cap[0] = halfkav2_feature_idx(cap_slot_w, w_sq(to_sq), king_w);

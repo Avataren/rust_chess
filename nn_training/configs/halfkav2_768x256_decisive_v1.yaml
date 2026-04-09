@@ -1,0 +1,71 @@
+seed: 137
+
+# ── HalfKAv2 768×256 — decisive-position re-train ────────────────────────────
+#
+# Problem with the previous tactical_v2_scratch run:
+#   - 510M positions from the raw HF dataset, ~58% near-equal (|cp| < 200)
+#   - Low gradient signal → model learned "most positions are balanced"
+#   - Result: 35.8% puzzle bench at depth 7 (vs 85-90% on previous HalfKP models)
+#
+# Fix applied:
+#   1. Filter both datasets to |cp| >= 200 (decisive positions only)
+#      tactical_v2:  42% of 469M = ~197M kept  (depth-20, HF Lichess)
+#      all_69m:      65% of  67M =  ~44M kept  (depth-14, locally labelled)
+#   2. Globally shuffle: all 241M positions redistributed across 17 output shards
+#      so each shard is a random mix from both datasets and all time periods.
+#      Eliminates the staircasing loss pattern from correlated intra-shard data.
+#
+# To prepare data (one-time, ~90 min):
+#   cd nn_training && bash fix_data.sh
+#
+# Training command (from scratch — no --resume):
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_768x256_decisive_v1.yaml \
+#     --out     artifacts/checkpoint_decisive_v1.pt \
+#     --tb-logdir runs/halfkav2_768x256_decisive_v1
+#
+# To resume:
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_768x256_decisive_v1.yaml \
+#     --resume  artifacts/checkpoint_decisive_v1_latest.pt \
+#     --out     artifacts/checkpoint_decisive_v1.pt \
+#     --tb-logdir runs/halfkav2_768x256_decisive_v1
+
+training:
+  batch_size: 32768
+  epochs: 300         # 17 shards / 3 per epoch = 5.67 mini-epochs per full pass
+                      # 300 epochs ≈ 53 full passes over 241M positions
+  lr: 0.001
+  warmup_epochs: 6    # ~1 full pass of warmup (17 shards / 3 per epoch ≈ 6 epochs)
+  shards_per_epoch: 3 # 3 × 14.2M = 42.6M positions/epoch → ~11.9 GB GPU load
+                      # (old shards were 30M each; new decisive shards are ~14.2M)
+                      # 4 shards = ~15.9 GB — also fine if 3 feels too slow
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  amp: true
+  sharded_gpu: true
+  val_workers: 0      # ROCm: pin_memory + worker subprocesses → GPU page faults
+
+model:
+  feature_encoding: halfkav2
+  input_dim: 45056    # HalfKAv2: 11 slots × 64 × 64
+  hidden_dim: 768
+  hidden2_dim: 256
+  dropout: 0.1    # 0.05→0.1: b6/b7 opening buckets have few decisive positions,
+                  # higher dropout prevents memorising sparse opening patterns
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  train_shards:
+    - data/lichess_hf/tactical_v2/decisive_shuffled   # 17 globally shuffled shards
+
+  # Val: 2M positions from shard_16 (held out from training, unfiltered).
+  # Binary .npy files auto-detected alongside this path.
+  val_file: data/lichess_hf/val_lichess.jsonl
+
+  max_cp_abs: 800

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import random
 from pathlib import Path
 
@@ -331,6 +332,9 @@ def main():
     ap.add_argument("--resume", default=None, help="Resume fine-tuning from a checkpoint (.pt)")
     ap.add_argument("--reset-best-val", action="store_true",
                     help="Reset best_val to inf when resuming (use when finetuning on a different dataset)")
+    ap.add_argument("--reset-scheduler", action="store_true",
+                    help="Rebuild scheduler from config (epochs/warmup) without loading checkpoint state. "
+                         "Positions the cosine so the current LR is continuous — no LR jump.")
     ap.add_argument("--tb-logdir", default="runs/nn_training", help="TensorBoard log directory")
     ap.add_argument("--warmup-epochs", type=int, default=None, help="Override warmup_epochs from config")
     ap.add_argument("--lr", type=float, default=None, help="Override lr from config")
@@ -544,13 +548,52 @@ def main():
             # Continuing the same run: restore full training state.
             if "optimizer_state" in ck:
                 optimizer.load_state_dict(ck["optimizer_state"])
-            if "scheduler_state" in ck:
-                scheduler.load_state_dict(ck["scheduler_state"])
             if "scaler_state" in ck:
                 scaler.load_state_dict(ck["scaler_state"])
             best_val = ck.get("val_loss", float("inf"))
             best_val_cp_mae = ck.get("val_cp_mae", float("inf"))
             start_epoch = ck.get("epoch", 0) + 1
+
+            if args.reset_scheduler:
+                # Rebuild scheduler with config's epochs/warmup_epochs (T_max may
+                # have changed), positioned so the first step() is LR-continuous
+                # with the checkpoint's last LR.  We find the step on the new
+                # cosine where LR ≈ checkpoint_lr, then advance there.
+                # This avoids the LR-jump that a naive epoch-count reset would cause.
+                _ck_lr = ck.get("last_lr", None)
+                if _ck_lr is None:
+                    # Fall back: read from optimizer state
+                    _ck_lr = optimizer.param_groups[0]["lr"]
+
+                _lr_base  = cfg["training"]["lr"]
+                _eta_min  = _lr_base / 100
+                _T_max    = max(1, cfg["training"]["epochs"] - warmup_epochs)
+
+                # Binary-search for the cosine step that gives LR closest to _ck_lr.
+                # cosine_step in [0, T_max]; LR is monotonically decreasing.
+                _lo, _hi = 0, _T_max
+                for _ in range(64):  # 64 bisections → precision < 1e-18 of T_max
+                    _mid = (_lo + _hi) // 2
+                    _mid_lr = _eta_min + 0.5 * (_lr_base - _eta_min) * (
+                        1 + math.cos(math.pi * _mid / _T_max)
+                    )
+                    if _mid_lr > _ck_lr:
+                        _lo = _mid
+                    else:
+                        _hi = _mid
+                _cosine_step = (_lo + _hi) // 2
+                # Total scheduler steps = warmup_epochs + cosine_step
+                _advance = warmup_epochs + _cosine_step
+                for _ in range(_advance):
+                    scheduler.step()
+                _actual_lr = scheduler.get_last_lr()[0]
+                print(f"Resumed from {args.resume}  (scheduler rebuilt: T_max={_T_max}, "
+                      f"cosine_step={_cosine_step}/{_T_max}, "
+                      f"LR {_ck_lr:.6f} → {_actual_lr:.6f})")
+            else:
+                if "scheduler_state" in ck:
+                    scheduler.load_state_dict(ck["scheduler_state"])
+
             print(f"Resumed from {args.resume}  (val_loss={best_val:.4f}, val_cp_mae={best_val_cp_mae:.2f}, next epoch={start_epoch})")
 
     if cfg["training"].get("compile", False):
@@ -622,6 +665,7 @@ def main():
                 "val_loss": va["loss"],
                 "val_cp_mae": va["cp_mae"],
                 "epoch": epoch,
+                "last_lr": scheduler.get_last_lr()[0],
             }
             # Always overwrite latest — safe to resume from at any time
             torch.save(ckpt, latest_path)

@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json;
 
@@ -162,13 +162,17 @@ fn mv_to_uci(mv: ChessMove) -> String {
 // ── Solver ────────────────────────────────────────────────────────────────────
 
 /// Returns true if the engine finds the correct first move of the puzzle.
+///
+/// `movetime_ms`: when `Some(ms)`, search iteratively until the soft deadline
+/// (depth ceiling = 64).  When `None`, search to exactly `depth` plies.
 fn solve(
-    puzzle:    &Puzzle,
-    conductor: &PieceConductor,
-    tt:        &TranspositionTable,
-    depth:     i32,
-    fresh_tt:  bool,
-    params:    Option<&SearchParams>,
+    puzzle:       &Puzzle,
+    conductor:    &PieceConductor,
+    tt:           &TranspositionTable,
+    depth:        i32,
+    movetime_ms:  Option<u64>,
+    fresh_tt:     bool,
+    params:       Option<&SearchParams>,
 ) -> bool {
     let mut board = ChessBoard::new();
     board.set_from_fen(&puzzle.fen);
@@ -188,17 +192,21 @@ fn solve(
         tt
     };
 
+    let deadline = movetime_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+    // In movetime mode use a large depth ceiling so ID runs until the deadline.
+    let search_depth = if movetime_ms.is_some() { 64 } else { depth };
+
     let result = if let Some(p) = params {
-        // Custom params: always single-threaded for full determinism.
+        // Custom params: always single-threaded so parameters are the only variable.
         iterative_deepening_root_with_params(
             p.clone(),
             &mut board,
             conductor,
             None,
             tt_ref,
-            depth,
+            search_depth,
             is_white,
-            None,
+            deadline,
             None,
             None,
             RootNoiseConfig::NONE,
@@ -209,10 +217,10 @@ fn solve(
             conductor,
             None,
             tt_ref,
-            depth,
+            search_depth,
             is_white,
-            None, // no time limit
-            None, // no stop signal
+            deadline,
+            None,
             1,    // single-threaded for determinism
             None,
             RootNoiseConfig::NONE,
@@ -311,6 +319,12 @@ fn main() {
     let min_r:  u32     = arg!("--min-rating", 0u32);
     let max_r:  u32     = arg!("--max-rating", u32::MAX);
     let depth:  i32     = arg!("--depth",      7i32);
+    // --movetime N: solve each puzzle within N ms of search time (iterative deepening
+    // until deadline) instead of a fixed depth.  Mutually exclusive with --depth;
+    // movetime takes precedence when both are given.
+    let movetime_ms: Option<u64> = args.windows(2)
+        .find(|w| w[0] == "--movetime")
+        .and_then(|w| w[1].parse().ok());
     let seed:   u64     = arg!("--seed",       42u64);
     // 0 = use all available logical CPUs; 1 = single-threaded (deterministic).
     let num_threads: usize = arg!("--threads", 0usize);
@@ -340,11 +354,12 @@ fn main() {
         eprintln!("    [--count N]              puzzles to sample (default: 1000)");
         eprintln!("    [--min-rating N]         lower rating filter (default: 1200)");
         eprintln!("    [--max-rating N]         upper rating filter (default: 2200)");
-        eprintln!("    [--depth N]              search depth (default: 7)");
+        eprintln!("    [--depth N]              search depth (default: 7); ignored when --movetime is set");
+        eprintln!("    [--movetime N]           ms per puzzle (iterative deepening until deadline)");
         eprintln!("    [--seed N]               RNG seed for sampling (default: 42)");
         eprintln!("    [--eval-file FILE]       override embedded NNUE weights (any .npz)");
         eprintln!("    [--threads N]            parallel solvers (default 0=all CPUs; 1=single-threaded)");
-        eprintln!("    [--params FILE]          JSON file with SearchParams for tuning (forces single-threaded)");
+        eprintln!("    [--params FILE]          JSON file with SearchParams for tuning");
         eprintln!("    [--export-failures FILE] write failed puzzle lines for finetune");
         eprintln!("    [--export-all FILE]      write ALL puzzle lines for finetune (recommended)");
         eprintln!("    [--fresh-tt]             fresh TT per puzzle (unbiased A/B; implied by --threads>1)");
@@ -359,7 +374,11 @@ fn main() {
     println!("File:         {file}");
     let max_r_display = if max_r == u32::MAX { "∞".to_string() } else { max_r.to_string() };
     println!("Sample:       {count}  (rating {min_r}–{max_r_display})");
-    println!("Depth:        {depth}");
+    if let Some(ms) = movetime_ms {
+        println!("Movetime:     {ms} ms/puzzle  (depth ceiling: 64)");
+    } else {
+        println!("Depth:        {depth}");
+    }
     println!("Seed:         {seed}");
     let effective_threads = if num_threads == 0 {
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
@@ -371,6 +390,11 @@ fn main() {
     if !export_failures.is_empty() { println!("Export (failures): {export_failures}"); }
     if !export_all.is_empty()      { println!("Export (all):      {export_all}"); }
     println!();
+
+    // Warn when both --depth and --movetime are given; movetime wins.
+    if movetime_ms.is_some() && args.iter().any(|a| a == "--depth") {
+        eprintln!("note: --movetime takes precedence over --depth");
+    }
 
     // ── Load & sample ─────────────────────────────────────────────────────────
 
@@ -459,7 +483,7 @@ fn main() {
             // Each parallel solver gets its own TT — no cross-puzzle pollution
             // and no data races.  SearchParams is read-only so safe to share.
             let fresh = TranspositionTable::new(1 << 18);
-            let ok = solve(puzzle, &conductor, &fresh, depth, true, custom_params.as_ref());
+            let ok = solve(puzzle, &conductor, &fresh, depth, movetime_ms, true, custom_params.as_ref());
             let c = dot_counter.fetch_add(1, Ordering::Relaxed);
             if (c + 1) % dot_every == 0 { print!("."); let _ = stdout().flush(); }
             let export_line = need_export
@@ -470,7 +494,7 @@ fn main() {
         // Single-threaded: shared TT (or fresh per puzzle if --fresh-tt).
         let shared_tt = TranspositionTable::new(1 << 18);
         puzzles.iter().enumerate().map(|(i, puzzle)| {
-            let ok = solve(puzzle, &conductor, &shared_tt, depth, fresh_tt, custom_params.as_ref());
+            let ok = solve(puzzle, &conductor, &shared_tt, depth, movetime_ms, fresh_tt, custom_params.as_ref());
             if (i + 1) % dot_every == 0 { print!("."); let _ = stdout().flush(); }
             let export_line = need_export
                 .then(|| format!("{}\t{}", puzzle.fen, puzzle.moves.join(" ")));
@@ -560,7 +584,12 @@ fn main() {
         println!("    {:<30} {:>4}/{:<4}  ({:.1}%)", theme, s, n, pct(*s, *n));
     }
     println!();
-    println!("  depth={depth}  puzzles={total}  time={:.1}s  seed={seed}", elapsed.as_secs_f32());
+    let mode_str = if let Some(ms) = movetime_ms {
+        format!("movetime={ms}ms")
+    } else {
+        format!("depth={depth}")
+    };
+    println!("  {mode_str}  puzzles={total}  time={:.1}s  seed={seed}", elapsed.as_secs_f32());
 }
 
 fn stdout() -> std::io::Stdout {

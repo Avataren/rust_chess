@@ -201,8 +201,10 @@ target/release/puzzle_bench \
 `setoption name SearchParams` option — or hard-code the values back as the new
 `SearchParams::default()` once they're confirmed better.
 
-**Design note:** `--params` always forces single-threaded search inside the bench to ensure
-full determinism. The parallel-per-puzzle path (`--threads N` without `--params`) is unaffected.
+**Design note:** `--params` makes each puzzle's search single-threaded (no Lazy SMP per puzzle),
+but puzzles are still solved in parallel across Rayon workers when `--threads N > 1` is passed.
+Results are collected in original order so the overall solve rate is fully deterministic at any
+thread count. Use `--threads 0` (all CPUs) with `--params` to maximize tuning speed.
 
 ---
 

@@ -1,0 +1,65 @@
+seed: 137
+
+# ── HalfKAv2 768×256 — mateuszgrzyb/lichess-stockfish-normalized ─────────────
+#
+# Dataset: 316M unique positions, deduplicated keeping highest-depth Stockfish
+# eval per FEN. 10 parquet shards (~32M each). CP is WHITE-ABSOLUTE (already
+# converted from Lichess side-to-move). No WDL field; WDL loss uses CP-derived
+# win probability.
+#
+# Key differences from full_v1:
+#   - New dataset (deduplicated vs. raw game stream → less positional overlap)
+#   - No manual shuffle needed: shards are already diverse (one entry per FEN)
+#   - shards_per_epoch: 2 (each shard is ~32M, so 2 × 32M = 64M positions/epoch)
+#
+# Data prep (one-time, download + encode all 10 shards, ~90 min):
+#   python3 scripts/download_lichess_hf.py \
+#       --output data/normalized_hf \
+#       --min-depth 0 \
+#       --shards 0-9
+#
+# Training command (from scratch):
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_768x256_normalized_v1.yaml \
+#     --out     artifacts/checkpoint_normalized_v1.pt \
+#     --tb-logdir runs/halfkav2_768x256_normalized_v1
+#
+# To resume:
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_768x256_normalized_v1.yaml \
+#     --resume  artifacts/checkpoint_normalized_v1_latest.pt \
+#     --out     artifacts/checkpoint_normalized_v1.pt \
+#     --tb-logdir runs/halfkav2_768x256_normalized_v1
+
+training:
+  batch_size: 32768
+  epochs: 300
+  lr: 0.001
+  warmup_epochs: 6    # ~1 full pass of warmup (6 shards / 1 per epoch = 6 epochs/pass)
+  shards_per_epoch: 1  # 1 × ~52.7M = ~52.7M positions/epoch; 300 epochs ≈ 50 full passes
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  amp: true
+  sharded_gpu: true
+  val_workers: 0      # ROCm: pin_memory + worker subprocesses → GPU page faults
+
+model:
+  feature_encoding: halfkav2
+  input_dim: 45056    # HalfKAv2: 11 slots × 64 × 64
+  hidden_dim: 768
+  hidden2_dim: 256
+  dropout: 0.1
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  train_shards:
+    - data/normalized_hf/shards_6
+
+  val_file: data/normalized_hf/val_normalized
+
+  max_cp_abs: 800

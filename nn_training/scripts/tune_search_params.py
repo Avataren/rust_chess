@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -86,6 +87,7 @@ def run_puzzle_bench(
     depth:        int,
     seed:         int,
     threads:      int = 0,
+    movetime_ms:  "int | None" = None,
 ) -> float:
     """Write params JSON, run puzzle_bench, return solve rate in [0, 1]."""
     with tempfile.NamedTemporaryFile(
@@ -101,12 +103,15 @@ def run_puzzle_bench(
             "--eval-file",  eval_file,
             "--count",      str(count),
             "--min-rating", str(min_rating),
-            "--depth",      str(depth),
             "--seed",       str(seed),
             "--threads",    str(threads),
             "--fresh-tt",
             "--params",     params_path,
         ]
+        if movetime_ms is not None:
+            cmd += ["--movetime", str(movetime_ms)]
+        else:
+            cmd += ["--depth", str(depth)]
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -181,6 +186,78 @@ def define_search_space(trial, args) -> dict:
     return params
 
 
+def trial_params_to_dict(trial) -> dict:
+    """Reconstruct the full SearchParams dict from a completed Optuna trial."""
+    params = {}
+    for key, val in trial.params.items():
+        if not key.startswith("lmp_base_"):
+            params[key] = val
+    params["lmp_base"] = [
+        0,
+        trial.params.get("lmp_base_1", 4),
+        trial.params.get("lmp_base_2", 8),
+        trial.params.get("lmp_base_3", 13),
+        trial.params.get("lmp_base_4", 20),
+    ]
+    return params
+
+
+def run_self_play(
+    self_play_bin: str,
+    engine_bin:    str,
+    eval_file:     str,
+    params:        dict,
+    num_games:     int,
+    movetime_ms:   int,
+    threads:       int,
+    opening_fens:  "str | None",
+) -> float:
+    """Run self_play: engine1 with candidate params vs engine2 with default params.
+
+    Returns engine1 score in [0, 1].  A score > 0.5 means the candidate beats
+    the current SearchParams::default() compiled into the binary.
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(params, f)
+        params_path = f.name
+
+    try:
+        cmd = [
+            self_play_bin,
+            engine_bin, engine_bin,
+            "--games",    str(num_games),
+            "--movetime", str(movetime_ms),
+            "--no-ponder",
+            "--engine1-opt", f"SearchParamsFile={params_path}",
+            "--engine1-opt", f"EvalFile={eval_file}",
+            "--engine1-opt", "NeuralEval=true",
+            "--engine2-opt", f"EvalFile={eval_file}",
+            "--engine2-opt", "NeuralEval=true",
+        ]
+        if threads > 0:
+            cmd += [
+                "--engine1-opt", f"Threads={threads}",
+                "--engine2-opt", f"Threads={threads}",
+            ]
+        if opening_fens:
+            cmd += ["--opening-fens", opening_fens]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        if result.returncode != 0:
+            print(f"[warn] self_play failed:\n{result.stderr[:400]}", file=sys.stderr)
+            return 0.5
+
+        # The last line matching "score: X.X%" is always engine1's score.
+        score = 0.5
+        for line in result.stdout.splitlines():
+            m = re.search(r'score:\s*([\d.]+)%', line)
+            if m:
+                score = float(m.group(1)) / 100.0
+        return score
+    finally:
+        os.unlink(params_path)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -199,7 +276,11 @@ def main() -> None:
     ap.add_argument("--min-rating",   type=int, default=1500,
                     help="Minimum puzzle rating")
     ap.add_argument("--depth",        type=int, default=12,
-                    help="Search depth for each puzzle")
+                    help="Search depth per puzzle (ignored when --movetime is set)")
+    ap.add_argument("--movetime",     type=int, default=None,
+                    help="Search time per puzzle in ms (iterative deepening until deadline). "
+                         "Use this instead of --depth to optimise for NNUE speed profile. "
+                         "Typical: 50-100ms for fast tuning, 200ms for high-quality signal.")
     ap.add_argument("--seed",         type=int, default=42,
                     help="Fixed seed for reproducible puzzle sampling")
     ap.add_argument("--study-name",   default="search_tuning",
@@ -210,6 +291,22 @@ def main() -> None:
                     help="Output file for best params")
     ap.add_argument("--threads",      type=int, default=0,
                     help="CPU threads for puzzle_bench (default 0=all)")
+
+    # ── Phase 2: self-play validation ─────────────────────────────────────────
+    ap.add_argument("--self-play-bin",  default=None,
+                    help="Path to self_play binary (enables Phase 2)")
+    ap.add_argument("--engine-bin",     default="../target/release/chess_uci",
+                    help="Path to chess_uci binary used for self-play")
+    ap.add_argument("--top-k",          type=int, default=5,
+                    help="Top-K Optuna candidates to validate via self-play")
+    ap.add_argument("--sp-games",       type=int, default=40,
+                    help="Self-play games per candidate (default 40, SE≈7.9%%)")
+    ap.add_argument("--sp-movetime",    type=int, default=100,
+                    help="Self-play movetime in ms (default 100)")
+    ap.add_argument("--sp-threads",     type=int, default=1,
+                    help="Threads per engine in self-play (default 1 for clean param signal)")
+    ap.add_argument("--sp-opening-fens", default=None,
+                    help="Optional FEN file for self-play openings (one FEN per line)")
     args = ap.parse_args()
 
     try:
@@ -220,8 +317,8 @@ def main() -> None:
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    # Baseline eval: measure the default params first so we can see improvement.
-    print("Measuring baseline (default params)...", flush=True)
+    mode_str = f"movetime={args.movetime}ms" if args.movetime else f"depth={args.depth}"
+    print(f"Measuring baseline (default params, {mode_str})...", flush=True)
     baseline = run_puzzle_bench(
         args.puzzle_bench,
         args.puzzle_file,
@@ -232,6 +329,7 @@ def main() -> None:
         args.depth,
         args.seed,
         args.threads,
+        args.movetime,
     )
     print(f"Baseline solve rate: {baseline:.3%}  ({int(baseline * args.count)}/{args.count})")
     print()
@@ -255,6 +353,7 @@ def main() -> None:
             args.depth,
             args.seed,
             args.threads,
+            args.movetime,
         )
         # Print progress inline
         solved = int(rate * args.count)
@@ -270,27 +369,67 @@ def main() -> None:
     print(f"Running {args.trials} Optuna trials...")
     study.optimize(objective, n_trials=args.trials, show_progress_bar=False)
 
-    best = study.best_trial
+    # ── Phase 1 results ───────────────────────────────────────────────────────
+    best_puzzle_trial = study.best_trial
     print()
     print("=" * 60)
-    print(f"Best trial: #{best.number}  solve rate: {best.value:.3%}")
-    print(f"Improvement over baseline: {best.value - baseline:+.3%}")
-    print()
-    best_params = define_search_space.__wrapped__(best) if hasattr(define_search_space, '__wrapped__') else {}
-    # Re-derive best params from best trial params dict
-    best_params = {}
-    for key, val in best.params.items():
-        if key.startswith("lmp_base_"):
-            pass  # handled below
-        else:
-            best_params[key] = val
-    # Reconstruct lmp_base from individual params
-    lmp1 = best.params.get("lmp_base_1", 4)
-    lmp2 = best.params.get("lmp_base_2", 8)
-    lmp3 = best.params.get("lmp_base_3", 13)
-    lmp4 = best.params.get("lmp_base_4", 20)
-    best_params["lmp_base"] = [0, lmp1, lmp2, lmp3, lmp4]
+    print(f"Phase 1 best: trial #{best_puzzle_trial.number}  "
+          f"solve rate: {best_puzzle_trial.value:.3%}  "
+          f"(+{best_puzzle_trial.value - baseline:+.3%} vs baseline)")
 
+    best_params = trial_params_to_dict(best_puzzle_trial)
+
+    # ── Phase 2: self-play validation of top-K candidates ────────────────────
+    if args.self_play_bin:
+        print()
+        print("=" * 60)
+        print(f"Phase 2: self-play validation  "
+              f"(top {args.top_k} candidates, {args.sp_games} games each, "
+              f"{args.sp_movetime}ms/move, {args.sp_threads} thread(s)/engine)")
+        print("=" * 60)
+
+        completed = [t for t in study.trials if t.value is not None]
+        top_trials = sorted(completed, key=lambda t: t.value, reverse=True)[:args.top_k]
+
+        print(f"  Puzzle scores of candidates: "
+              f"{', '.join(f'{t.value:.3%}' for t in top_trials)}")
+        print()
+
+        sp_results = []
+        for rank, trial in enumerate(top_trials):
+            cparams = trial_params_to_dict(trial)
+            print(f"  [{rank+1}/{len(top_trials)}] trial #{trial.number} "
+                  f"(puzzle {trial.value:.3%}) ... ", end="", flush=True)
+            sp_score = run_self_play(
+                args.self_play_bin,
+                args.engine_bin,
+                args.eval_file,
+                cparams,
+                args.sp_games,
+                args.sp_movetime,
+                args.sp_threads,
+                args.sp_opening_fens,
+            )
+            sign = "+" if sp_score > 0.5 else ""
+            print(f"self-play score: {sp_score:.1%}  ({sign}{sp_score - 0.5:+.1%} vs default)")
+            sp_results.append((sp_score, trial, cparams))
+
+        sp_results.sort(key=lambda x: x[0], reverse=True)
+        winner_score, winner_trial, winner_params = sp_results[0]
+
+        print()
+        print(f"  Self-play winner: trial #{winner_trial.number}  "
+              f"puzzle={winner_trial.value:.3%}  self-play={winner_score:.1%}")
+
+        # Use self-play winner (best among candidates, regardless of threshold).
+        # If the puzzle-best and self-play-best differ, note it.
+        best_params = winner_params
+        if winner_trial.number != best_puzzle_trial.number:
+            print(f"  Note: self-play winner differs from puzzle-best "
+                  f"(trial #{best_puzzle_trial.number})")
+
+    # ── Print and save ────────────────────────────────────────────────────────
+    print()
     print("Best params:")
     for k, v in sorted(best_params.items()):
         default_v = build_default_params().get(k, "?")

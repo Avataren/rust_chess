@@ -1,0 +1,88 @@
+seed: 137
+
+# ── Full re-train on tactical Lichess HF data ─────────────────────────────────
+#
+# Dataset: re-downloaded Lichess/chess-position-evaluations with
+#   --max-pieces 28   (excludes 29-32 piece pure-opening positions)
+#   --max-per-shard 30000000  (every shard hit 30M — 510M total positions)
+#   --cp-clamp 10000  (preserves mate scores as ±10000 → clipped to ±800 at train time)
+#   --min-depth 20    (depth-20+ Stockfish labels)
+#   Output: data/lichess_hf/tactical_v2/shards/  (17 shards, 30M positions each, ~8 GB each)
+#
+# Why this dataset is better than the original Lichess HF run:
+#   - 29-32 piece pure-opening positions excluded (≤28 pieces only); the most
+#     opening-heavy shards dropped from 58% to <18% opening content
+#   - ~19.5% decisive positions (|cp|=10000 mates or |cp|≥3000) → max gradient
+#     signal, clipped to ±800 at training time; was silently clamped to ±3000
+#   - int32 index files — no uint16→int16 reinterpretation workaround needed
+#   - All labels at depth ≥ 20 (no depth-14 data mixed in)
+#   - 510M positions (17 × 30M; every shard hit the 30M cap)
+#
+# Download command (run first; ~39-60 GB download, deletes each parquet after encoding):
+#
+#   The original download capped at 15M/shard (--max-per-shard 15000000).
+#   Every shard hit that cap exactly, meaning the parquets contain more depth-20+
+#   positions we didn't fetch. Raising the cap + relaxing to ≤28 pieces targets
+#   ~300M positions while still excluding the 29-32 piece pure-opening positions.
+#
+#   cd nn_training
+#   python3 scripts/download_lichess_hf.py \
+#     --output         data/lichess_hf/tactical_v2 \
+#     --max-pieces     28 \
+#     --max-per-shard  30000000 \
+#     --cp-clamp       10000 \
+#     --min-depth      20
+#
+# Training command (from scratch — no --resume):
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_1024x64_tactical_v2_scratch.yaml \
+#     --out     artifacts/checkpoint_tactical_v2.pt \
+#     --tb-logdir runs/1024x64_halfkav2_tactical_v2_scratch
+#
+# To resume a crash:
+#   PYTORCH_NO_HIPBLASLT=1 PYTHONPATH=. python3 scripts/train.py \
+#     --config  configs/halfkav2_1024x64_tactical_v2_scratch.yaml \
+#     --resume  artifacts/checkpoint_tactical_v2_latest.pt \
+#     --out     artifacts/checkpoint_tactical_v2.pt \
+#     --tb-logdir runs/1024x64_halfkav2_tactical_v2_scratch
+#
+# Disk cleanup after download (saves ~65 GB):
+#   rm -rf data/lichess_hf/shards data/lichess_hf/val_shard data/lichess_hf/tactical
+
+training:
+  batch_size: 32768
+  epochs: 300         # 17 shards / 2 per epoch = 8.5 mini-epochs per full pass
+                      # 300 epochs ≈ 35 full passes over 510M positions
+  lr: 0.001           # Full LR for from-scratch training
+  warmup_epochs: 9    # ≈ 1.1 full passes of warmup
+  shards_per_epoch: 2 # 2 × 30M = 60M positions/epoch → ~16.8 GB GPU load
+                      # (3 shards = 90M × 280 bytes = 25.2 GB → exceeds 25.8 GB VRAM)
+                      # Lower to shards_per_epoch: 1 (~8.4 GB) if val also hits OOM
+  weight_decay: 0.0001
+  grad_clip: 1.0
+  amp: true
+  sharded_gpu: true
+  val_workers: 0      # ROCm: pin_memory + worker subprocesses → GPU page faults
+
+model:
+  feature_encoding: halfkav2
+  input_dim: 45056    # HalfKAv2: 11 slots × 64 × 64
+  hidden_dim: 1024
+  hidden2_dim: 64
+  dropout: 0.05
+  dual_perspective: true
+  n_output_buckets: 8
+
+loss:
+  cp_weight: 0.9
+  wdl_weight: 0.1
+
+data:
+  train_shards:
+    - data/lichess_hf/tactical_v2/shards   # all 17 shards (no val leakage — val is shard_16)
+
+  # Val on val_lichess: 2M positions carved from shard_16, depth-20+, same source as training.
+  # Binary npy files auto-detected (val_lichess.white_indices.npy etc. exist).
+  val_file: data/lichess_hf/val_lichess.jsonl
+
+  max_cp_abs: 800

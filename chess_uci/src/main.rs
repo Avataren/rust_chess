@@ -11,7 +11,8 @@ use chess_evaluation::{
     eval_position_confidence, get_hce_fallback_count, reset_hce_fallback_count,
     init_neural_eval, is_neural_eval_enabled, is_neural_eval_initialized,
     iterative_deepening_root_with_tt, set_neural_confidence_threshold,
-    set_neural_eval_enabled, OpeningBook, RootNoiseConfig, TranspositionTable,
+    set_neural_eval_enabled, set_active_search_params, SearchParams,
+    OpeningBook, RootNoiseConfig, TranspositionTable,
 };
 
 /// Weights embedded at compile time for direct NN features (nn-full-forward / nn-incremental).
@@ -518,6 +519,7 @@ fn main() {
                 println!("option name SyzygyProbeLimit type spin default 0 min 0 max 7");
                 println!("option name DirichletAlpha type string default 0.0");
                 println!("option name DirichletAmplitude type string default 200.0");
+                println!("option name SearchParamsFile type string default <empty>");
                 println!("uciok");
             }
             "setoption" => {
@@ -604,6 +606,20 @@ fn main() {
                             if let Ok(a) = value.parse::<f32>() {
                                 dirichlet_amplitude_cp = a.max(1.0);
                                 eprintln!("info string DirichletAmplitude set to {dirichlet_amplitude_cp:.0}cp");
+                            }
+                        }
+                        "searchparamsfile" => {
+                            if !value.is_empty() && *value != "<empty>" {
+                                match std::fs::read_to_string(value) {
+                                    Ok(json) => match serde_json::from_str::<SearchParams>(&json) {
+                                        Ok(params) => {
+                                            set_active_search_params(params);
+                                            eprintln!("info string SearchParams loaded from {value}");
+                                        }
+                                        Err(e) => eprintln!("info string SearchParams parse error: {e}"),
+                                    },
+                                    Err(e) => eprintln!("info string SearchParams read error: {e}"),
+                                }
                             }
                         }
                         "ponder" => {

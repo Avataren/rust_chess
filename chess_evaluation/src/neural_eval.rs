@@ -31,10 +31,17 @@ use chess_board::ChessBoard;
 use chess_foundation::bitboard::Bitboard;
 
 // ── Architecture constants ────────────────────────────────────────────────
+//
+// These must match the trained model's hidden dimensions.
+// After changing, rebuild all binaries: cargo build --release
+// Python config: hidden_dim must equal HIDDEN1, hidden2_dim must equal HIDDEN2.
+//
+//   Current: HalfKAv2 768×256 (teacher model, to be distilled)
+//   Previous: 1024×64
 
-pub(crate) const HIDDEN1: usize = 1024;
-const HIDDEN2: usize = 64;
-const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 2048
+pub(crate) const HIDDEN1: usize = 768;
+const HIDDEN2: usize = 256;
+const HIDDEN1_DUAL: usize = HIDDEN1 * 2; // 1536
 
 // ── SCReLU activation: clamp(x,0,1)² ──────────────────────────────────────
 

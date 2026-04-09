@@ -13,8 +13,8 @@ Total output for 17 shards at 20M cap: ~340M positions ≈ 46 GB binary.
 Usage:
     cd nn_training
     PYTHONPATH=. python3 scripts/download_lichess_hf.py \
-        --output data/lichess_hf \
-        --min-depth 20 \
+        --output data/normalized_hf \
+        --min-depth 0 \
         --max-per-shard 15000000 \
         --cp-clamp 3000 \
         --workers 8
@@ -38,8 +38,8 @@ import pyarrow.parquet as pq
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from nnue_train.features import encode_board_halfkav2_dual, HALFKAV2_FEATURE_DIM
 
-REPO_ID   = "Lichess/chess-position-evaluations"
-NUM_SHARDS = 17
+REPO_ID   = "mateuszgrzyb/lichess-stockfish-normalized"
+NUM_SHARDS = 10
 MATE_SCORE = 10000   # CP value assigned to mate positions before clamping
 SENTINEL   = HALFKAV2_FEATURE_DIM  # 45056 — padding value for unused index slots
 
@@ -48,7 +48,9 @@ def _encode_position(fen: str, cp_stm: float, cp_clamp: float):
     """Encode one FEN to dual HalfKP indices + white-absolute CP.
 
     Returns (white_idx, black_idx, count, cp_white, piece_count) or None on error.
-    white_idx / black_idx are int16 arrays of length 32 (padded with SENTINEL).
+    white_idx / black_idx are int32 arrays of length 32 (padded with SENTINEL=45056).
+    Intermediate buffers are uint16 (values 0–45055 fit; max uint16 is 65535) then
+    widened to int32 before return — saved files are always int32, never int16.
     cp_white is white-absolute, clamped to ±cp_clamp.
     """
     try:
@@ -65,9 +67,9 @@ def _encode_position(fen: str, cp_stm: float, cp_clamp: float):
     wl = min(len(w_raw), 32);  w[:wl] = w_raw[:wl]
     bl = min(len(b_raw), 32);  b[:bl] = b_raw[:bl]
 
-    # Convert side-to-move CP → white-absolute
-    sign = 1.0 if board.turn == chess.WHITE else -1.0
-    cp_white = float(cp_stm) * sign
+    # Dataset is already white-absolute (mateuszgrzyb/lichess-stockfish-normalized).
+    # No sign flip needed — positive CP always means white is winning.
+    cp_white = float(cp_stm)
     cp_white = float(np.clip(cp_white, -cp_clamp, cp_clamp))
 
     return w.astype(np.int32), b.astype(np.int32), n_pieces, cp_white, n_pieces
@@ -82,6 +84,12 @@ def _encode_row(args: tuple) -> tuple | None:
     return _encode_position(fen, cp_stm, _CP_CLAMP_GLOBAL)
 
 
+def _piece_count_from_fen(fen: str) -> int:
+    """Count pieces on the board from a FEN string (fast, no chess.Board needed)."""
+    board_part = fen.split()[0]
+    return sum(1 for c in board_part if c.isalpha())
+
+
 def process_shard(
     shard_idx: int,
     parquet_path: Path,
@@ -90,17 +98,34 @@ def process_shard(
     max_positions: int,
     cp_clamp: float,
     workers: int,
+    max_pieces: int = 32,
+    min_pieces: int = 2,
 ) -> int:
-    """Convert one Parquet shard to binary .npy files. Returns number of positions written."""
+    """Convert one Parquet shard to binary .npy files. Returns number of positions written.
+
+    max_pieces: skip positions with more than this many pieces on the board.
+      Set to 24 to exclude opening positions (≥25 pieces) and focus on
+      middlegame/endgame positions where tactical patterns occur.
+      Default 32 keeps all positions (original behaviour).
+
+    min_pieces: skip positions with fewer than this many pieces.
+      Default 2 keeps all non-empty positions.
+    """
     import multiprocessing as mp
 
     global _CP_CLAMP_GLOBAL
     _CP_CLAMP_GLOBAL = cp_clamp
 
-    print(f"  Reading {parquet_path.name} (chunked, depth>={min_depth}) ...", flush=True)
+    filter_desc = f"depth>={min_depth}"
+    if max_pieces < 32:
+        filter_desc += f", pieces<={max_pieces}"
+
+    print(f"  Reading {parquet_path.name} (chunked, {filter_desc}) ...", flush=True)
     pfile = pq.ParquetFile(parquet_path)
 
     rows: list[tuple[str, float]] = []
+    n_depth_skip = 0
+    n_pieces_skip = 0
     for batch in pfile.iter_batches(
         batch_size=500_000,
         columns=["fen", "cp", "mate", "depth"],
@@ -112,7 +137,15 @@ def process_shard(
         for i in range(len(fens)):
             d = depths[i]
             if d is None or int(d) < min_depth:
+                n_depth_skip += 1
                 continue
+            # Piece count filter: skip opening positions early (cheap string scan,
+            # avoids constructing a chess.Board for positions we'll discard anyway).
+            if max_pieces < 32 or min_pieces > 2:
+                pc = _piece_count_from_fen(fens[i])
+                if pc > max_pieces or pc < min_pieces:
+                    n_pieces_skip += 1
+                    continue
             mate_val = mates[i]
             cp_val   = cps[i]
             if mate_val is not None:
@@ -122,12 +155,14 @@ def process_shard(
             else:
                 continue
             rows.append((fens[i], cp_stm))
-            if len(rows) >= max_positions:
+            if max_positions and len(rows) >= max_positions:
                 break
-        if len(rows) >= max_positions:
+        if max_positions and len(rows) >= max_positions:
             break
 
-    print(f"  {len(rows):,} positions after depth>={min_depth} filter", flush=True)
+    print(f"  {len(rows):,} positions after {filter_desc} filter", flush=True)
+    if n_pieces_skip:
+        print(f"  ({n_pieces_skip:,} skipped by piece count filter)", flush=True)
 
     if not rows:
         return 0
@@ -185,17 +220,24 @@ def process_shard(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--output",        default="data/lichess_hf",
+    ap.add_argument("--output",        default="data/normalized_hf",
                     help="Output directory for shards + merged dataset")
-    ap.add_argument("--min-depth",     type=int,   default=20,
-                    help="Minimum Stockfish depth to include (default 20)")
-    ap.add_argument("--max-per-shard", type=int,   default=20_000_000,
-                    help="Max positions to take per shard (default 20M)")
-    ap.add_argument("--cp-clamp",      type=float, default=3000.0,
-                    help="Clamp CP to ±N (default 3000)")
+    ap.add_argument("--min-depth",     type=int,   default=0,
+                    help="Minimum Stockfish depth to include (default 0 = keep all)")
+    ap.add_argument("--max-per-shard", type=int,   default=0,
+                    help="Max positions to take per shard (default 0 = no limit)")
+    ap.add_argument("--cp-clamp",      type=float, default=10000.0,
+                    help="Clamp CP to ±N (default 10000; preserves mate scores as ±10000 "
+                         "for max tactical signal — old default was 3000 which discarded mates)")
+    ap.add_argument("--max-pieces",    type=int,   default=32,
+                    help="Skip positions with more than N pieces (default 32 = keep all). "
+                         "Use --max-pieces 24 to exclude opening positions (≥25 pieces) "
+                         "and focus on middlegame/endgame where tactical patterns occur.")
+    ap.add_argument("--min-pieces",    type=int,   default=2,
+                    help="Skip positions with fewer than N pieces (default 2 = keep all).")
     ap.add_argument("--workers",       type=int,   default=max(1, os.cpu_count() - 2),
                     help="Encoding worker processes")
-    ap.add_argument("--shards",        default="0-16",
+    ap.add_argument("--shards",        default="0-9",
                     help="Shard range to process, e.g. '0-16' or '0,1,2'")
     ap.add_argument("--keep-parquet",  action="store_true",
                     help="Don't delete Parquet files after conversion")
@@ -220,7 +262,7 @@ def main():
     total_positions = 0
 
     for idx in shard_indices:
-        filename = f"data/train-{idx:05d}-of-{NUM_SHARDS:05d}.parquet"
+        filename = f"train-{idx:05d}.parquet"
         shard_out = shards_dir / f"shard_{idx:02d}"
 
         # Skip if already converted
@@ -243,7 +285,7 @@ def main():
                 local_dir=str(parquet_dir),
                 local_dir_use_symlinks=False,
             )
-            downloaded = parquet_dir / filename  # e.g. parquet_dir/data/train-00000-...
+            downloaded = parquet_dir / filename  # e.g. parquet_dir/train-00000.parquet
             if downloaded.exists():
                 downloaded.rename(parquet_path)
             else:
@@ -257,6 +299,8 @@ def main():
             max_positions=args.max_per_shard,
             cp_clamp=args.cp_clamp,
             workers=args.workers,
+            max_pieces=args.max_pieces,
+            min_pieces=args.min_pieces,
         )
         total_positions += n
 

@@ -23,6 +23,7 @@ pub use alpha_beta::alpha_beta_root;
 pub use alpha_beta::iterative_deepening_root;
 pub use alpha_beta::iterative_deepening_root_with_tt;
 pub use alpha_beta::iterative_deepening_root_with_params;
+pub use alpha_beta::set_active_search_params;
 pub use alpha_beta::search_root;
 pub use alpha_beta::{ASPIRATION_DELTA, TT_SIZE, TT_SIZE_DEFAULT, RootNoiseConfig, SearchContext, SearchParams, SearchResult, available_threads};
 pub use alpha_beta::extract_ponder_move;

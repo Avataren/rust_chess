@@ -1,0 +1,23 @@
+{
+  "rfp_improving_margin": 79,
+  "rfp_not_improving_margin": 120,
+  "rfp_max_depth": 4,
+  "futility_margin": 237,
+  "futility_max_depth": 4,
+  "delta_margin": 480,
+  "probcut_margin": 247,
+  "probcut_min_depth": 7,
+  "nmp_excess_divisor": 339,
+  "aspiration_delta": 42,
+  "aspiration_min_depth": 4,
+  "se_margin": 41,
+  "history_pruning_threshold": 465,
+  "history_pruning_max_depth": 5,
+  "lmp_base": [
+    0,
+    5,
+    16,
+    19,
+    30
+  ]
+}
