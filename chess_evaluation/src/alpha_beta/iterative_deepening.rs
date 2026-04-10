@@ -242,6 +242,7 @@ pub fn iterative_deepening_root_with_tt(
     let wrapped_ref: &(dyn Fn(i32, i32, u64, u128) + Sync) = &wrapped_cb;
     let on_depth_smp = on_depth.map(|_| wrapped_ref);
 
+    let smp_params = active_search_params();
     rayon::scope(|s| {
         // Spawn N-1 helper threads, each with its own board clone & context.
         for i in 0..num_threads - 1 {
@@ -250,8 +251,9 @@ pub fn iterative_deepening_root_with_tt(
             let hs = Arc::clone(&helper_stop);
             let ext = stop.clone();
             let hn = Arc::clone(&helper_nodes);
+            let params = smp_params.clone();
             s.spawn(move |_| {
-                smp_helper(&mut board, &cond, tt, max_depth, is_white, hs, ext, i, hn);
+                smp_helper(&mut board, &cond, tt, max_depth, is_white, hs, ext, i, hn, params);
             });
         }
 
@@ -509,12 +511,13 @@ fn smp_helper(
     ext_stop: Option<Arc<AtomicBool>>,
     thread_idx: usize,
     total_nodes: Arc<AtomicU64>,
+    params: SearchParams,
 ) {
     // Stagger starting depth across helpers so they cover different layers.
     let start_depth = 1 + (thread_idx % 3) as i32;
 
     'outer: loop {
-        let mut ctx = SearchContext::new();
+        let mut ctx = SearchContext::with_params(params.clone());
         ctx.init_accumulators(chess_board);
         let mut prev_score: i32 = if is_white { i32::MIN + 1 } else { i32::MAX };
         let mut prev_move: Option<ChessMove> = None;

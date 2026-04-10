@@ -464,8 +464,9 @@ fn main() {
     let mut board = ChessBoard::new();
     let mut move_number: usize = 1;
 
-    // TT size: default 96 MB (4M entries × 24 B).  Configurable via UCI Hash.
-    let mut hash_mb: usize = 96;
+    // TT size: default 128 MB (5.3M entries × 24 B).  Configurable via UCI Hash.
+    // 128MB pairs well with the default 16-thread config (sweet spot from sweep).
+    let mut hash_mb: usize = 128;
     let entries_for_mb = |mb: usize| mb * 1024 * 1024 / 24;
 
     // Persistent TT: survives across moves so the engine reuses prior search
@@ -473,12 +474,14 @@ fn main() {
     // Cleared on `ucinewgame` or when Hash size changes.
     let mut tt: Arc<TranspositionTable> = Arc::new(TranspositionTable::new(entries_for_mb(hash_mb)));
 
-    // Lazy SMP thread count.  Default = min(6, available logical CPUs).
-    // 6 threads is the empirical sweet spot on the benchmark suite (depth 7).
+    // Lazy SMP thread count.  Default = min(16, available logical CPUs).
+    // 16 threads + 128MB hash is the empirical sweet spot: self-play at 500ms/move
+    // shows 16t/128MB scoring ~60% vs 1t, while 32t/256MB is roughly equal to 1t
+    // (cache thrashing cancels the parallelism benefit at high thread counts).
     // Override via "setoption name Threads value N"; the value is capped at
     // the number of logical CPUs to avoid over-subscription.
     let max_threads = chess_evaluation::available_threads();
-    let default_threads = max_threads.min(6);
+    let default_threads = max_threads.min(16);
     let mut num_threads: usize = default_threads;
 
     // Syzygy tablebase probe limit: probe when piece count <= this value.

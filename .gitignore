@@ -19,7 +19,7 @@ web/wasm/chess_bg.wasm
 web/wasm/chess_bg.wasm.d.ts
 web/wasm/snippets/
 arguments_log.txt
-lichess-bot/
+lichess-bot/config.yml
 lichess_db_puzzle.csv.zst
 
 # Profiling artifacts
