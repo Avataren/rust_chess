@@ -405,13 +405,13 @@ pub fn evaluate(chess_board: &ChessBoard, conductor: &PieceConductor) -> i32 {
         conductor, white_king_sq,
         black & knights, black & bishops, black & rooks, black & queens,
         occupied,
-        white_pawns_bb, black_pawns_bb,
+        white_pawns_bb, black_pawns_bb, true,
     );
     mg += king_safety::king_attack_penalty(
         conductor, black_king_sq,
         white & knights, white & bishops, white & rooks, white & queens,
         occupied,
-        black_pawns_bb, white_pawns_bb,
+        black_pawns_bb, white_pawns_bb, false,
     );
 
     // --- Bishop pair ---

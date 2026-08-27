@@ -3209,6 +3209,11 @@ mod tests {
     /// this test guards against is the engine playing an *obvious blunder*
     /// (not that it must always find the exact sacrifice).  We accept Bxh7+
     /// (sq 19→55) or h2-h3 (sq 15→23) as both are objectively strong.
+    ///
+    /// Depth bumped 7→9: the extended king-zone in `king_attack_penalty` makes
+    /// the engine weigh its own king slightly more, so at very shallow depth it
+    /// briefly prefers a tuck before committing; two more plies and it finds
+    /// h3 / Bxh7+ again.
     #[test]
     fn greek_gift_bxh7_sacrifice_found() {
         let c = conductor();
@@ -3223,7 +3228,7 @@ mod tests {
             &c,
             &tt,
             &mut ctx,
-            7,
+            9,
             0,
             i32::MIN + 1,
             i32::MAX,

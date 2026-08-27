@@ -60,10 +60,19 @@ pub(super) fn king_attack_penalty(
     occupied: Bitboard,
     friendly_pawns: u64,
     enemy_pawns: u64,
+    is_white_king: bool,
 ) -> i32 {
-    // King zone = king square + 8 surrounding squares.
-    let zone = conductor.king_lut[king_sq] | Bitboard(1u64 << king_sq);
+    // Base king zone = king square + 8 surrounding squares.
+    let base = Bitboard(conductor.king_lut[king_sq].0 | (1u64 << king_sq));
     let king_file = king_sq % 8;
+
+    // Extended zone adds the infiltration row one rank toward the enemy
+    // (f3/g3/h3 vs a g1 king) — the squares an attacking knight / rook / queen
+    // uses to swarm a king without ever landing on the 8 base squares (e.g.
+    // Nf4 + Qg4 vs Kg1 read as "no attackers" under the base zone alone).
+    // Bishops keep the base zone: a bishop on g4/g5 is usually a pin, and
+    // counting its f3/h3 ray produces phantom king-danger.
+    let zone = Bitboard(base.0 | if is_white_king { base.0 << 8 } else { base.0 >> 8 });
 
     let mut attack_weight = 0i32;
     let mut attacker_count = 0i32;
@@ -76,16 +85,16 @@ pub(super) fn king_attack_penalty(
         }
     });
 
-    // Bishops
+    // Bishops — base zone only (see note above).
     super::for_each_sq(enemy_bishops, |sq| {
         let attacks = conductor.get_bishop_attacks(sq, Bitboard(0), occupied);
-        if (attacks & zone).0 != 0 {
+        if (attacks & base).0 != 0 {
             attack_weight += super::BISHOP_ATTACK_WEIGHT;
             attacker_count += 1;
 
             // Greek Gift bonus: bishop has a clear diagonal to the h-file pawn
             // of a kingside-castled king (king on g-file = file 6).
-            if king_file == 6 && (attacks.0 & zone.0 & super::H_FILE) != 0 {
+            if king_file == 6 && (attacks.0 & base.0 & super::H_FILE) != 0 {
                 attack_weight += super::GREEK_GIFT_BONUS;
             }
         }
