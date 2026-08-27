@@ -50,6 +50,11 @@ pub(super) fn king_shield_penalty(king_sq: usize, friendly_pawns: u64, is_white:
 ///
 /// The total is scaled down by ~50% when the enemy has no queen, since
 /// mating attacks without a queen are much rarer.
+///
+/// `attacker_lead` is the attacking (enemy) side's non-pawn material minus this
+/// king's side. When negative — the attacker has sacrificed — the penalty is
+/// scaled down: a static eval can't confirm a sac works, so a phantom +150 must
+/// not paper over a real material deficit (unsound Nxc5 / …Bxh3 sacs).
 pub(super) fn king_attack_penalty(
     conductor: &PieceConductor,
     king_sq: usize,
@@ -61,6 +66,7 @@ pub(super) fn king_attack_penalty(
     friendly_pawns: u64,
     enemy_pawns: u64,
     is_white_king: bool,
+    attacker_lead: i32,
 ) -> i32 {
     // Base king zone = king square + 8 surrounding squares.
     let base = Bitboard(conductor.king_lut[king_sq].0 | (1u64 << king_sq));
@@ -139,5 +145,15 @@ pub(super) fn king_attack_penalty(
     let has_enemy_queen = enemy_queens.0 != 0;
     let weight = if has_enemy_queen { attack_weight } else { attack_weight / 2 };
 
-    super::SAFETY_TABLE[weight.min(super::SAFETY_TABLE.len() as i32 - 1) as usize]
+    let raw = super::SAFETY_TABLE[weight.min(super::SAFETY_TABLE.len() as i32 - 1) as usize];
+
+    // Discount an attack the attacker paid material for. attacker_lead < 0 means
+    // a sac is on the board: minor-for-pawn (~−200) keeps ~76%, a clean piece
+    // (~−330) ~60%, a full rook (~−500) ~40%, floor 25%.
+    if attacker_lead >= 0 {
+        raw
+    } else {
+        let keep = (1000 - (-attacker_lead).min(700) * 6 / 5).max(250);
+        raw * keep / 1000
+    }
 }

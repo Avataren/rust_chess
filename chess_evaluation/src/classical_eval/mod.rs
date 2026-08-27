@@ -334,6 +334,18 @@ pub fn evaluate(chess_board: &ChessBoard, conductor: &PieceConductor) -> i32 {
     let n = count(black & rooks);   mg -= n * MG_ROOK_VALUE;   eg -= n * EG_ROOK_VALUE;
     let n = count(black & queens);  mg -= n * MG_QUEEN_VALUE;  eg -= n * EG_QUEEN_VALUE;
 
+    // Non-pawn material each side — used to discount a king attack mounted by a
+    // side that has *paid material* for it (an unsound sac: the static eval can't
+    // verify the attack works, so don't let a phantom +150 offset a real −300).
+    let white_np_mat = count(white & knights) * MG_KNIGHT_VALUE
+        + count(white & bishops) * MG_BISHOP_VALUE
+        + count(white & rooks)   * MG_ROOK_VALUE
+        + count(white & queens)  * MG_QUEEN_VALUE;
+    let black_np_mat = count(black & knights) * MG_KNIGHT_VALUE
+        + count(black & bishops) * MG_BISHOP_VALUE
+        + count(black & rooks)   * MG_ROOK_VALUE
+        + count(black & queens)  * MG_QUEEN_VALUE;
+
 
     // --- PSTs (non-pawn pieces computed fresh; pawns via pawn hash) ---
     for_each_sq(white & knights, |sq| { mg += mg_knight_table(sq, true); eg += eg_knight_table(sq, true); });
@@ -401,17 +413,22 @@ pub fn evaluate(chess_board: &ChessBoard, conductor: &PieceConductor) -> i32 {
     // Attack counting: penalise when multiple enemy pieces aim at the king zone.
     // Open files near the king and enemy queen presence amplify the danger.
     let occupied = chess_board.get_all_pieces();
+    // `attacker_lead`: the attacking side's non-pawn material minus the
+    // defender's. When it's negative the attacker has sacrificed for the attack,
+    // and `king_attack_penalty` scales its result down accordingly.
     mg -= king_safety::king_attack_penalty(
         conductor, white_king_sq,
         black & knights, black & bishops, black & rooks, black & queens,
         occupied,
         white_pawns_bb, black_pawns_bb, true,
+        black_np_mat - white_np_mat,
     );
     mg += king_safety::king_attack_penalty(
         conductor, black_king_sq,
         white & knights, white & bishops, white & rooks, white & queens,
         occupied,
         black_pawns_bb, white_pawns_bb, false,
+        white_np_mat - black_np_mat,
     );
 
     // --- Bishop pair ---
