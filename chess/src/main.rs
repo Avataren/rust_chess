@@ -90,6 +90,17 @@ fn main() {
                 ..default()
             }),
             ..default()
+        })
+        // Compile render pipelines synchronously on the render thread instead of
+        // spawning tasks onto `AsyncComputeTaskPool`. The chess engine floods that
+        // pool with long-running search/ponder tasks (see `chess_event_handler`),
+        // which starves Bevy's async pipeline compilation and leaves a compile
+        // in-flight when the window closes — the task then calls into the Vulkan
+        // device *after* render teardown has freed it, hanging/segfaulting the
+        // NVIDIA driver on exit.
+        .set(bevy::render::RenderPlugin {
+            synchronous_pipeline_compilation: true,
+            ..default()
         }))
         .add_plugins(EmbeddedAssetPlugin)
         .add_plugins(TweeningPlugin)
