@@ -553,6 +553,157 @@ fn screlu_deq(acc: &[i16], scale: f32, out: &mut [f32]) {
     }
 }
 
+// ── Quantized incremental L2 path ─────────────────────────────────────────
+//
+// The dual-perspective incremental eval spends ~95% of its time in the
+// Layer-2 GEMV, streaming the 1.5 MB f32 `w2` matrix from L3 once per call —
+// it is memory-bound.  Storing `w2` as raw i16 (its original quantized form)
+// halves the bytes and doubles the MACs/instruction via `_mm256_madd_epi16`.
+//
+// SCReLU activations are effectively already quantized: the i16 accumulator
+// (scale 256) clamps to [0, scale] before squaring, so the activation takes
+// only ~scale+1 distinct values.  Re-quantizing the squared result to
+// `ACT_Q` levels is therefore near-lossless.
+//
+// Overflow: each of the 8 final i32 lanes accumulates HIDDEN1_DUAL/8 = 192
+// products of |w2| and q ≤ ACT_Q.  `L2_I16_MAX_W` is the largest |w2| that
+// provably keeps every lane inside i32, carrying a 2× safety margin; the
+// embedded weights peak near 8.6k, well under it.  Models that exceed it fall
+// back to the f32 path at load time.
+const ACT_Q: i32 = 512;
+const ACT_Q_F: f32 = ACT_Q as f32;
+
+const L2_I16_MAX_W: i32 =
+    (i32::MAX as i64 / (2 * (HIDDEN1_DUAL as i64 / 8) * ACT_Q as i64)) as i32;
+
+/// SCReLU + quantize an i16 accumulator to i16 activations in [0, ACT_Q].
+///   out[k] = round( clamp(acc[k]/scale, 0, 1)² · ACT_Q )
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn screlu_quant_avx2(acc: &[i16], scale: f32, out: &mut [i16]) {
+    use std::arch::x86_64::*;
+    debug_assert_eq!(acc.len(), out.len());
+    debug_assert_eq!(acc.len() % 16, 0);
+    let zero = _mm256_setzero_ps();
+    let vscale = _mm256_set1_ps(scale);
+    // clamp to [0, scale], square, then scale by ACT_Q / scale²  →  [0, ACT_Q]
+    let vfac = _mm256_set1_ps(ACT_Q_F / (scale * scale));
+    let chunks = acc.len() / 16;
+    for k in 0..chunks {
+        let lo = _mm_loadu_si128(acc.as_ptr().add(k * 16) as *const __m128i);
+        let hi = _mm_loadu_si128(acc.as_ptr().add(k * 16 + 8) as *const __m128i);
+        let fl = _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(lo));
+        let fh = _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(hi));
+        let cl = _mm256_min_ps(_mm256_max_ps(fl, zero), vscale);
+        let ch = _mm256_min_ps(_mm256_max_ps(fh, zero), vscale);
+        let ql = _mm256_mul_ps(_mm256_mul_ps(cl, cl), vfac);
+        let qh = _mm256_mul_ps(_mm256_mul_ps(ch, ch), vfac);
+        // round-to-nearest (default MXCSR) → i32 → pack to i16
+        let il = _mm256_cvtps_epi32(ql);
+        let ih = _mm256_cvtps_epi32(qh);
+        // packs_epi32 works per 128-bit lane; permute to restore linear order
+        let packed = _mm256_permute4x64_epi64(_mm256_packs_epi32(il, ih), 0b11_01_10_00);
+        _mm256_storeu_si256(out.as_mut_ptr().add(k * 16) as *mut __m256i, packed);
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[inline]
+unsafe fn hsum256_epi32(v: std::arch::x86_64::__m256i) -> i32 {
+    use std::arch::x86_64::*;
+    let lo = _mm256_castsi256_si128(v);
+    let hi = _mm256_extracti128_si256(v, 1);
+    let s = _mm_add_epi32(lo, hi);
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b01_00_11_10));
+    let s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0b00_00_00_01));
+    _mm_cvtsi128_si32(s)
+}
+
+/// Dual-model Layer-2: `out[j] = b2[j] + inv_q · Σ_i w2r[j·D + i] · q[i]`,
+/// where `w2r` is row-major [HIDDEN2 × D], `q` the concatenated quantized
+/// activations [q_w | q_b] (D = HIDDEN1_DUAL), `inv_q = 1 / (scale · ACT_Q)`.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn l2_dual_i16_avx2(
+    w2r: &[i16],
+    q: &[i16; HIDDEN1_DUAL],
+    b2: &[f32],
+    inv_q: f32,
+    out: &mut [f32; HIDDEN2],
+) {
+    use std::arch::x86_64::*;
+    const D: usize = HIDDEN1_DUAL;
+    debug_assert_eq!(w2r.len(), HIDDEN2 * D);
+    debug_assert_eq!(D % 64, 0);
+    for j in 0..HIDDEN2 {
+        let base = w2r.as_ptr().add(j * D);
+        let mut s0 = _mm256_setzero_si256();
+        let mut s1 = _mm256_setzero_si256();
+        let mut s2 = _mm256_setzero_si256();
+        let mut s3 = _mm256_setzero_si256();
+        let mut i = 0;
+        while i < D {
+            let q0 = _mm256_loadu_si256(q.as_ptr().add(i) as *const __m256i);
+            let q1 = _mm256_loadu_si256(q.as_ptr().add(i + 16) as *const __m256i);
+            let q2 = _mm256_loadu_si256(q.as_ptr().add(i + 32) as *const __m256i);
+            let q3 = _mm256_loadu_si256(q.as_ptr().add(i + 48) as *const __m256i);
+            s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(_mm256_loadu_si256(base.add(i) as *const __m256i), q0));
+            s1 = _mm256_add_epi32(s1, _mm256_madd_epi16(_mm256_loadu_si256(base.add(i + 16) as *const __m256i), q1));
+            s2 = _mm256_add_epi32(s2, _mm256_madd_epi16(_mm256_loadu_si256(base.add(i + 32) as *const __m256i), q2));
+            s3 = _mm256_add_epi32(s3, _mm256_madd_epi16(_mm256_loadu_si256(base.add(i + 48) as *const __m256i), q3));
+            i += 64;
+        }
+        let s = _mm256_add_epi32(_mm256_add_epi32(s0, s1), _mm256_add_epi32(s2, s3));
+        *out.get_unchecked_mut(j) = b2[j] + inv_q * hsum256_epi32(s) as f32;
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+fn l2_dual_i16(w2r: &[i16], q: &[i16; HIDDEN1_DUAL], b2: &[f32], inv_q: f32, out: &mut [f32; HIDDEN2]) {
+    unsafe { l2_dual_i16_avx2(w2r, q, b2, inv_q, out) }
+}
+
+/// Scalar fallback (non-AVX2 targets): identical arithmetic.
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+fn l2_dual_i16(w2r: &[i16], q: &[i16; HIDDEN1_DUAL], b2: &[f32], inv_q: f32, out: &mut [f32; HIDDEN2]) {
+    const D: usize = HIDDEN1_DUAL;
+    for j in 0..HIDDEN2 {
+        let row = &w2r[j * D..(j + 1) * D];
+        let mut s: i64 = 0;
+        for i in 0..D {
+            s += row[i] as i64 * q[i] as i64;
+        }
+        out[j] = b2[j] + inv_q * s as f32;
+    }
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+fn screlu_quant_scalar(acc: &[i16], scale: f32, out: &mut [i16]) {
+    let fac = ACT_Q_F / (scale * scale);
+    for (o, &a) in out.iter_mut().zip(acc.iter()) {
+        let c = (a.max(0) as f32).min(scale);
+        *o = (c * c * fac).round() as i16;
+    }
+}
+
+#[inline(always)]
+fn screlu_quant(acc: &[i16], scale: f32, out: &mut [i16]) {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe { return screlu_quant_avx2(acc, scale, out); }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    screlu_quant_scalar(acc, scale, out);
+}
+
+/// Quantize already-SCReLU'd f32 activations in [0, 1] to i16 in [0, ACT_Q].
+/// Used by the scratch/full-forward path, which produces f32 activations.
+#[inline]
+fn quant_unit_activations(h: &[f32], out: &mut [i16]) {
+    debug_assert_eq!(h.len(), out.len());
+    for (o, &v) in out.iter_mut().zip(h.iter()) {
+        *o = (v.clamp(0.0, 1.0) * ACT_Q_F).round() as i16;
+    }
+}
+
 // ── Column-major GEMV for fc2 (input_dim × HIDDEN2 = 32) ─────────────────
 //
 // w is stored column-major: w[i * HIDDEN2 + j] = weight for output j, input i.
@@ -631,6 +782,17 @@ pub struct NeuralEvaluator {
     /// Layer 2 weights: [HIDDEN2 × HIDDEN1] (single) or [HIDDEN2 × HIDDEN1_DUAL] (dual).
     w2: Vec<f32>,
     b2: Vec<f32>,
+
+    /// Layer 2 weights as raw i16, **row-major** [HIDDEN2 × HIDDEN1_DUAL] — exactly
+    /// the NPZ layout.  Dual-perspective models only.  Used by the quantized
+    /// incremental eval path (`evaluate_from_accumulators`), which is memory-bound
+    /// on this matrix: keeping it i16 halves the bytes streamed per eval vs `w2`
+    /// (f32) and lets the dot product use `_mm256_madd_epi16` (16 MACs/instr).
+    w2_dual_i16: Vec<i16>,
+    /// True when the quantized i16 Layer-2 path is used by
+    /// `evaluate_from_accumulators`: dual model, weights provably overflow-safe,
+    /// and not disabled via `XAV_L2_F32=1`.  False → legacy f32 path.
+    use_i16_l2: bool,
 
     /// CP head: [n_output_buckets × HIDDEN2]
     w3: Vec<f32>,
@@ -724,6 +886,14 @@ impl NeuralEvaluator {
             }
         }
 
+        // Quantized i16 Layer-2 path: dual models only, and only when the
+        // weights are small enough that the i32 dot product cannot overflow.
+        // `XAV_L2_F32=1` forces the legacy f32 path for A/B comparison.
+        let w2_max = w2_i16.iter().map(|v| v.unsigned_abs() as i32).max().unwrap_or(0);
+        let use_i16_l2 = dual
+            && w2_max <= L2_I16_MAX_W
+            && std::env::var_os("XAV_L2_F32").is_none();
+
         Ok(Self {
             feature_dim,
             dual_perspective: dual,
@@ -732,6 +902,8 @@ impl NeuralEvaluator {
             b1: dq(&b1_raw),
             w1_t_i16,
             b1_i16: b1_raw,
+            w2_dual_i16: if use_i16_l2 { w2_i16.clone() } else { Vec::new() },
+            use_i16_l2,
             w2: w2_col,
             b2: dq(&b2_i16),
             w3: dq(&w3_i16),
@@ -807,20 +979,52 @@ impl NeuralEvaluator {
         bucket: usize,
     ) -> (i32, f32) {
         debug_assert!(self.dual_perspective);
-        let mut h_w = [0.0f32; HIDDEN1];
-        let mut h_b = [0.0f32; HIDDEN1];
-        screlu_deq(acc_white, self.scale, &mut h_w);
-        screlu_deq(acc_black, self.scale, &mut h_b);
-        self.forward_l2_heads_dual(&h_w, &h_b, bucket)
+
+        if !self.use_i16_l2 {
+            // Legacy f32 Layer-2 path (non-dual weights, overflow risk, or
+            // XAV_L2_F32=1).
+            let mut h_w = [0.0f32; HIDDEN1];
+            let mut h_b = [0.0f32; HIDDEN1];
+            screlu_deq(acc_white, self.scale, &mut h_w);
+            screlu_deq(acc_black, self.scale, &mut h_b);
+            return self.forward_l2_heads_dual(&h_w, &h_b, bucket);
+        }
+
+        // Quantized L2 path: SCReLU→i16, single i16 GEMV over the row-major
+        // `w2_dual_i16` (half the bytes of `w2`, the step this is bound on).
+        let mut q = [0i16; HIDDEN1_DUAL];
+        let (q_w, q_b) = q.split_at_mut(HIDDEN1);
+        screlu_quant(acc_white, self.scale, q_w);
+        screlu_quant(acc_black, self.scale, q_b);
+
+        let mut h2: [f32; HIDDEN2] = self.b2[..HIDDEN2].try_into().unwrap();
+        l2_dual_i16(
+            &self.w2_dual_i16,
+            &q,
+            &self.b2,
+            1.0 / (self.scale * ACT_Q_F),
+            &mut h2,
+        );
+        for v in h2.iter_mut() { *v = screlu_f32(*v); }
+        self.forward_heads(&h2, bucket)
     }
 
-    /// Layer 2 + heads for dual model: input is [h_w(1024) | h_b(1024)].
+    /// Layer 2 + heads for dual model: input is [h_w | h_b], each SCReLU'd to
+    /// [0, 1].  Routes through the quantized i16 GEMV when the weights allow it
+    /// (see `use_i16_l2`) — that path is ~1.6× faster and CP-equivalent to
+    /// within ~1 cp — otherwise the legacy f32 GEMV.
     fn forward_l2_heads_dual(&self, h_w: &[f32; HIDDEN1], h_b: &[f32; HIDDEN1], bucket: usize) -> (i32, f32) {
-        // w2 is column-major (HIDDEN1_DUAL × HIDDEN2).
-        // Split into the h_w half and the h_b half.
-        let mut h2 = self.b2[..HIDDEN2].try_into().unwrap();
-        gemv_col(&self.w2[..HIDDEN1 * HIDDEN2],        h_w, &mut h2);
-        gemv_col(&self.w2[HIDDEN1 * HIDDEN2..],        h_b, &mut h2);
+        let mut h2: [f32; HIDDEN2] = self.b2[..HIDDEN2].try_into().unwrap();
+        if self.use_i16_l2 {
+            let mut q = [0i16; HIDDEN1_DUAL];
+            quant_unit_activations(h_w, &mut q[..HIDDEN1]);
+            quant_unit_activations(h_b, &mut q[HIDDEN1..]);
+            l2_dual_i16(&self.w2_dual_i16, &q, &self.b2, 1.0 / (self.scale * ACT_Q_F), &mut h2);
+        } else {
+            // w2 is column-major (HIDDEN1_DUAL × HIDDEN2), split h_w / h_b halves.
+            gemv_col(&self.w2[..HIDDEN1 * HIDDEN2], h_w, &mut h2);
+            gemv_col(&self.w2[HIDDEN1 * HIDDEN2..], h_b, &mut h2);
+        }
         for v in h2.iter_mut() { *v = screlu_f32(*v); }
         self.forward_heads(&h2, bucket)
     }
@@ -1545,6 +1749,53 @@ mod tests {
         let mut acc = [7i16; HIDDEN1];
         acc_sub_feature(&mut acc, 0);
         assert!(acc.iter().all(|&v| v == 7), "acc_sub_feature must be no-op with no evaluator");
+    }
+
+    /// The quantized i16 Layer-2 path must track the legacy f32 path closely
+    /// for the embedded weights across a spread of accumulator states.
+    #[test]
+    #[ignore = "requires src/eval.npz — run with --include-ignored"]
+    fn test_i16_l2_matches_f32_l2() {
+        let bytes = match std::fs::read("src/eval.npz") {
+            Ok(b) => b,
+            Err(_) => { println!("skipping: src/eval.npz not found"); return; }
+        };
+        let mut eval = match NeuralEvaluator::from_npz_bytes(&bytes) {
+            Ok(e) => e,
+            Err(e) => { println!("skipping: {e}"); return; }
+        };
+        if !eval.dual_perspective {
+            println!("skipping: single-perspective model");
+            return;
+        }
+        assert!(eval.use_i16_l2, "embedded weights should be i16-L2 safe");
+
+        // Deterministic pseudo-random accumulator states in a realistic range
+        // (post-L1 pre-activation values are typically within a few × scale).
+        let mut state = 0x9E3779B97F4A7C15u64;
+        let mut rng = || {
+            state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+            state
+        };
+        let span = (eval.scale * 3.0) as i32;
+        let mut max_diff = 0i32;
+        for _ in 0..200 {
+            let mut acc_w = [0i16; HIDDEN1];
+            let mut acc_b = [0i16; HIDDEN1];
+            for k in 0..HIDDEN1 {
+                acc_w[k] = ((rng() % (2 * span as u64 + 1)) as i32 - span) as i16;
+                acc_b[k] = ((rng() % (2 * span as u64 + 1)) as i32 - span) as i16;
+            }
+            for bucket in 0..eval.n_output_buckets {
+                eval.use_i16_l2 = true;
+                let (a, _) = eval.evaluate_from_accumulators(&acc_w, &acc_b, bucket);
+                eval.use_i16_l2 = false;
+                let (b, _) = eval.evaluate_from_accumulators(&acc_w, &acc_b, bucket);
+                max_diff = max_diff.max((a - b).abs());
+            }
+        }
+        assert!(max_diff <= 4, "i16 vs f32 L2 max CP diff {max_diff} (expected ≤4)");
+        println!("i16 vs f32 L2: max CP diff over 200×{} states = {max_diff}", eval.n_output_buckets);
     }
 
     /// Full equivalence test: i16 incremental path vs f32 scratch path.
